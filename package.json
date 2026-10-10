@@ -1,11 +1,11 @@
 {
   "name": "dsh-for-zotero",
   "type": "module",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Read papers with the DeepSeek Harness agent inside Zotero",
   "config": {
     "addonName": "DSH-for-Zotero",
-    "addonID": "dsh-for-zotero@local.dev",
+    "addonID": "dsh-for-zotero@zotero.cn",
     "addonRef": "dshforzotero",
     "addonInstance": "DSHForZotero",
     "prefsPrefix": "extensions.zotero.dshforzotero"

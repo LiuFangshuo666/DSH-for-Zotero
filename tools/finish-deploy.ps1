@@ -15,7 +15,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$addonId = "dsh-for-zotero@local.dev"
+# ⚠️ addonID 从 package.json 读取，而不在这里再写一份字面量 ——
+# 双份字面量在改 ID 时必然分叉，而分叉的后果是部署到错的文件名。
+$addonId = (Get-Content "$PSScriptRoot\..\package.json" -Raw | ConvertFrom-Json).config.addonID
 $extDir = Join-Path $ProfilePath "extensions"
 $staged = Join-Path $StagingRoot "$addonId.xpi"
 $target = Join-Path $extDir "$addonId.xpi"

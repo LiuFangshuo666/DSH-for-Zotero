@@ -285,10 +285,16 @@ Zotero 用的是 Firefox 的扩展更新机制，两个地址配合：
 
 > ### ⚠️ `addonID` 一旦有用户就不能再改
 >
-> 自动更新是按 **`addonID`** 匹配的（现在是 `dsh-for-zotero@local.dev`）。
-> 改了它，Zotero 会当成**另一个插件**：已有用户收不到更新，且会被要求重装。
-> 如果打算上官方插件市场（通常要求非 `local` 的 ID），**现在就改**——
-> 等有了用户再改，代价是让所有人重装一次。
+> 自动更新是按 **`addonID`** 匹配的（现在是 `dsh-for-zotero@zotero.cn`）。
+> 改了它，Zotero 会当成**另一个插件**：已有用户收不到更新，且必须重装一次。
+>
+> 这个改动**已经做过一次**（`dsh-for-zotero@local.dev` → `dsh-for-zotero@zotero.cn`），
+> 目的是在正式收录之前把 ID 定下来：官方规范要求 ID 用**邮箱格式**，
+> 而 `.local` 后缀明显是开发占位。**`0.3.0` 对外不兼容**，老版本用户需先卸载。
+>
+> ID 的**唯一来源**是 `package.json` 的 `config.addonID`（部署脚本也从那里读，
+> 所以不会再分叉）。将来若真要再换，用 `tools/remove-old-addon.ps1` 清掉旧记录 ——
+> 它同时移除 xpi 文件与 `extensions.json` 里的条目，两者缺一都会留下幽灵插件。
 
 ### 测试分两层
 

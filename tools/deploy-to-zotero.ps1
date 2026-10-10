@@ -3,8 +3,8 @@
 # WHY THIS SCRIPT EXISTS -- hard-won lesson:
 # **Never leave backup copies inside the extensions directory.**
 # Zotero/AddonManager derives a plugin's ID from its FILENAME, so
-#   dsh-for-zotero@local.dev.xpi.bak-20261002-205547
-# resolves to the same ID as the real file: dsh-for-zotero@local.dev.
+#   dsh-for-zotero@zotero.cn.xpi.bak-20261002-205547
+# resolves to the same ID as the real file: dsh-for-zotero@zotero.cn.
 # When one ID appears more than once in extensions/, Zotero uninstalls the plugin
 # entirely on startup (deletes the xpi and drops the record from extensions.json),
 # which shows up to the user as "the Tools menu has nothing in it".
@@ -26,7 +26,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$addonId = "dsh-for-zotero@local.dev"
+# ⚠️ addonID 从 package.json 读取，而不在这里再写一份字面量 ——
+# 双份字面量在改 ID 时必然分叉，而分叉的后果是部署到错的文件名。
+$addonId = (Get-Content "$PSScriptRoot\..\package.json" -Raw | ConvertFrom-Json).config.addonID
 $extDir = Join-Path $ProfilePath "extensions"
 $target = Join-Path $extDir "$addonId.xpi"
 $mainName = "$addonId.xpi"

@@ -16,11 +16,13 @@ param(
     [string]$ProfileDir = "$env:APPDATA\Zotero\Zotero\Profiles\4gvbpaje.default",
     [string]$LocalProfileDir = "$env:LOCALAPPDATA\Zotero\Zotero\Profiles\4gvbpaje.default",
     [string]$SourceXpi = "$PSScriptRoot\..\.scaffold\build\dsh-for-zotero.xpi",
-    [string]$StagingXpi = "$env:APPDATA\Zotero\Zotero\plugin-staging\dsh-for-zotero@local.dev.xpi"
+    [string]$StagingXpi = "$env:APPDATA\Zotero\Zotero\plugin-staging\dsh-for-zotero@zotero.cn.xpi"
 )
 
 $ErrorActionPreference = "Stop"
-$addonId = "dsh-for-zotero@local.dev"
+# ⚠️ addonID 从 package.json 读取，而不在这里再写一份字面量 ——
+# 双份字面量在改 ID 时必然分叉，而分叉的后果是部署到错的文件名。
+$addonId = (Get-Content "$PSScriptRoot\..\package.json" -Raw | ConvertFrom-Json).config.addonID
 $extDir = Join-Path $ProfileDir "extensions"
 $target = Join-Path $extDir "$addonId.xpi"
 $flag = Join-Path $LocalProfileDir ".startup-incomplete"

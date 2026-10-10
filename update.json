@@ -1,11 +1,11 @@
 {
   "addons": {
-    "dsh-for-zotero@local.dev": {
+    "dsh-for-zotero@zotero.cn": {
       "updates": [
         {
-          "version": "0.2.1",
-          "update_link": "https://gitee.com/laofashi666/dsh-for-zotero/releases/download/v0.2.1/dsh-for-zotero.xpi",
-          "update_hash": "sha512:a73ab0e3811c88dadd31f7779984ac581bde60ee241bb87f176a81a721b4b94006e80a817f74de705a9cb4704960e8d579480fa8dfd35938560646b191404638",
+          "version": "0.3.0",
+          "update_link": "https://gitee.com/laofashi666/dsh-for-zotero/releases/download/v0.3.0/dsh-for-zotero.xpi",
+          "update_hash": "sha512:4dd459be70aec30c450b0e70ed5cf1d7cc9eb0d49d8a74715e4925bd5457f92b41bf95d4bb24eedf954e19c3b0ed5788fb5f016f662256b21bbd594faa9965f3",
           "applications": {
             "zotero": {
               "strict_min_version": "10.0",

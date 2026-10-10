@@ -521,7 +521,7 @@ async function installSandbox(options = {}) {
     data: {
       config: {
         addonName: "DSH-for-Zotero",
-        addonID: "dsh-for-zotero@local.dev",
+        addonID: "dsh-for-zotero@zotero.cn",
         addonRef: "dshforzotero",
         addonInstance: "DSHForZotero",
         prefsPrefix: "extensions.zotero.dshforzotero",

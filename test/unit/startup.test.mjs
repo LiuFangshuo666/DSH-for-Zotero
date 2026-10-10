@@ -457,7 +457,7 @@ function makeSandbox() {
       alive: true,
       config: {
         addonName: "DSH-for-Zotero",
-        addonID: "dsh-for-zotero@local.dev",
+        addonID: "dsh-for-zotero@zotero.cn",
         addonRef: "dshforzotero",
         addonInstance: "DSHForZotero",
         prefsPrefix: "extensions.zotero.dshforzotero",
@@ -519,7 +519,7 @@ function makeBootstrapHarness() {
 
   // bootstrap.js 里的 `globalThis` 就是沙箱全局
   sandbox.globalThis = sandbox;
-  sandbox.rootURI = "file:///fake/extensions/dsh-for-zotero@local.dev.xpi!/";
+  sandbox.rootURI = "file:///fake/extensions/dsh-for-zotero@zotero.cn.xpi!/";
 
   // 仿真里不关心 uri/target（真实环境由 loadSubScript 的 scope 提供）
   sandbox.Services.scriptloader.loadSubScript = () => {
@@ -573,7 +573,7 @@ describe("启动期仿真（真实构建产物 + 假 Zotero 沙箱）", function
 
     // 真正跑一遍 Zotero 会做的调用
     const params = {
-      id: "dsh-for-zotero@local.dev",
+      id: "dsh-for-zotero@zotero.cn",
       version: "0.1.0",
       rootURI: sandbox.rootURI,
     };
@@ -639,7 +639,7 @@ describe("启动期仿真（真实构建产物 + 假 Zotero 沙箱）", function
     const section = registeredSections.find(
       (s) => s.paneID === "dshforzotero-reader",
     );
-    assert.equal(section.pluginID, "dsh-for-zotero@local.dev");
+    assert.equal(section.pluginID, "dsh-for-zotero@zotero.cn");
     assert.ok(section.header?.l10nID, "面板应有 l10nID");
     assert.equal(typeof section.onRender, "function");
 
@@ -676,7 +676,7 @@ describe("启动期仿真（真实构建产物 + 假 Zotero 沙箱）", function
       (e) => e.type === "renderTextSelectionPopup",
     );
     assert.equal(ours.length, 1, `应注册一个划词事件监听，实际 ${ours.length}`);
-    assert.equal(ours[0].pluginID, "dsh-for-zotero@local.dev");
+    assert.equal(ours[0].pluginID, "dsh-for-zotero@zotero.cn");
     assert.equal(typeof ours[0].handler, "function");
   });
 
