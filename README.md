@@ -219,8 +219,19 @@ C 位归零）。
 npm version 0.2.0 --no-git-tag-version   # 同步 package.json 与 package-lock.json
 npm run verify                            # 确认构建/测试/产物都过
 git commit -am "chore: bump version to 0.2.0"
-git tag v0.2.0 && git push gitee main --tags
+
+git tag -a v0.2.0 -m "0.2.0"              # 附注标签，写清这个版本改了什么
+git push gitee main
+git push gitee v0.2.0                     # ⚠️ 只推**这一个**标签
 ```
+
+> ⚠️ **不要用 `git push --tags`。** 本仓库的历史是从脚手架模板重建的，**模板作者
+> 的 40 个发布标签曾一并被带进来**（`v1.1.0` … `v3.1.0`），与这里的 A.B.C 规则
+> 完全冲突 —— 我们才到 `0.2.0`，却会冒出 `v3.1.0`。那些标签已删除；一旦有人用
+> `--tags` 推送，就会重新出现。**按标签名逐个推**。
+>
+> 如果确实需要批量推送，先确认待推列表：
+> `git push --tags --dry-run gitee`。
 
 > 版本号**只有一个来源**：`package.json`。`addon/manifest.json` 里的
 > `"version": "__buildVersion__"` 由构建时注入；设置页显示的版本同样是构建注入的。
