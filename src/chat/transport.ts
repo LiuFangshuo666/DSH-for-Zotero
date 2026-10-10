@@ -166,6 +166,13 @@ export class ChatTransport {
   private pollText = "";
   /** 文本连续不变的轮数，用于判定生成结束 */
   private pollStableRounds = 0;
+  /**
+   * 是否已经就"这一轮跑了很久但仍在生成"提醒过用户。
+   *
+   * 只提醒**一次**：长任务每超时一轮就发一条，会把界面的提示区刷满 ——
+   * 提示的价值在于"告诉你它没死"，重复说反而变成噪音。
+   */
+  private longRunNoticeSent = false;
   private listeners = new Set<(status: TransportStatus) => void>();
   private lastStatus: TransportStatus = { ready: false };
 
@@ -803,6 +810,14 @@ export class ChatTransport {
      * 用户需要在它问出来的**当下**就看到选项，否则会话看起来就是卡住。
      */
     onQuestions?: (questions: AskUserQuestion[]) => void;
+    /**
+     * 会话因**跨设备同步**（工作目录不匹配）而被迫在当前工作区重建时回调。
+     *
+     * 与 `onSessionReplaced` 分开，因为要告诉用户的话不同：
+     * 那个是"宿主重启了，无缝续上"，这个是"换了台机器，**原对话历史留在原机器**"——
+     * 后者必须说明白，否则用户会以为记录丢了。
+     */
+    onWorkspaceMigrated?: () => void;
   }): Promise<string> {
     const client = await this.connect();
     if (!client) throw new Error(this.lastStatus.error ?? "无法连接 dsh");
@@ -821,11 +836,38 @@ export class ChatTransport {
       const message = this.describeError(error);
       const missing =
         code === "session/not-found" || /not found/i.test(message);
-      if (!missing || !params.workspace) throw error;
+      /**
+       * ⚠️ **跨设备同步后的核心情况**（用户反馈的路径不匹配）。
+       *
+       * dsh 会话的 `cwd` 在创建时固定，事后不能改。所以当记录里那台机器上的
+       * 绝对路径与 dsh 里存的对不上时，宿主抛 `session/conflict`
+       * （带 `requestedCwd` / `existingCwd`，见 dsh 的 `ApiSessionCwdConflict`）。
+       *
+       * 早先只处理 `session/not-found`，于是换台机器之后**用户根本发不出消息**，
+       * 只看到一句 cwd 冲突 —— 而用户的心智模型是"文献库同步过来了，会话也该在"。
+       *
+       * 现在的处理与"会话不存在"一致：在当前工作区**重建**一条会话。
+       * 代价是那条会话的**对话历史留在原机器**（dsh 侧数据不在 Zotero 里）——
+       * 这一点如实告诉用户，而不是假装历史还在。
+       */
+      const cwdConflict = code === "session/conflict";
+      if ((!missing && !cwdConflict) || !params.workspace) throw error;
 
-      this.log(
-        `会话 ${sessionId} 已不存在（宿主可能重启过），用同一工作区重建`,
-      );
+      if (cwdConflict) {
+        this.log(
+          `会话 ${sessionId} 的工作目录与当前机器不符（跨设备同步），` +
+            `在当前工作区重建（原对话历史留在原机器）`,
+        );
+        try {
+          params.onWorkspaceMigrated?.();
+        } catch {
+          // 通知失败不影响重建
+        }
+      } else {
+        this.log(
+          `会话 ${sessionId} 已不存在（宿主可能重启过），用同一工作区重建`,
+        );
+      }
       const created = await createSession(client, { cwd: params.workspace });
       const replacement = created.value?.sessionId;
       if (!replacement) throw error;
@@ -1048,6 +1090,9 @@ export class ChatTransport {
     this.pollStartedAt = Date.now();
     this.pollText = "";
     this.pollStableRounds = 0;
+    // ⚠️ 必须**每轮重置**：否则第二轮的长任务不会再收到"仍在生成"的提醒
+    // （标志留在上一轮的值上），用户又会以为它卡死了。
+    this.longRunNoticeSent = false;
     this.setStatus({
       ready: true,
       transport: "polling",
@@ -1068,6 +1113,60 @@ export class ChatTransport {
   }
 
   /**
+   * 问 harness：这个会话的 agent 现在**还在跑吗**？
+   *
+   * `session/list` 的每一项都带 `running`（dsh 侧来自 `agent.status === "running"`，
+   * 见 `packages/api/session-controller/src/list.ts`）。字段在 `SessionSummary`
+   * 里其实**早就解析出来了**，只是一直没用 —— 而它正是"这一轮到底结束没有"
+   * 唯一可靠的答案（比"文本连续不变"和"我们等够了"都可靠）。
+   *
+   * 返回 `true`/`false`/`undefined`（问不到）。**调用方必须把 `undefined` 当作
+   * "不确定"，而不是"没在跑"** —— 在 RPC 抖动时宣布结束，正是误导用户的根源。
+   */
+  private async harnessRunning(
+    client: DshClient,
+    sessionId: string,
+  ): Promise<boolean | undefined> {
+    try {
+      const result = await listSessions(client);
+      const items = result.value?.items;
+      if (!Array.isArray(items)) return undefined;
+      const mine = items.find((s) => s.sessionId === sessionId);
+      if (!mine) return undefined;
+      return mine.running === true;
+    } catch (error) {
+      this.log(
+        `查询 harness 运行状态失败（保守处理为"仍在跑"）：${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * 超过 POLL_MAX_MS 但 harness 仍在跑时：**继续盯**，但降低查询频率。
+   *
+   * 为什么节流：长任务可能要跑十几分钟，没有必要每 700ms 问一次 ——
+   * 那是几百次 RPC 换一个不会变的事实。这里把下一次检查推到 5 秒后。
+   *
+   * 同时发一条 `assistant-note`，让界面能显示"仍在生成"而不是让用户
+   * 对着不动的界面猜（界面侧对它的处理见 readerPanel/sessionPage）。
+   */
+  private extendPollingDeadline(): void {
+    // 推后一整个 POLL_MAX_MS 周期，而不是"再等 5 秒就又问一遍"——
+    // 后者会让长时间任务每 5 秒走一次完整判断，日志与 RPC 都被刷满。
+    this.pollStartedAt = Date.now();
+    if (!this.longRunNoticeSent) {
+      this.longRunNoticeSent = true;
+      this.deps.emit({
+        kind: "assistant-note",
+        note: "这一轮仍在生成（Agent 可能正在连续调用工具）—— 请稍候，可以离开这个界面，回来还能接着看。",
+      });
+    }
+  }
+
+  /**
    * 轮询取一次。
    *
    * ⚠️ 关键（2026-10-02 真机实测更正）：**回答文本在 `session/projections` 里，不在
@@ -1078,14 +1177,32 @@ export class ChatTransport {
    * 回答写进了会话。这是面板"看不到输出"的直接原因。
    *
    * 现在的策略：以 `turnOutline` 为正文来源，按轮累积并发出增量；
-   * 文本连续若干轮不再变化即视为生成结束（与 `askOnce` 的轮询兜底同一判据）。
+   * 结束以 `turn/end` 为准，超时前**先问 harness 还在不在跑**（见下）。
    */
   private async pollOnce(sessionId: string): Promise<void> {
     const client = this.client;
     if (!client) return;
+    // ⚠️ 超时**不再等于"这一轮结束了"**（真机反馈：长任务被误判为已完成）。
+    //
+    // `POLL_MAX_MS` 是"我们愿意盯着看多久"，不是"harness 干完了"。
+    // Agent 多步执行（并行调工具、反复验证）很容易超过 3 分钟 —— 而那时它**还在干活**。
+    // 早先直接 emit `assistant-end`，界面就显示这一轮结束了；
+    // 用户接着发下一句，得到的是错乱的结果（前一问还在跑）。
+    //
+    // 现在的做法：超时后问一次 `session/list` 的 `running` 字段。
+    //   - 仍在跑 → **继续盯**，只是把间隔放宽（省 RPC），并告知界面"仍在生成"；
+    //   - 已停下 → 才是真的结束（此时按 committed 处理，正文已经在上面的分支里发过）；
+    //   - 问不到（RPC 失败）→ 保守地**继续盯**，绝不在不确定时宣布结束。
     if (Date.now() - this.pollStartedAt > POLL_MAX_MS) {
-      this.stopPolling();
-      this.deps.emit({ kind: "assistant-end", outcome: "abandoned" });
+      const state = await this.harnessRunning(client, sessionId);
+      if (state === false) {
+        // harness 明确说它不跑了 —— 这一轮确实结束了
+        this.stopPolling();
+        this.deps.emit({ kind: "assistant-end", outcome: "committed" });
+        return;
+      }
+      // true（仍在跑）或 undefined（问不到）：继续等，但要节流并让界面知道
+      this.extendPollingDeadline();
       return;
     }
     try {

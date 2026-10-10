@@ -38,6 +38,14 @@ export type ChatEvent =
   /** 助手这一轮结束（committed / abandoned / 用户取消） */
   | { kind: "assistant-end"; outcome: "committed" | "abandoned" | "cancelled" }
   /**
+   * 生成过程中的**说明性提示**（不影响对话内容）。
+   *
+   * 为什么需要：Agent 多步执行时可能好几分钟没有可见输出。先前界面只是"不动"，
+   * 用户无法区分「还在跑」与「卡死了」—— 于是会去关界面或再发一句，
+   * 结果是轮次错乱。有了这个事件，界面能明确说"仍在生成"。
+   */
+  | { kind: "assistant-note"; note: string }
+  /**
    * 载入历史对话（真机反馈"看不到会话历史"）。
    * 打开面板或切回已聊过的文献时，用 dsh 里已有的一问一答回填消息列表，
    * 否则界面只显示当前这一轮，用户以为记录丢了。
@@ -299,6 +307,21 @@ export function reduce(
       return { ...state, messages, generating: true };
     }
 
+    case "assistant-note": {
+      // 生成过程中的说明（例如"仍在生成"）——
+      // **不改变** generating 状态，只往对话流里插一条提示。
+      // 这不是错误也不是结束，所以 level 用 info。
+      const messages = cloneMessages(state.messages);
+      messages.push({
+        id: nextId("n"),
+        role: "notice",
+        blocks: [{ index: 0, blockType: "text", text: event.note, done: true }],
+        level: "info",
+        createdAt: now,
+      });
+      return { ...state, messages: trimmed(messages) };
+    }
+
     case "assistant-end": {
       const messages = cloneMessages(state.messages);
       const index = lastOpenAssistantIndex(messages);
@@ -319,7 +342,16 @@ export function reduce(
               text:
                 event.outcome === "cancelled"
                   ? "已停止生成"
-                  : "本次生成未完成（已放弃）",
+                  : // ⚠️ 这里不能只说"已放弃"（真机误导）。
+                    //
+                    // `abandoned` 的两种成因性质完全不同：
+                    //  - **等够了**：我们不再盯着看，但 **harness 可能还在跑** ——
+                    //    用户需要知道"回答可能稍后补齐"，否则他会以为这一问失败了；
+                    //  - **本轮出错**：host 明确回了 error（那条分支在此之前就返回了，
+                    //    走的是 fault，不会到这里）。
+                    // 所以文案要说明"我们停了，但它可能还在继续"，并给出下一步。
+                    "插件已停止等待这一轮（可能超时）。**harness 那边可能仍在继续生成** —— " +
+                    "稍后点「刷新材料」或重新打开会话即可看到完整回答。",
               done: true,
             },
           ],

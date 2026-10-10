@@ -36,7 +36,13 @@
  */
 
 import type { SessionKind, SessionRecord } from "../dsh/session";
-import { sessionStore, titleFromQuestion, workspaceFor } from "../dsh/session";
+import {
+  ensureWorkspaceDir,
+  sessionStore,
+  setWorkspaceRootProvider,
+  titleFromQuestion,
+  workspaceFor,
+} from "../dsh/session";
 import { ChatTransport } from "../chat/transport";
 import { appendPanelLog } from "../dsh/runLog";
 import { refreshInstalledDshSide } from "../dsh/install";
@@ -460,6 +466,8 @@ function registerGlobalApi(pane: SessionPane): void {
     /** 用户拒绝删除 */
     dismissDeletion: async (index: number) =>
       pane.dismissPendingDeletion(index),
+    /** 一键确认全部待确认项（条目多时逐条点太麻烦） */
+    confirmAllDeletions: async () => pane.confirmAllPendingDeletions(),
     /** 回答 `ask_user_question` 的提问（送进当前轮） */
     answerQuestions: async (
       sessionId: string,
@@ -773,6 +781,66 @@ export function buildWorkspaceReadme(input: {
   ].join("\n");
 }
 
+/**
+ * 把分类的条目清单写成 `<workspace>/collection.md`。
+ *
+ * ## ⚠️ 这份文本会被 Agent 当作**事实依据**
+ *
+ * 写错一句，它就照着答错 —— 真机反复出现过。两条已经踩过的坑都记在下面的注释里，
+ * 不要因为"看起来啰嗦"删掉。
+ *
+ * ## 为什么抽成独立函数：它有**两个**调用时机
+ *
+ * 1. 建会话 / 刷新材料时（`populateWorkspace`）；
+ * 2. **写操作之后**（`refreshWorkspaceMaterialsAfterWrite`）——
+ *    否则多轮对话里 Agent 读到的永远是会话创建那一刻的快照，
+ *    它会"如实报告过时信息"，看起来像在犯错（真机反馈）。
+ *
+ * 两处各写一遍必然分叉，所以合成一份实现。
+ */
+async function writeCollectionListing(
+  scope: ScopeInfo,
+  workspace: string,
+): Promise<void> {
+  const lines: string[] = [
+    `# 分类：${scope.scopeTitle}`,
+    "",
+    "下面是该分类下的条目清单（含 key、现有标签与摘要）。",
+    "",
+    // ⚠️ 不要改回"请用户另建条目会话" —— 那是错的。
+    // `getFullText` 按**会话范围**解析条目，而分类会话的范围就是整个分类，
+    // 所以它在分类会话里完全可用。旧文案害得 Agent 告诉用户"这里看不了正文"。
+    "要看某篇的**正文**：直接用 `getFullText` 传该条的 `key`（见本目录 `zotero/README.md`）。",
+    "本会话范围内包含该分类的全部条目，**不需要**另建条目会话；长文用 `offset` 分段读。",
+    "",
+    // ⚠️ 这里原有一句"然后在会话页点「应用标签方案」，插件会先显示预览、经你确认后才写入"
+    // —— 那个按钮**早已删除**（标签现在走 setTags 工具 + Zotero 撤销栈）。
+    // 留着它会让 Agent 让用户去点一个不存在的按钮。
+    "若要整理标签：用 `zotero` 工具里的 `setTags` 直接整理；它进 Zotero 撤销栈，",
+    "用户可用 Ctrl+Z 撤销。想先让用户过目，就先在对话里给出方案再写。",
+    // 让 Agent 知道这份清单是**实时的**（插件在每次写操作后会重写它），
+    // 否则它可能因为"上次看到的是旧数据"而自己去重复核对一遍。
+    "",
+    `<!-- 本清单由插件在每次写操作后自动重写，是当前状态；生成于 ${new Date().toISOString()} -->`,
+    "",
+  ];
+  const items = await collectScopeItemInfos(scope);
+  if (items.length === 0) {
+    lines.push(
+      "（没有取到条目清单 —— 该 Zotero 版本可能不提供所用的检索接口）",
+    );
+  }
+  for (const info of items) lines.push(...formatScopeItem(info));
+  await IOUtils.writeUTF8(
+    PathUtils.join(workspace, "collection.md"),
+    lines.join("\n"),
+  );
+  appendPanelLog(
+    "session",
+    `已把分类清单写入工作区：${workspace}（${items.length} 条，含标签与摘要）`,
+  );
+}
+
 async function populateWorkspace(
   kind: SessionKind,
   scope: ScopeInfo,
@@ -808,44 +876,8 @@ async function populateWorkspace(
       return;
     }
 
-    // 独立会话：写该分类下的条目清单（含 key / 现有标签 / 摘要）。
-    //
-    // ⚠️ 这份文本会被 Agent 当作**事实依据** —— 写错一句，它就会照着答错。
-    // 真机上正是如此：旧版这里写着"需要看全文时，请让用户新建条目会话"，
-    // 于是 Agent 明明**有** `getFullText`，却告诉用户"这个会话看不了正文"，
-    // 还建议用户去另建会话 —— 而 `getFullText` 在分类会话里完全可用
-    // （它按会话范围解析条目，而范围就是整个分类）。
-    const lines: string[] = [
-      `# 分类：${scope.scopeTitle}`,
-      "",
-      "下面是该分类下的条目清单（含 key、现有标签与摘要）。",
-      "",
-      // ⚠️ 不要改回"请用户另建条目会话" —— 那是错的，见上面的注释。
-      "要看某篇的**正文**：直接用 `getFullText` 传该条的 `key`（见本目录 `zotero/README.md`）。",
-      "本会话范围内包含该分类的全部条目，**不需要**另建条目会话；长文用 `offset` 分段读。",
-      "",
-      // ⚠️ 这里原有一句"然后在会话页点「应用标签方案」，插件会先显示预览、经你确认后才写入"
-      // —— 「应用标签方案」按钮**早已删除**（标签现在走 setTags 工具 + Zotero 撤销栈）。
-      // 那句话会让 Agent 让用户去点一个不存在的按钮。
-      "若要整理标签：用 `zotero` 工具里的 `setTags` 直接整理；它进 Zotero 撤销栈，",
-      "用户可用 Ctrl+Z 撤销。想先让用户过目，就先在对话里给出方案再写。",
-      "",
-    ];
-    const items = await collectScopeItemInfos(scope);
-    if (items.length === 0) {
-      lines.push(
-        "（没有取到条目清单 —— 该 Zotero 版本可能不提供所用的检索接口）",
-      );
-    }
-    for (const info of items) lines.push(...formatScopeItem(info));
-    await IOUtils.writeUTF8(
-      PathUtils.join(workspace, "collection.md"),
-      lines.join("\n"),
-    );
-    appendPanelLog(
-      "session",
-      `已把分类清单写入工作区：${workspace}（${items.length} 条，含标签与摘要）`,
-    );
+    // 独立会话：写该分类下的条目清单
+    await writeCollectionListing(scope, workspace);
   } catch (error) {
     appendPanelLog(
       "session",
@@ -1483,7 +1515,54 @@ export class SessionPane {
   }
 
   /**
-   * 刷新 dsh 侧内容（伴读 skill / 常驻指令）到当前模板。
+   * 把各会话的工作区迁移到**当前机器**（跨设备同步）。
+   *
+   * 只对**已经从别的根目录**过来的会话做事：`ensureWorkspaceDir` 会自己判断
+   * 目标目录是否已存在、旧目录是否值得搬。这里只负责遍历与会话记录，
+   * 并把结果写回记录（这样下次启动就不必再判断）。
+   *
+   * 顺带把**缺失的工作区目录补建出来**：dsh 会话的 cwd 是创建时固定的，
+   * 目录不存在时宿主的 shell 工具会直接失败 —— 那看起来像"Agent 坏了"。
+   */
+  private async migrateWorkspaces(): Promise<void> {
+    let migrated = 0;
+    try {
+      const records = await sessionStore().list();
+      for (const record of records) {
+        try {
+          const resolved = await ensureWorkspaceDir(record);
+          if (resolved !== record.workspace) {
+            // 写回记录：下次启动就不必再判断（也让人工排查时看到真实路径）
+            await sessionStore().upsert({ ...record, workspace: resolved });
+            migrated += 1;
+          }
+        } catch (error) {
+          appendPanelLog(
+            "session",
+            `迁移会话 ${record.sessionId} 的工作区失败：${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+      if (migrated > 0) {
+        appendPanelLog(
+          "session",
+          `已把 ${migrated} 个会话的工作区对齐到当前机器`,
+        );
+      }
+    } catch (error) {
+      appendPanelLog(
+        "session",
+        `工作区迁移整体失败（不影响使用）：${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  /**
+   * 让 dsh 侧内容（伴读 skill / 常驻指令）跟上当前模板。
    *
    * 与 `refreshStaleMaterials` 同一个理由：**写出去给 Agent 看的文字会漂移**。
    * 技能里曾经还写着“按 meta.json 作答”，而独立会话里并没有那个文件 ——
@@ -1817,6 +1896,7 @@ export class SessionPane {
       listPendingDeletions: () => this.listPendingDeletions(),
       confirmDeletion: (index: number) => this.confirmPendingDeletion(index),
       dismissDeletion: (index: number) => this.dismissPendingDeletion(index),
+      confirmAllDeletions: () => this.confirmAllPendingDeletions(),
       refreshWorkspace: () => this.refreshWorkspace(record),
       cancelTurn: () => this.cancelTurnInRecord(record.sessionId),
       answerQuestions: (
@@ -2047,6 +2127,17 @@ export class SessionPane {
           lastId = parsed.call.id;
           const result = await this.executeToolCall(record, parsed.call);
           await this.writeToolResult(dir, result);
+          // ⚠️ 写完结果就**刷新这个工作区的材料**（真机反馈：collection.md 不实时更新）。
+          //
+          // 为什么放在这里：Agent 每次改完标签/加完条目，紧接着可能还会再调一次工具。
+          // 若清单不更新，它看到的**永远是会话创建那一刻的快照** —— 于是多轮对话里
+          // 它会按过时信息判断（真机上表现为"明明加过标签，它却说没有"）。
+          //
+          // 只对**写操作**刷新（读操作不改变任何东西，白刷一遍纯浪费）。
+          await this.refreshWorkspaceMaterialsAfterWrite(
+            record,
+            parsed.call.op,
+          );
         } catch (error) {
           appendPanelLog(
             "session",
@@ -2060,6 +2151,69 @@ export class SessionPane {
 
     this.toolPollers.set(dir, timer as unknown as number);
     appendPanelLog("session", `已启动工具轮询（工作区 ${dir}）`);
+  }
+
+  /**
+   * 写操作成功后，刷新该工作区的材料（目前主要是 `collection.md`）。
+   *
+   * ## 为什么需要（真机反馈）
+   *
+   * "`collection.md` 不会在会话中实时更新，多轮对话中会被 agent 误判。"
+   *
+   * 材料只在**建会话时**写一次，以及用户手动点「刷新材料」时重写。所以 Agent
+   * 用 `setTags` 改完标签、再问它"这个分类的标签现在什么样"，它读到的仍是旧清单 ——
+   * 它会**如实报告过时信息**，而这看起来像它在犯错。
+   *
+   * ## 只刷新"清单类"材料，不重写全文
+   *
+   * 分类会话的 `collection.md` 很便宜（读条目清单 + 格式化）。
+   * **条目会话的全文不重写** —— 那要重新提取 PDF，代价完全不同量级；
+   * 而且 `getFullText` 本来就按需读实时内容，不依赖缓存。
+   *
+   * ## 多个会话共用工作区
+   *
+   * 同一分类下可以建多个会话，它们**共享同一个工作区**（真机上 9 个会话指向同一目录）。
+   * 所以刷新时要遍历所有指向这个目录的分类会话，而不是只刷新发起调用的那一个 ——
+   * 否则"另一个会话看到的还是旧清单"，同一个坑换个入口再踩一次。
+   */
+  private async refreshWorkspaceMaterialsAfterWrite(
+    record: SessionRecord,
+    op: string,
+  ): Promise<void> {
+    try {
+      // 只有会改变条目清单/标签的写操作才需要刷新
+      if (op !== "setTags" && op !== "addToCollection" && op !== "addNote")
+        return;
+
+      const records = await sessionStore().list();
+      const targets = records.filter(
+        (r) => r.kind === "collection" && r.workspace === record.workspace,
+      );
+      const list = targets.length > 0 ? targets : [record];
+      for (const target of list) {
+        if (target.kind !== "collection") continue;
+        // `ScopeInfo` 只含 kind / scopeKey / scopeLibraryID / scopeTitle ——
+        // 分类 id 不在里面（`collectScopeItemInfos` 从 scopeKey 也能解析），
+        // 所以这里不要多传字段（TS 会直接报错，这点很好）。
+        const scope: ScopeInfo = {
+          kind: target.kind,
+          scopeKey: target.scopeKey,
+          scopeLibraryID: target.scopeLibraryID,
+          scopeTitle: target.scopeTitle,
+        };
+        await writeCollectionListing(scope, target.workspace);
+      }
+      appendPanelLog(
+        "session",
+        `工具 ${op} 之后已刷新清单（${list.length} 个会话共用该工作区）`,
+      );
+    } catch (error) {
+      // 刷新失败不该影响工具调用本身的结果（结果已经写进 result.json 了）
+      appendPanelLog(
+        "session",
+        `刷新材料失败（不影响本次工具结果）：${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   /**
@@ -2716,6 +2870,14 @@ export class SessionPane {
   }> = [];
 
   private toolPollers = new Map<string, number>();
+  /**
+   * 下一次向界面回报时要附带的一条说明（一次性）。
+   *
+   * 目前只有一个用途：跨设备同步导致会话重建时，告诉用户
+   * "原对话历史留在原机器"。做成一次性是因为它只对**紧接着的那次**回答有意义，
+   * 之后每次都说就变成噪音了。
+   */
+  private pendingNotice: string | undefined;
   /** 会话记录缓存：scopeItems 是同步的，需要一个同步入口 */
   private sessionCache = new Map<string, SessionRecord>();
 
@@ -2868,13 +3030,66 @@ export class SessionPane {
     return lines.join("；");
   }
 
-  /** 用户拒绝某个待确认删除 */
+  /**
+   * 用户拒绝某个待确认删除
+   *
+   * ## ⚠️ 索引语义：**只在下标有效的那一刻有效**
+   *
+   * `index` 是当前列表的下标，而每次确认/拒绝都会 `splice` 掉一项 ——
+   * 一旦删除，**后面所有项目的下标都会前移**。所以界面每次操作后必须重读列表
+   * （它会重新拿到 0..n-1），否则第二次点"确认"就会作用到错误的项目上。
+   *
+   * 批量确认（`confirmAllPendingDeletions`）正是因为这个原因**从后往前**处理。
+   */
   dismissPendingDeletion(index: number): string {
     const request = this.pendingDeletions[index];
     if (!request) return "该待确认项已不存在。";
     this.pendingDeletions.splice(index, 1);
     appendPanelLog("session", `用户拒绝了删除请求：${request.keys.join(", ")}`);
     return "已取消该删除请求（未删除任何条目）。";
+  }
+
+  /**
+   * **一键确认全部**待确认的结构性改动（用户要求：条目多时逐条点太麻烦）。
+   *
+   * ## 为什么从后往前处理（这是本函数唯一容易写错的地方）
+   *
+   * `confirmPendingDeletion(i)` 内部会 `splice(i, 1)`，**删掉一项之后，
+   * 后面所有项的下标都前移一位**。若从 0 开始正向遍历，第二次调用时
+   * 原来的第 1 项已经变成第 0 项，于是会**漏掉一项并在末尾报"已不存在"**。
+   * 倒序遍历则不受影响：处理末尾项时，前面项的下标还没被改动。
+   *
+   * ## 逐条独立、结果汇总
+   *
+   * 一条失败不影响其余（与单条确认同样的理由：删除不可逆，失败要如实报告而不是
+   * 中断整批）。返回的文案里同时给出成功与失败数量，界面上会显示出来。
+   */
+  async confirmAllPendingDeletions(): Promise<string> {
+    const total = this.pendingDeletions.length;
+    if (total === 0) return "没有待确认的改动。";
+
+    // 快照一份描述用于汇总（splice 之后 pendingDeletions 会变空）
+    const outcomes: string[] = [];
+    let failed = 0;
+    for (let index = total - 1; index >= 0; index -= 1) {
+      try {
+        // ⚠️ 每次都用**当前**的 index；倒序保证它没有因为前面的删除而错位
+        const report = await this.confirmPendingDeletion(index);
+        if (/失败|找不到/.test(report)) failed += 1;
+        outcomes.push(report);
+      } catch (error) {
+        failed += 1;
+        outcomes.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    const succeeded = total - failed;
+    appendPanelLog(
+      "session",
+      `一键确认完成：共 ${total} 项，成功 ${succeeded}，失败 ${failed}`,
+    );
+    const summary = [`已一键确认 ${succeeded}/${total} 项`];
+    if (failed > 0) summary.push(`其中 ${failed} 项失败（详见工作区与日志）`);
+    return summary.join("，");
   }
 
   /** 把删除结果写回工作区，供 Agent 读取 */
@@ -2926,10 +3141,13 @@ export class SessionPane {
     const record = await sessionStore().get(sessionId);
     if (!record) throw new Error(`找不到会话记录：${sessionId}`);
     const transport = this.ensureTransport();
+    // ⚠️ 用 `ensureWorkspaceDir` 而不是 `record.workspace`：前者会按**当前机器**
+    // 重新解析（跨设备同步），并在需要时把另一台机器的材料搬过来、保证目录存在。
+    const workspace = await ensureWorkspaceDir(record);
     const answer = await transport.askInSession({
       sessionId: record.sessionId,
       prompt: text,
-      workspace: record.workspace,
+      workspace,
       onDelta,
       onQuestions,
       onSessionReplaced: async (newSessionId) => {
@@ -2940,8 +3158,27 @@ export class SessionPane {
         record.sessionId = newSessionId;
         await sessionStore().upsert(record);
       },
+      // ⚠️ 跨设备同步：工作目录与当前机器不符，dsh 里那条会话用不了 ——
+      // 已就地重建。**必须告诉用户原对话历史留在原机器**，
+      // 否则他会以为插件把记录弄丢了（真机上"看不到历史"已经被误解过一次）。
+      onWorkspaceMigrated: () => {
+        this.pendingNotice =
+          "检测到这是一条从**另一台机器**同步过来的会话：工作目录不同，已在当前机器上重建。" +
+          "**原对话历史留在原来那台机器**（它由 dsh 保存，不在 Zotero 里）；" +
+          "从这一轮开始的问答会正常记录。";
+        appendPanelLog(
+          "session",
+          `会话 ${record.sessionId} 因工作区不匹配而重建（跨设备）`,
+        );
+      },
     });
     await sessionStore().touch(record.sessionId);
+    // 一次性提示：只在紧接的那次回答之后附带一次（见 pendingNotice 的说明）
+    if (this.pendingNotice) {
+      const note = this.pendingNotice;
+      this.pendingNotice = undefined;
+      return `${answer}\n\n---\n\n${note}`;
+    }
     return answer;
   }
 
@@ -3130,6 +3367,32 @@ export class SessionPane {
       // 只**更新已存在**的文件，不新建（见 refreshInstalledDshSide 的说明）：
       // 装不装这两个文件由设置里的开关决定，启动不该替用户做这个决定。
       void this.refreshDshSideContent();
+
+      // ⚠️ 装配"当前工作区根目录"提供者（跨设备同步的关键，见 resolveWorkspace）。
+      //
+      // 会话记录里**不再**存机器相关的绝对路径：读取时按当前根目录 +
+      // kind + scopeKey 重新推导。所以必须在任何会话被读取**之前**装配好 ——
+      // maintain() 正是那个时机（它在插件启动时跑，早于界面打开）。
+      //
+      // 提供者内部可能拿不到根目录（宿主还没就绪），那时 resolveWorkspace
+      // 会退回记录里存的值；等运行时就绪后再读就自动是新路径了。
+      setWorkspaceRootProvider(() => {
+        try {
+          return requireRuntimeConfig().workspaceRoot;
+        } catch {
+          return undefined;
+        }
+      });
+
+      // ⚠️ 把已有会话的工作区**迁移到当前机器**（跨设备同步的落点）。
+      //
+      // 记录里存的是创建那台机器的绝对路径；换机器后根目录不同。这里按目录名
+      // 把旧目录里的材料搬到新根目录下（见 ensureWorkspaceDir）——
+      // 不做的话，用户在新机器上双击会话会得到一个空工作区，而 Agent 会
+      // 读不到论文材料却照常回答。
+      //
+      // 放在后台跑，不阻塞启动；失败只记日志（材料会按需重新生成）。
+      void this.migrateWorkspaces();
 
       const records = await sessionStore().list();
       if (records.length === 0) return;

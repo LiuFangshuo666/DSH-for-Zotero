@@ -49,6 +49,8 @@ const OPTIONAL_METHODS = [
   "listPendingDeletions",
   "confirmDeletion",
   "dismissDeletion",
+  // 一键确认全部待确认项（条目多时逐条点太麻烦，用户要求）
+  "confirmAllDeletions",
   // 刷新工作区材料：老会话里可能留着已被撤掉的旧说明
   "refreshWorkspace",
   // 取消正在进行的轮次（卡住时的出路）

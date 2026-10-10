@@ -358,6 +358,11 @@
       dismissDeletion: function (index) {
         return api.dismissDeletion(index);
       },
+      // 一键确认全部（条目多时逐条点太麻烦）。
+      // 插件侧从后往前处理，因为每次确认都会让后续下标前移。
+      confirmAllDeletions: function () {
+        return api.confirmAllDeletions();
+      },
       refreshWorkspace: function () {
         return api.refreshWorkspace(sessionId);
       },
@@ -447,6 +452,14 @@
     var badgeEl = document.getElementById("pending-badge");
     /** 角标就地展开的内容容器（与主面板共用渲染逻辑） */
     var headerPendingEl = document.getElementById("pending-inline");
+    /**
+     * 待确认内容的"签名"（条数 + 每条的 op/keys/summary/时间）——
+     * 用来判断**内容是否变了**，变了才重渲染就地面板。
+     *
+     * 为什么需要：就地面板只在点击那一刻渲染过一次，之后新来的请求不会出现，
+     * 用户得"收起再展开"才看得到（真机反馈）。详见 `renderPendingInto` 顶部的说明。
+     */
+    var lastPendingSignature = "";
 
     /**
      * 从正文里判断 Agent 是不是在**问用户**。
@@ -680,6 +693,32 @@
         })
         .then(function (items) {
           pendingEl.textContent = "";
+          // ── 就地面板（角标展开的那块）也要跟着刷新 ──────────────
+          //
+          // ⚠️ 真机故障：清空后再有新请求时，角标数字会变、主面板会更新，
+          // 但**就地展开的内容还是旧的**（它只在点击那一刻渲染过一次），
+          // 用户必须"收起再展开"才能看到新内容。
+          //
+          // 修法：把当前内容算成一个**签名**（条数 + 每条的 op/key/summary），
+          // 签名变了且面板正展开着，就重渲染它。用签名而不是"每次都重渲染"，
+          // 是为了避免每秒重建 DOM —— 那会让正在点击的按钮失焦。
+          var signature = (items || [])
+            .map(function (it) {
+              return [
+                it.op,
+                (it.keys || []).join("+"),
+                it.summary || "",
+                it.requestedAt || "",
+              ].join(":");
+            })
+            .join("|");
+          var expanded =
+            headerPendingEl && headerPendingEl.style.display !== "none";
+          if (expanded && signature !== lastPendingSignature) {
+            renderPendingInto(headerPendingEl);
+          }
+          lastPendingSignature = signature;
+
           if (!items || items.length === 0) {
             pendingEl.style.display = "none";
             renderPendingBadge(0);
@@ -720,6 +759,63 @@
           // 新建不加红：红色代表危险，新建不是危险操作（删除才是）
           head.style.color = deleteCount > 0 ? "#b91c1c" : "#1d4ed8";
           pendingEl.appendChild(head);
+
+          // ── 一键确认（与就地面板同一功能；条目多时逐条点太麻烦）──
+          // 只在两项以上时出现：只有一条时它不比单条确认更省事。
+          if (
+            items.length > 1 &&
+            typeof capability.confirmAllDeletions === "function"
+          ) {
+            var allRow0 = document.createElement("div");
+            allRow0.style.cssText =
+              "margin:6px 0 8px;padding:6px 8px;background:#eff6ff;" +
+              "border:1px solid #bfdbfe;border-radius:5px";
+            var allBtn0 = document.createElement("button");
+            allBtn0.type = "button";
+            allBtn0.textContent = "全部确认（" + items.length + " 项）";
+            allBtn0.style.cssText =
+              "font-weight:600;padding:3px 12px;cursor:pointer";
+            allBtn0.addEventListener("click", function () {
+              // 批量且含删除时不可逆 —— 必须先让用户明确一次
+              if (
+                !window.confirm(
+                  "将一次性确认全部 " +
+                    items.length +
+                    " 项改动，其中删除不可撤销。确定继续吗？",
+                )
+              ) {
+                return;
+              }
+              allBtn0.disabled = true;
+              allBtn0.textContent = "正在全部确认…";
+              Promise.resolve()
+                .then(function () {
+                  return capability.confirmAllDeletions();
+                })
+                .then(function (report) {
+                  notice(report);
+                  renderPendingDeletions();
+                })
+                .catch(function (error) {
+                  allBtn0.disabled = false;
+                  allBtn0.textContent = "全部确认（" + items.length + " 项）";
+                  notice(
+                    "批量确认失败：" +
+                      (error && error.message ? error.message : String(error)),
+                  );
+                });
+            });
+            allRow0.appendChild(allBtn0);
+            var allHint0 = document.createElement("span");
+            allHint0.style.cssText =
+              "margin-left:8px;color:#6b7280;font-size:12px";
+            allHint0.textContent =
+              deleteCount > 0
+                ? "含删除 —— 确认前请核对上面每一项"
+                : "新建类操作，仍会进 Zotero 撤销栈";
+            allRow0.appendChild(allHint0);
+            pendingEl.appendChild(allRow0);
+          }
 
           items.forEach(function (item, index) {
             var row = document.createElement("div");
@@ -1065,6 +1161,16 @@
      *
      * 抽出来是为了**避免两套渲染逻辑**：先前角标只负责"滚动"，内容渲染在另一处，
      * 结果一边坏了另一边看不出来。现在两者用同一份代码。
+     *
+     * ## ⚠️ 两个真机故障都出在这个函数上
+     *
+     * 1. **清空后新增看不到**：就地展开的面板只在"点击那一刻"渲染一次，
+     *    之后**从不刷新** —— 而外层 `renderPendingDeletions` 每 2 秒刷新的是
+     *    主面板与角标计数。所以用户把列表清空后再有新请求时，角标数字变了，
+     *    展开的内容却还是旧的空列表，**必须收起再展开**才看得到。
+     *    现在渲染结果会记进 `lastPendingSignature`，外层发现内容变了就重渲染。
+     *
+     * 2. **标题写死"删除"**：新建条目被显示成"请求删除"（见主面板里的说明）。
      */
     function renderPendingInto(target) {
       if (!target) return;
@@ -1086,6 +1192,91 @@
             target.textContent = "（当前没有待确认的改动）";
             return;
           }
+
+          // 标题：与主面板同一套分类逻辑（不能写死"删除"）
+          var head = document.createElement("div");
+          var createCount = items.filter(function (it) {
+            return it.op === "createItem" || (it.summary && it.summary.length);
+          }).length;
+          var deleteCount = items.length - createCount;
+          head.style.cssText =
+            "font-weight:600;margin-bottom:6px;color:" +
+            (deleteCount > 0 ? "#b91c1c" : "#1d4ed8");
+          head.textContent =
+            createCount > 0 && deleteCount === 0
+              ? "Agent 请求新建 " + createCount + " 个条目 —— 需要你确认"
+              : deleteCount > 0 && createCount === 0
+                ? "Agent 请求删除 " +
+                  deleteCount +
+                  " 项 —— 需要你确认（删除不可逆）"
+                : "Agent 请求改动 " +
+                  items.length +
+                  " 项（新建 " +
+                  createCount +
+                  "，删除 " +
+                  deleteCount +
+                  "）—— 需要你确认";
+          target.appendChild(head);
+
+          // ── 一键确认（用户要求：条目一多，逐条点太麻烦）──────
+          // 只在**两项以上**时出现：只有一条时它不比"确认"按钮更省事，
+          // 反而多一个按钮要读。
+          if (
+            items.length > 1 &&
+            typeof capability.confirmAllDeletions === "function"
+          ) {
+            var allRow = document.createElement("div");
+            allRow.style.cssText =
+              "margin:4px 0 8px;padding:6px 8px;background:#eff6ff;" +
+              "border:1px solid #bfdbfe;border-radius:5px";
+            var allBtn = document.createElement("button");
+            allBtn.type = "button";
+            allBtn.textContent = "全部确认（" + items.length + " 项）";
+            allBtn.style.cssText =
+              "font-weight:600;padding:3px 12px;cursor:pointer";
+            allBtn.addEventListener("click", function () {
+              // 二次确认：这是**批量不可逆**操作，误点代价大
+              if (
+                !window.confirm(
+                  "将一次性确认全部 " +
+                    items.length +
+                    " 项改动，其中删除不可撤销。确定继续吗？",
+                )
+              ) {
+                return;
+              }
+              allBtn.disabled = true;
+              allBtn.textContent = "正在全部确认…";
+              Promise.resolve()
+                .then(function () {
+                  return capability.confirmAllDeletions();
+                })
+                .then(function (report) {
+                  notice(report);
+                  renderPendingInto(target);
+                  renderPendingDeletions();
+                })
+                .catch(function (error) {
+                  allBtn.disabled = false;
+                  allBtn.textContent = "全部确认（" + items.length + " 项）";
+                  notice(
+                    "批量确认失败：" +
+                      (error && error.message ? error.message : String(error)),
+                  );
+                });
+            });
+            allRow.appendChild(allBtn);
+            var allHint = document.createElement("span");
+            allHint.style.cssText =
+              "margin-left:8px;color:#6b7280;font-size:12px";
+            allHint.textContent =
+              deleteCount > 0
+                ? "含删除 —— 确认前请核对上面每一项"
+                : "新建类操作，仍会进 Zotero 撤销栈";
+            allRow.appendChild(allHint);
+            target.appendChild(allRow);
+          }
+
           items.forEach(function (item, index) {
             var row = document.createElement("div");
             row.style.cssText = "padding:4px 0;border-top:1px solid #fcd34d";

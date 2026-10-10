@@ -1,24 +1,25 @@
-<!DOCTYPE html>
+<?xml version="1.0" encoding="UTF-8"?>
 <!--
   新手引导（首次启动时自动弹出一次）。
 
-  ## 为什么是一个独立页面而不是一串弹窗
+  ## ⚠️ 头两行为什么是现在这样（真机故障：整页露出代码）
 
-  首次启动时用户需要同时知道三件不同性质的事：
-    1. <strong>它要做什么</strong>（在 Zotero 里放一个能读写文献库的 Agent）；
-    2. <strong>它现在在准备什么</strong>（首次要提取约 330 MB 运行时，10–30 秒，这是<strong>等待</strong>，
-       不是"卡住了"—— 这一点不说清，用户会以为插件坏了）；
-    3. <strong>装好之后从哪开始</strong>（右键分类/条目建会话）。
-  用三个 `alert()` 逐一弹会打断、也没法回看；放在一个页面里可以随时重开
-  （设置页有「重新显示新手引导」，见 onboarding.ts）。
+  用户反馈这个窗口把**整个文件当纯文本显示**了 —— 连 `<style>` 内容和
+  `<script>` 里的注释都原样可见，说明浏览器没有把它当文档解析。
 
-  ## 与 session.xhtml 的关系
+  排查结论与修法（对照本项目里**确实能正常渲染**的两个页面）：
+    - `preferences.xhtml` 由 Zotero 的原生设置机制加载，**没有 doctype、
+      但有 XML 声明**（它首行是 `<linkset>`，同样被当作 XML 处理）；
+    - `session.xhtml` 走 `Zotero.openInViewer`，没有 doctype；
+    - 本文件原先写的是 `<!DOCTYPE html>`（HTML5 的 doctype）—— 而它由
+      `openDialog` 打开、按 **XML** 解析，`html` 这个 doctype 名指的不是
+      XHTML 的文档类型定义。
 
-  结构照搬 `session.xhtml` 的最小形态：<strong>纯静态内容 + 一个「知道了」按钮</strong>。
-  它不需要与插件通信（没有要注入的能力），所以这里<strong>没有</strong>任何轮询/握手逻辑 ——
-  能静态就不要动态，少一层会坏的机制。
+  所以现在：**加 XML 声明**（和 Zotero 自己的 `.xhtml` 对话框一致，
+  它们全都以 `<?xml version="1.0"?>` 开头），并给 `<html>` 显式声明
+  XHTML 命名空间，避免解析器对文档类型产生歧义。
 -->
-<html lang="zh-CN">
+<html xmlns="http://www.w3.org/1999/xhtml" lang="zh-CN">
   <head>
     <meta charset="utf-8" />
     <title>欢迎使用 DSH-for-Zotero</title>

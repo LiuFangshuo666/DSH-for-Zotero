@@ -7,11 +7,24 @@ export default defineConfig({
   name: pkg.config.addonName,
   id: pkg.config.addonID,
   namespace: pkg.config.addonRef,
-  updateURL: `https://github.com/{{owner}}/{{repo}}/releases/download/release/${
+  /**
+   * ⚠️ 这两项**默认值是 GitHub 的**，而本仓库托管在 Gitee —— 不改的话会生成
+   * `https://github.com/<owner>/<repo>/...` 这样的地址，而那个仓库并不存在。
+   *
+   * 脚手架会把这个值原样写进 `manifest.json` 的 `update_url`（见
+   * `zotero-plugin-scaffold` 的 `buildManifest`），Zotero 据此检查更新。
+   * 指向不存在的地址不会让插件坏掉，但会让更新检查一直失败，
+   * 而且**给人一种"有自动更新"的错觉**。
+   *
+   * 现状：本项目**尚未开通自动更新**（需要把 `update.json` 传到发布页，
+   * 且它由 GitHub Actions 的 release 工作流生成 —— 见 .github/workflows/release.yml）。
+   * 如果将来在 Gitee 上做这件事，把下面两行换成真实的发布地址即可。
+   */
+  updateURL: `https://gitee.com/laofashi666/dsh-for-zotero/releases/download/release/${
     pkg.version.includes("-") ? "update-beta.json" : "update.json"
   }`,
   xpiDownloadLink:
-    "https://github.com/{{owner}}/{{repo}}/releases/download/v{{version}}/{{xpiName}}.xpi",
+    "https://gitee.com/laofashi666/dsh-for-zotero/releases/download/v{{version}}/{{xpiName}}.xpi",
 
   build: {
     assets: ["addon/**/*.*"],
