@@ -8,21 +8,46 @@ export default defineConfig({
   id: pkg.config.addonID,
   namespace: pkg.config.addonRef,
   /**
-   * ⚠️ 这两项**默认值是 GitHub 的**，而本仓库托管在 Gitee —— 不改的话会生成
-   * `https://github.com/<owner>/<repo>/...` 这样的地址，而那个仓库并不存在。
+   * # 自动更新的两个地址（都已实测，不要凭脚手架的默认值想当然）
    *
-   * 脚手架会把这个值原样写进 `manifest.json` 的 `update_url`（见
-   * `zotero-plugin-scaffold` 的 `buildManifest`），Zotero 据此检查更新。
-   * 指向不存在的地址不会让插件坏掉，但会让更新检查一直失败，
-   * 而且**给人一种"有自动更新"的错觉**。
+   * 脚手架把 `updateURL` 原样写进 `manifest.json` 的 `update_url`（见
+   * `zotero-plugin-scaffold` 的 `buildManifest`），Zotero 据此**检查更新**；
+   * `xpiDownloadLink` 则写进 `update.json` 的 `update_link`，是**下载**地址。
    *
-   * 现状：本项目**尚未开通自动更新**（需要把 `update.json` 传到发布页，
-   * 且它由 GitHub Actions 的 release 工作流生成 —— 见 .github/workflows/release.yml）。
-   * 如果将来在 Gitee 上做这件事，把下面两行换成真实的发布地址即可。
+   * ## ⚠️ 脚手架的默认值是 GitHub 的，照抄会得到一个不存在的地址
+   *
+   * 默认值是 `https://github.com/{{owner}}/{{repo}}/releases/download/release/…`。
+   * 本仓库在 Gitee，`{{owner}}/{{repo}}` 会被填成 `laofashi666/dsh-for-zotero` ——
+   * 于是拼出一个 GitHub 上并不存在的仓库。
+   *
+   * ## 实测结论（2026-10，用真实请求验证过）
+   *
+   * ```text
+   *   releases/download/v0.2.1/dsh-for-zotero.xpi   → 200, application/zip, 197135 B
+   *                                                   前 4 字节 50 4B 03 04（zip 魔数）✅
+   *   releases/download/release/update.json         → 404 ❌
+   *   raw/main/update.json（Gitee 原始文件路径）      → 200，匿名可读 ✅
+   * ```
+   *
+   * 结论：
+   *  - **`update_link` 用 releases 路径可行**（只要该版本打过 tag 并建了 Release，
+   *    附件就匿名可下）—— 所以 `xpiDownloadLink` 保持 releases 形态；
+   *  - **`update_url` 不能用 releases 路径**：那要求存在一个**名为 `release` 的
+   *    Release** 来托管清单文件，只打版本 tag 是不够的，于是必然 404。
+   *    改用 **`raw/main/update.json`** —— 它随仓库同步、匿名可读、
+   *    **在版本控制里**（谁都能看出当前对外宣称的版本是哪个），而且
+   *    Zotero 中文社区的几个插件用的就是这套写法。
+   *
+   * ## 因此每次发版多一步
+   *
+   * 改完 `package.json` 的版本后跑 `npm run update:json`，它按当前版本重写
+   * 仓库根目录的 `update.json`（含 `update_hash`），然后与代码一起提交。
+   * 忘了跑这一步的后果是**更新检查拿到旧版本号**，用户升不上去 ——
+   * 所以 `tools/make-update-json.mjs` 会在版本与 `package.json` 不一致时
+   * **主动报错退出**，不给"静默生成一个过时清单"的机会。
    */
-  updateURL: `https://gitee.com/laofashi666/dsh-for-zotero/releases/download/release/${
-    pkg.version.includes("-") ? "update-beta.json" : "update.json"
-  }`,
+  updateURL:
+    "https://gitee.com/laofashi666/dsh-for-zotero/raw/main/update.json",
   xpiDownloadLink:
     "https://gitee.com/laofashi666/dsh-for-zotero/releases/download/v{{version}}/{{xpiName}}.xpi",
 

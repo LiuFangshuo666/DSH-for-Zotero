@@ -216,18 +216,27 @@ C 位归零）。
 发布流程：
 
 ```powershell
-npm version 0.2.0 --no-git-tag-version   # 同步 package.json 与 package-lock.json
+npm version 0.2.1 --no-git-tag-version   # 同步 package.json 与 package-lock.json
 npm run verify                            # 确认构建/测试/产物都过
-git commit -am "chore: bump version to 0.2.0"
+npm run update:json                       # ⚠️ 必跑：发布自动更新清单（见下）
+git commit -am "chore: release 0.2.1"
 
-git tag -a v0.2.0 -m "0.2.0"              # 附注标签，写清这个版本改了什么
+git tag -a v0.2.1 -m "0.2.1"              # 附注标签，写清这个版本改了什么
 git push gitee main
-git push gitee v0.2.0                     # ⚠️ 只推**这一个**标签
+git push gitee v0.2.1                     # ⚠️ 只推**这一个**标签
+
+# 最后一步在网页上：Gitee → 发行版 → 为 v0.2.1 建 Release，
+# 上传 .scaffold/build/dsh-for-zotero.xpi
 ```
+
+> ### ⚠️ 第 4 步不能省
+>
+> `update.json` 里的 `update_link` 指向 **Release 附件**。只推 tag、不建 Release
+> 的话，用户点更新会**下载到 404** —— 而你自己那边看不出任何异常。
 
 > ⚠️ **不要用 `git push --tags`。** 本仓库的历史是从脚手架模板重建的，**模板作者
 > 的 40 个发布标签曾一并被带进来**（`v1.1.0` … `v3.1.0`），与这里的 A.B.C 规则
-> 完全冲突 —— 我们才到 `0.2.0`，却会冒出 `v3.1.0`。那些标签已删除；一旦有人用
+> 完全冲突 —— 我们才到 `0.2.1`，却会冒出 `v3.1.0`。那些标签已删除；一旦有人用
 > `--tags` 推送，就会重新出现。**按标签名逐个推**。
 >
 > 如果确实需要批量推送，先确认待推列表：
@@ -236,6 +245,50 @@ git push gitee v0.2.0                     # ⚠️ 只推**这一个**标签
 > 版本号**只有一个来源**：`package.json`。`addon/manifest.json` 里的
 > `"version": "__buildVersion__"` 由构建时注入；设置页显示的版本同样是构建注入的。
 > 所以**不要手工去改 manifest**，改了也会被覆盖。
+
+### 自动更新
+
+Zotero 用的是 Firefox 的扩展更新机制，两个地址配合：
+
+```text
+  manifest.json 的 update_url   →  Zotero 定期取这个 JSON，比对版本号
+  update.json 的 update_link    →  有新版时下载这个 xpi
+  update.json 的 update_hash    →  下载后校验（sha512），防止下到坏文件
+```
+
+| 环节          | 地址                                             | 谁生成                    |
+| ------------- | ------------------------------------------------ | ------------------------- |
+| `update_url`  | `…/raw/main/update.json`                         | `zotero-plugin.config.ts` |
+| `update_link` | `…/releases/download/v{版本}/dsh-for-zotero.xpi` | 同上                      |
+| 清单文件本身  | 仓库根目录的 `update.json`                       | `npm run update:json`     |
+
+**为什么清单放在仓库根目录、而不放 Release 附件里**（这是实测结论，不是偏好）：
+
+```text
+  releases/download/release/update.json   →  404
+    要它可用，得有一个叫 release 的 Release 专门托管清单文件；只打版本 tag 不够
+  raw/main/update.json                    →  200，匿名可读 ✅
+```
+
+`npm run update:json` 做的事是**校验 + 搬运**，而不是自己拼一份：
+
+- 脚手架 `npm run build` 已经在 `.scaffold/build/update.json` 生成内容正确的清单
+  （版本、地址、sha512、Zotero 版本范围都由它推导）；
+- 脚本会核对**版本与 `package.json` 一致**、地址是 Gitee 而非脚手架的 GitHub 默认值、
+  哈希形状正确，**并且真的把 xpi 读一遍验哈希**；
+- 任一条不过就**报错退出**，不发布。
+
+> 之所以"不宽容"：清单里的版本若落后于 `package.json`，后果是**用户永远收不到新版**
+> 而发布者以为已经发出去了。这类静默失效在本项目里出现过太多次。
+
+预发布版本（`0.3.0-beta.1` 这种）走 `update-beta.json`，正式用户不会被推上 beta。
+
+> ### ⚠️ `addonID` 一旦有用户就不能再改
+>
+> 自动更新是按 **`addonID`** 匹配的（现在是 `dsh-for-zotero@local.dev`）。
+> 改了它，Zotero 会当成**另一个插件**：已有用户收不到更新，且会被要求重装。
+> 如果打算上官方插件市场（通常要求非 `local` 的 ID），**现在就改**——
+> 等有了用户再改，代价是让所有人重装一次。
 
 ### 测试分两层
 
