@@ -152,6 +152,22 @@ async function main() {
   // 复制后原样写回一次，保证以 LF 与结尾换行落盘（Windows 上 copyFile 不转换）
   await writeFile(outPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 
+  /**
+   * ## 线上校验：这一步抓到的正是"清单与线上附件不是同一份"
+   *
+   * 实测过一次真实故障：`update_url` 与 `update_link` 都返回 200，看起来完全正常，
+   * 但**线上的 xpi 与清单里的哈希不一致** —— Zotero 下载后会**校验失败并拒绝安装**，
+   * 而发布者在自己机器上跑什么都看不出问题（因为本地全是好的）。
+   *
+   * 根因是构建**不可重现**（产物嵌入构建时间）：打 tag 时线上是那一份，
+   * 之后任何一次 `npm run build` 都会产出不同字节，于是清单与线上附件错位。
+   *
+   * 所以这里主动去取一次线上附件并比对哈希。**取不到时不报错**（可能还没建 Release、
+   * 或本机离线），只提示 —— 因为那时问题在"还没上传"，而不是"传错了"。
+   */
+  const onlineNote = await verifyOnlineAsset(update);
+  if (onlineNote) console.log(onlineNote);
+
   console.log(`已发布 ${entryName}`);
   console.log(`  版本      ${version}${isPreRelease ? "（预发布）" : ""}`);
   console.log(`  下载地址  ${update.update_link}`);
@@ -182,6 +198,44 @@ function report() {
   for (const p of problems) console.error(`  ✗ ${p}`);
   console.error("");
   process.exit(1);
+}
+
+/**
+ * 取一次线上附件并与清单哈希比对。
+ *
+ * 返回值是一行**给人看的提示**（或 undefined）。这里刻意**不**把失败计入
+ * `problems`：附件不存在通常只说明 Release 还没建，那是发布流程的下一步，
+ * 不是配置错误。而"取到了但对不上"才是真问题 —— 那种情况必须说清楚。
+ */
+async function verifyOnlineAsset(update) {
+  const url = update.update_link;
+  try {
+    // 只下载一次；超时短一点，避免离线环境下卡住发版流程
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!response.ok) {
+      return `  ⓘ 线上附件还取不到（HTTP ${response.status}）—— 若尚未在 Gitee 建 Release 并上传 xpi，这是预期的。`;
+    }
+    const bytes = Buffer.from(await response.arrayBuffer());
+    const online = `sha512:${createHash("sha512").update(bytes).digest("hex")}`;
+    if (online === update.update_hash) {
+      return "  ✓ 线上附件与清单哈希一致 —— Zotero 会自动更新成功。";
+    }
+    return (
+      `  ⚠️ 线上附件与清单**不是同一份**！\n` +
+      `      清单 ${String(update.update_hash).slice(0, 40)}…\n` +
+      `      线上 ${online.slice(0, 40)}…\n` +
+      `     Zotero 下载后会校验失败并拒绝安装。\n` +
+      `     原因：构建不可重现（产物含构建时间），打 tag 之后又构建过。\n` +
+      `     处理：把**当前**产物重新上传为 v${update.version} 的 Release 附件。`
+    );
+  } catch (error) {
+    const why =
+      error?.name === "AbortError" ? "超时" : (error?.message ?? error);
+    return `  ⓘ 跳过线上校验（${why}）—— 离线或网络受限时正常。`;
+  }
 }
 
 await main();

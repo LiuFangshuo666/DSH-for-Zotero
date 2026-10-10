@@ -94,6 +94,9 @@ export default zotero({
           Buffer: "readonly",
           setTimeout: "readonly",
           clearTimeout: "readonly",
+          // Node 18+ 起是全局 —— 发布脚本用它做一次线上附件校验
+          fetch: "readonly",
+          AbortController: "readonly",
         },
       },
     },
