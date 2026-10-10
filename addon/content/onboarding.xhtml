@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<!--
+  新手引导（首次启动时自动弹出一次）。
+
+  ## 为什么是一个独立页面而不是一串弹窗
+
+  首次启动时用户需要同时知道三件不同性质的事：
+    1. <strong>它要做什么</strong>（在 Zotero 里放一个能读写文献库的 Agent）；
+    2. <strong>它现在在准备什么</strong>（首次要提取约 330 MB 运行时，10–30 秒，这是<strong>等待</strong>，
+       不是"卡住了"—— 这一点不说清，用户会以为插件坏了）；
+    3. <strong>装好之后从哪开始</strong>（右键分类/条目建会话）。
+  用三个 `alert()` 逐一弹会打断、也没法回看；放在一个页面里可以随时重开
+  （设置页有「重新显示新手引导」，见 onboarding.ts）。
+
+  ## 与 session.xhtml 的关系
+
+  结构照搬 `session.xhtml` 的最小形态：<strong>纯静态内容 + 一个「知道了」按钮</strong>。
+  它不需要与插件通信（没有要注入的能力），所以这里<strong>没有</strong>任何轮询/握手逻辑 ——
+  能静态就不要动态，少一层会坏的机制。
+-->
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>欢迎使用 DSH-for-Zotero</title>
+    <style>
+      body {
+        font-family: system-ui, "Segoe UI", sans-serif;
+        margin: 0;
+        padding: 22px 26px;
+        line-height: 1.7;
+        color: #1f2937;
+        background: #fafafa;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0 0 4px;
+      }
+      .sub {
+        color: #6b7280;
+        font-size: 13px;
+        margin-bottom: 18px;
+      }
+      section {
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 12px 14px;
+        margin-bottom: 12px;
+      }
+      h2 {
+        font-size: 15px;
+        margin: 0 0 6px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .num {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: #2563eb;
+        color: #fff;
+        font-size: 12px;
+        flex: 0 0 20px;
+      }
+      p {
+        margin: 0 0 6px;
+      }
+      ul {
+        margin: 4px 0 0;
+        padding-left: 20px;
+      }
+      li {
+        margin: 2px 0;
+      }
+      code,
+      kbd {
+        background: #f3f4f6;
+        border-radius: 3px;
+        padding: 1px 5px;
+        font-family: ui-monospace, Consolas, monospace;
+        font-size: 12px;
+      }
+      .note {
+        color: #92400e;
+        background: #fffbeb;
+        border: 1px solid #fcd34d;
+        border-radius: 6px;
+        padding: 8px 10px;
+        font-size: 13px;
+        margin-top: 6px;
+      }
+      footer {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-top: 16px;
+      }
+      button {
+        font: inherit;
+        font-weight: 600;
+        padding: 6px 18px;
+        border-radius: 6px;
+        border: 1px solid #2563eb;
+        background: #2563eb;
+        color: #fff;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #1d4ed8;
+      }
+      .hint {
+        color: #6b7280;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>欢迎使用 DSH-for-Zotero</h1>
+    <div class="sub">
+      在 Zotero 里用 DeepSeek Harness 的 Agent 读文献 ——
+      它能读你的论文全文与划注， 也能改标签、加笔记、建条目。
+    </div>
+
+    <section>
+      <h2><span class="num">1</span>它在准备自己的运行时</h2>
+      <p>
+        插件会在 Zotero 数据目录下准备一份<strong>独立的</strong> dsh
+        运行时（独立端口与凭据， 与你桌面版的 Harness 互不干扰）。
+      </p>
+      <p>
+        首次需要从本机 Harness 提取约 330 MB，大约 <strong>10–30 秒</strong>。
+      </p>
+      <div class="note">
+        ⚠️ 这段时间会看到一个进度窗口。如果显示「找不到 DeepSeek Harness
+        安装」， 说明本机没装或装在别处 —— 到
+        <code>编辑 → 设置 → DSH-for-Zotero</code> 里指定安装目录即可。
+      </div>
+    </section>
+
+    <section>
+      <h2><span class="num">2</span>从右键菜单建一个会话</h2>
+      <ul>
+        <li>
+          <strong>按分类读</strong>：在文献库界面右键一个<strong>分类</strong> →
+          <code>新建独立会话</code
+          >。它的工作区就是这个分类，适合"把这几篇对比一下"。
+        </li>
+        <li>
+          <strong>按单篇读</strong>：右键一个<strong>条目</strong> →
+          <code>新建会话</code>。工作区就是这篇文献。
+        </li>
+      </ul>
+      <p class="hint">
+        会话会作为一个真实的 Zotero 附件挂在库里，双击即可打开继续对话。
+      </p>
+    </section>
+
+    <section>
+      <h2><span class="num">3</span>它能改你的文献库，但危险操作要你点确认</h2>
+      <ul>
+        <li>
+          改标签、加笔记、加入分类 —— 直接执行，<kbd>Ctrl</kbd>+<kbd>Z</kbd>
+          可撤销。
+        </li>
+        <li>
+          <strong>新建条目</strong>与<strong>删除</strong> ——
+          会先在会话页顶部出现黄色角标 「有 N
+          项改动等你确认」，你点确认后才真正执行。
+        </li>
+      </ul>
+      <div class="note">
+        如果自检或问答有问题，<code>设置 → DSH-for-Zotero → 自检</code>
+        会给出逐项结论， 并可导出到数据目录下的
+        <code>dsh-for-zotero-selfcheck.txt</code>。
+      </div>
+    </section>
+
+    <footer>
+      <button id="dismiss" type="button">知道了，开始用</button>
+      <span class="hint">随时可在设置页重新打开这个引导。</span>
+    </footer>
+
+    <script>
+      // 纯静态页面：唯一的交互是关掉自己。
+      // 不做任何与插件的通信 —— 没有要注入的能力，能静态就不要动态。
+      document.getElementById("dismiss").addEventListener("click", function () {
+        window.close();
+      });
+    </script>
+  </body>
+</html>

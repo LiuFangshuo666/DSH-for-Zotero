@@ -1,0 +1,41 @@
+pref-title = DSH-for-Zotero
+pref-help = { $name } version { $version } (built { $time })
+
+# ── Isolated runtime (the only mode) ─────────────────────
+pref-isolated = Isolated runtime
+pref-isolated-desc = The plugin prepares its own dsh runtime with a separate DSH_HOME, port and credentials, fully independent of the local desktop Harness. The first preparation extracts about 330 MB from the local Harness and takes roughly 10-30 seconds.
+pref-isolated-port = Isolated port
+pref-isolated-port-hint = Deliberately avoids the desktop's 19387 so both can run at once
+pref-harness-dir = Harness install directory
+pref-runtime-status = Runtime status:
+pref-runtime-unknown = unknown (the plugin prepares it shortly after startup)
+
+# ── Self-check ───────────────────────────────────────────
+pref-selfcheck = Self-check
+pref-selfcheck-desc = Checks the runtime, authentication and model calls. The result is also written to dsh-for-zotero-selfcheck.txt in the data directory for offline inspection. The "Onboarding" button on the right reopens the first-run explanation at any time.
+pref-selfcheck-idle = Self-check has not run yet
+
+# ── Reader side panel (the session page ignores these) ───
+pref-reader = Reader side panel
+pref-reader-desc = These settings apply only to the side panel while reading a PDF; the session page does not read them.
+pref-chunk-bytes = Full-text chunk size (bytes)
+pref-chunk-bytes-hint = dsh's read tool caps out around 50 KiB per call; 40960 is a safe value
+pref-confirm-first =
+    .label = Confirm before the first time paper content is sent to the agent
+pref-streaming =
+    .label = Try token-by-token streaming (will not succeed in this environment, see below)
+pref-streaming-hint = Streaming needs a WebSocket, and the handshake needs the login cookie; the sandbox cannot write the cookie jar, so the attempt fails and falls back to showing the answer once it is complete. Leaving it on is harmless, it just costs one doomed attempt per question; turning it off keeps the diagnostic log cleaner.
+pref-answer-language = Answer language
+pref-highlight-color = Highlight colour
+pref-highlight-color-hint = A Zotero palette value; the default yellow is #ffd400
+pref-custom-commands-hint = A JSON array whose entries carry label and instruction fields, e.g. "Reviewer view / list three main reviewer concerns"; empty means the five built-ins only
+
+# ── Advanced (includes what gets written into your dsh home) ─
+pref-advanced = Advanced
+pref-request-timeout = Request timeout
+pref-request-timeout-hint = Per-request timeout for dsh in milliseconds (default 15000). Raise it on slow machines or for long tasks.
+pref-install-skill =
+    .label = Install the reading skill into DSH_HOME/skills
+pref-install-agents =
+    .label = Write standing instructions into DSH_HOME/AGENTS.md
+pref-install-hint = Run the self-check above after changing these: ticking installs/updates, unticking removes. Only our own content is touched; the rest of AGENTS.md is left alone.

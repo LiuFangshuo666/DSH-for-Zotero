@@ -1,0 +1,60 @@
+name: CI
+
+# ⚠️ 这份工作流是**给 GitHub 用的**。
+#
+# 本仓库的主要托管在 Gitee，而 **Gitee 不执行 `.github/workflows/`** ——
+# 它用自己的「Gitee Go」，流水线配置格式也不同。所以这份文件在 Gitee 上
+# **不会运行**，它只在以下两种情况有意义：
+#
+#   1. 仓库同时镜像到 GitHub；
+#   2. 有人 fork 到 GitHub 后跑 CI。
+#
+# 无论有没有 CI，**提交前请在本地跑 `npm run verify`**
+# （构建 + 单元测试 + 产物核验），那才是本项目的验收基线。
+#
+# 另外注意：`npm run test`（集成测试）需要**真实 Zotero + 图形环境**，
+# 在 CI 容器里**必然失败**，因此这里只跑单元测试。
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint:check
+
+      - name: Build
+        run: npm run build
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: Verify build artifact
+        run: node tools/verify-bundle.mjs
+
+      - name: Upload xpi
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-for-zotero-xpi
+          path: .scaffold/build/*.xpi

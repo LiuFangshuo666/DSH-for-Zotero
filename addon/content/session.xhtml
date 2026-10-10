@@ -1,0 +1,331 @@
+<!--
+  DSH 会话窗口。
+
+  这是 sessionPane 的「窗口」按钮打开的页面。此前**这个文件根本不存在**，
+  所以按钮虽然报了"已在新窗口打开"，打开的却是一个空白/无标题窗口 ——
+  真机反馈"按钮没有实际功能"的直接原因。
+
+  页面结构：
+    - 顶部：会话标题与范围说明
+    - 中部：历史问答（从 dsh 投影 + 日志读取）
+    - 底部：提问输入框
+
+  安全：所有文本一律用 textContent 写入，绝不拼接 HTML（历史里可能含论文原文与
+  模型输出的任何字符）。样式用内联 style，避免额外依赖 CSS 文件。
+-->
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta charset="utf-8" />
+    <title>DSH 会话</title>
+    <!--
+      取 Zotero 全局。
+
+      本页有两种打开方式：
+        1. sessionPane 的「窗口」按钮 → openDialog，能力绑在窗口对象上（属性注入）；
+        2. **条目下的附件双击** → 网页链接指向 chrome:// 时，Zotero 走
+           `Zotero.openInViewer(uri)`（zoteroPane.js:5010），此时**没有**属性注入，
+           靠 `Zotero.DSHForZotero` 全局入口 + URL 里的 `?session=<id>`。
+
+      第 2 种是"双击附件即进入交互界面"的实现方式。加载 include.js 即可获得
+      `Zotero` 全局 —— 这正是 Zotero 自己的 reader.xhtml / note.xhtml 的做法。
+      加载失败不影响第 1 种（脚本里对两种情况都有兜底）。
+    -->
+    <script
+      src="chrome://zotero/content/include.js"
+      onerror="window.__DSH_INCLUDE_FAILED__ = true"
+    ></script>
+    <!--
+      助手回答按 Markdown 渲染，因此需要基础排版样式（标题、代码块、表格、引用、列表）。
+      只作用于 `.dsh-md`（助手气泡），用户提问保持纯文本。
+
+      安全前提见 sessionPage.js 里 renderMarkdown 的说明：文本先整体转义，
+      只插入我们自己生成的标签，因此这里的样式不可能被内容注入影响。
+    -->
+    <style>
+      .dsh-md > :first-child {
+        margin-top: 0;
+      }
+      .dsh-md > :last-child {
+        margin-bottom: 0;
+      }
+      .dsh-md p {
+        margin: 0.45em 0;
+      }
+      .dsh-md h1,
+      .dsh-md h2,
+      .dsh-md h3,
+      .dsh-md h4,
+      .dsh-md h5,
+      .dsh-md h6 {
+        margin: 0.7em 0 0.35em;
+        line-height: 1.3;
+      }
+      .dsh-md h1 {
+        font-size: 16px;
+      }
+      .dsh-md h2 {
+        font-size: 15px;
+      }
+      .dsh-md h3 {
+        font-size: 14px;
+      }
+      .dsh-md h4,
+      .dsh-md h5,
+      .dsh-md h6 {
+        font-size: 13px;
+      }
+      .dsh-md ul,
+      .dsh-md ol {
+        margin: 0.4em 0;
+        padding-left: 1.5em;
+      }
+      .dsh-md li {
+        margin: 0.15em 0;
+      }
+      .dsh-md code {
+        font-family: ui-monospace, Consolas, monospace;
+        font-size: 12px;
+        background: #f3f4f6;
+        padding: 1px 4px;
+        border-radius: 3px;
+      }
+      .dsh-md pre.dsh-code {
+        background: #f8fafc;
+        border: 1px solid #e5e7eb;
+        border-radius: 5px;
+        padding: 7px 9px;
+        margin: 0.5em 0;
+        overflow-x: auto;
+        white-space: pre;
+      }
+      .dsh-md pre.dsh-code code {
+        background: none;
+        padding: 0;
+      }
+      .dsh-md blockquote {
+        margin: 0.5em 0;
+        padding: 2px 0 2px 9px;
+        border-left: 3px solid #d1d5db;
+        color: #4b5563;
+      }
+      .dsh-md table.dsh-table {
+        border-collapse: collapse;
+        margin: 0.5em 0;
+      }
+      .dsh-md table.dsh-table th,
+      .dsh-md table.dsh-table td {
+        border: 1px solid #e5e7eb;
+        padding: 3px 7px;
+        text-align: left;
+      }
+      .dsh-md table.dsh-table th {
+        background: #f3f4f6;
+        font-weight: 600;
+      }
+      .dsh-md hr {
+        border: none;
+        border-top: 1px solid #e5e7eb;
+        margin: 0.7em 0;
+      }
+      .dsh-md a {
+        color: #1d4ed8;
+      }
+    </style>
+  </head>
+  <body
+    style="
+      margin: 0;
+      padding: 0;
+      font-family: system-ui, sans-serif;
+      font-size: 13px;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      background: #fafafa;
+      color: #222;
+    "
+  >
+    <div
+      id="header"
+      style="
+        padding: 8px 12px;
+        border-bottom: 1px solid #ddd;
+        background: #fff;
+        flex-shrink: 0;
+      "
+    >
+      <div id="header-badge" style="margin-top: 4px">
+        <!--
+          待确认角标：有待确认改动时常驻显示、可点击。
+          真机反馈"我没看到确认界面" —— 待确认区在页面下方，滚动或分心就错过，
+          而 Agent 正等着、条目一直不落地。角标在最上方，保证一定看得见。
+        -->
+        <div
+          id="pending-badge"
+          style="
+            display: none;
+            cursor: pointer;
+            background: #fef3c7;
+            border: 1px solid #fcd34d;
+            color: #92400e;
+            border-radius: 4px;
+            padding: 3px 8px;
+            font-size: 12px;
+            font-weight: 600;
+          "
+        ></div>
+        <!--
+          角标点开后**就地展开**的内容容器。
+          真机反馈"点不开"：待确认区与消息区是并列兄弟节点、各有 overflow，
+          滚动消息区并不会露出上面那块。放在角标下面，点击必然有结果。
+        -->
+        <div
+          id="pending-inline"
+          style="
+            display: none;
+            margin-top: 4px;
+            padding: 4px 6px;
+            background: #fffbeb;
+            border: 1px solid #fcd34d;
+            border-radius: 4px;
+            font-size: 12px;
+            color: #78350f;
+            max-height: 40vh;
+            overflow-y: auto;
+          "
+        ></div>
+      </div>
+      <div id="title" style="font-weight: 600">DSH 会话</div>
+      <div
+        id="meta"
+        style="opacity: 0.7; font-size: 12px; margin-top: 2px"
+      ></div>
+      <!--
+        工作区面板：显示这条会话绑定的目录与其材料清单。
+
+        为什么要有它：官方 dsh web 无法绑定到某条会话（实测 URL 参数被忽略、
+        前端没有任何路由），所以"会话 ↔ 工作区"的绑定只能在插件自己的界面里体现。
+        用户由此能确认 Agent 到底在哪个目录、看得到哪些材料。
+      -->
+      <details id="workspace-box" style="margin-top: 6px">
+        <summary style="cursor: pointer; font-size: 12px; opacity: 0.8">
+          工作区与材料
+        </summary>
+        <div
+          id="workspace-path"
+          style="
+            font-family: ui-monospace, Consolas, monospace;
+            font-size: 11px;
+            margin: 4px 0;
+            word-break: break-all;
+            opacity: 0.85;
+          "
+        ></div>
+        <div id="workspace-files" style="font-size: 12px"></div>
+        <!--
+          「刷新材料」：用当前版本重写工作区里的说明文件。
+          说明是**建会话时的快照**，插件功能改过之后老会话会留着旧说明，
+          Agent 照着旧说明做事就会出现"看起来没干活"（真机反馈过）。
+        -->
+        <div id="workspace-refresh" style="margin-top: 6px"></div>
+      </details>
+    </div>
+
+    <!--
+      待确认的结构性改动（新建条目 / 删除）：默认隐藏，有请求时才有内容。
+      用户的安全边界是"读+写自由，仅删除需确认"，执行权必须留在用户手里。
+      ⚠️ 位置在**消息区之前**：放在下面时用户滚动或分心就会错过（真机反馈"我没看到确认界面"）。
+    -->
+    <div
+      id="pending-deletions"
+      style="
+        display: none;
+        flex-shrink: 0;
+        background: #fef2f2;
+        border-top: 1px solid #fecaca;
+        border-bottom: 1px solid #fecaca;
+        padding: 6px 10px;
+        font-size: 12px;
+        max-height: 40vh;
+        overflow-y: auto;
+      "
+    ></div>
+
+    <!--
+      Agent 的提问与选项（ask_user_question）。默认隐藏。
+      选项在**工具调用的参数**里，不在正文里 —— 所以必须单独一块来渲染，
+      否则用户只看到"有几件事要你定："却看不到选项，而模型一直阻塞等待。
+    -->
+    <div
+      id="ask-card"
+      style="
+        display: none;
+        flex-shrink: 0;
+        background: #eff6ff;
+        border-top: 1px solid #bfdbfe;
+        border-bottom: 1px solid #bfdbfe;
+        padding: 8px 10px;
+        font-size: 13px;
+        max-height: 45vh;
+        overflow-y: auto;
+      "
+    ></div>
+
+    <div
+      id="messages"
+      style="
+        flex: 1;
+        overflow-y: auto;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      "
+    ></div>
+
+    <div
+      id="composer"
+      style="
+        border-top: 1px solid #ddd;
+        background: #fff;
+        padding: 8px;
+        display: flex;
+        gap: 6px;
+        flex-shrink: 0;
+      "
+    >
+      <textarea
+        id="input"
+        rows="2"
+        placeholder="就这篇文献提问…（Enter 发送，Shift+Enter 换行）"
+        style="flex: 1; resize: vertical; font: inherit; padding: 4px"
+      ></textarea>
+      <button id="send" style="padding: 0 14px">发送</button>
+      <!--
+        「补充说明」：只在**生成期间**由脚本显示。
+        Agent 中途问"选 A 还是 B"时轮次还没结束 —— 这时用普通提问会排队到本轮之后，
+        用户会以为"发了没反应"，所以单独给一个语义明确的按钮走 steer。
+      -->
+      <button
+        id="steer"
+        style="padding: 0 14px; display: none; color: #1d4ed8"
+        title="把输入框内容作为补充送入正在进行的这一轮（用于回答 Agent 的提问）"
+      >
+        补充说明
+      </button>
+      <!--
+        「停止生成」：Agent 多步执行（并行工具、反复验证）时一轮可能跑很久。
+        此前唯一出路是等 180 秒超时、或关掉 Zotero —— 必须能主动取消。
+      -->
+      <button
+        id="stop"
+        style="padding: 0 14px; display: none; color: #b91c1c"
+        title="取消当前正在进行的这一轮（Agent 卡住或不想等时用）"
+      >
+        停止生成
+      </button>
+    </div>
+
+    <script src="sessionPage.js"></script>
+  </body>
+</html>

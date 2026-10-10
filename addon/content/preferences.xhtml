@@ -1,0 +1,273 @@
+<linkset>
+  <html:link rel="localization" href="__addonRef__-preferences.ftl" />
+</linkset>
+<groupbox
+  onload="Zotero.__addonInstance__.hooks.onPrefsEvent('load', { window })"
+>
+  <label><html:h2 data-l10n-id="pref-title"></html:h2></label>
+
+  <!--
+    ── 隔离运行时（唯一方式）────────────────────────────
+    ⚠️ 这里原有「使用隔离运行时」开关（`useIsolatedRuntime`）。
+    用户要求**删除共享模式、只允许隔离使用** —— 既然没有另一种模式可切，
+    开关就失去意义（关掉它不会切到别的模式，只会让插件连不上），故移除。
+    代码侧的对应分支也已删除（见 config.ts）。
+  -->
+  <label><html:h3 data-l10n-id="pref-isolated"></html:h3></label>
+  <description data-l10n-id="pref-isolated-desc"></description>
+  <hbox align="center">
+    <html:label
+      for="__addonRef__-isolated-port"
+      data-l10n-id="pref-isolated-port"
+    ></html:label>
+    <html:input
+      type="number"
+      id="__addonRef__-isolated-port"
+      preference="isolatedPort"
+      min="1024"
+      max="65535"
+      style="width: 90px"
+    ></html:input>
+    <label data-l10n-id="pref-isolated-port-hint"></label>
+  </hbox>
+  <hbox align="center">
+    <html:label
+      for="__addonRef__-harness-dir"
+      data-l10n-id="pref-harness-dir"
+    ></html:label>
+    <html:input
+      type="text"
+      id="__addonRef__-harness-dir"
+      preference="harnessDir"
+      style="width: 320px"
+    ></html:input>
+  </hbox>
+  <hbox align="center">
+    <label data-l10n-id="pref-runtime-status"></label>
+    <description
+      id="__addonRef__-runtime-status"
+      data-l10n-id="pref-runtime-unknown"
+    ></description>
+  </hbox>
+  <hbox align="center">
+    <button
+      id="__addonRef__-runtime-prepare"
+      label="准备运行时"
+      oncommand="
+        Zotero.__addonInstance__.hooks.onPrefsEvent('runtime-prepare', {
+          window,
+        })
+      "
+    ></button>
+    <button
+      id="__addonRef__-runtime-start"
+      label="启动"
+      oncommand="
+        Zotero.__addonInstance__.hooks.onPrefsEvent('runtime-start', { window })
+      "
+    ></button>
+    <button
+      id="__addonRef__-runtime-stop"
+      label="停止"
+      oncommand="
+        Zotero.__addonInstance__.hooks.onPrefsEvent('runtime-stop', { window })
+      "
+    ></button>
+  </hbox>
+
+  <!-- ── 自检（用户要求：从工具菜单搬到这里）────────────── -->
+  <label><html:h3 data-l10n-id="pref-selfcheck"></html:h3></label>
+  <description data-l10n-id="pref-selfcheck-desc"></description>
+  <hbox align="center">
+    <button
+      id="__addonRef__-selfcheck"
+      label="运行自检"
+      oncommand="
+        Zotero.__addonInstance__.hooks.onPrefsEvent('selfcheck', { window })
+      "
+    ></button>
+    <button
+      id="__addonRef__-selfcheck-stream"
+      label="含流式实测"
+      oncommand="
+        Zotero.__addonInstance__.hooks.onPrefsEvent('selfcheck-stream', {
+          window,
+        })
+      "
+    ></button>
+    <button
+      id="__addonRef__-deep-probe"
+      label="深度探测"
+      oncommand="
+        Zotero.__addonInstance__.hooks.onPrefsEvent('deep-probe', { window })
+      "
+    ></button>
+    <!--
+      新手引导：首次启动会自动弹一次；这里给一个随时重开的入口。
+      没有它，用户看漏了引导就再也找不回来（内容见 addon/content/onboarding.xhtml）。
+    -->
+    <button
+      id="__addonRef__-onboarding"
+      label="新手引导"
+      oncommand="
+        Zotero.__addonInstance__.hooks.onPrefsEvent('onboarding', { window })
+      "
+    ></button>
+  </hbox>
+  <description
+    id="__addonRef__-selfcheck-summary"
+    data-l10n-id="pref-selfcheck-idle"
+  ></description>
+  <html:textarea
+    id="__addonRef__-selfcheck-report"
+    readonly="readonly"
+    rows="14"
+    style="
+      width: 100%;
+      box-sizing: border-box;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 12px;
+    "
+  ></html:textarea>
+
+  <!--
+    ⚠️ 这里原有「会话挂载」选择（网页链接 / 文件链接 / 文件 / 子笔记）。
+    用户要求**只保留目前方案** —— 即网页链接（`web-link`，
+    指向插件自己的会话页，双击即在 Zotero 内打开可交互界面）。
+    其余三种形态（文件链接 / 文件 / 子笔记）都无法自己调用 dsh，只能看不能问，
+    留着只会让人选到"看起来一样、实际不能对话"的形态，故移除选择项。
+    代码侧现在只有一条挂载路径（见 `sessionPane.ts` 的 `mountSession`），
+    `sessionMount` 偏好与 `mountMode()` 都已删除。
+
+    ⚠️ 这里原有「怎么用」一节（三条说明）。用户要求移除。
+  -->
+
+  <!--
+    ⚠️ 这里原有「共享模式（回退用）」一整节：端口 / 认证方式 / DSH_HOME / 启动 URL。
+    用户要求**删除共享模式、只允许隔离使用** —— 代码侧的回退分支也已删除
+    （见 config.ts：`resolveRuntimeConfig()` 未就绪时返回 undefined，
+    调用方明确报"运行时未就绪"，不再偷偷连到桌面版实例）。
+    既然回退不存在了，这几项就没有任何作用，故整节移除。
+  -->
+
+  <!--
+    ── 阅读器面板 ───────────────────────────────────
+    ⚠️ 这一节的几项**只对阅读器侧栏面板生效**（代码依据：它们只被 readerPanel.ts 读取）。
+    真机反馈"设置里有很多没意义的内容"：原先它们散在「上下文」与「行为」两节里、
+    名字又很泛（"行为"），用户会以为改了能影响全局 —— 会话页其实完全不读它们。
+    所以按**实际生效范围**归到一节，标题写明限定。
+  -->
+  <label><html:h3 data-l10n-id="pref-reader"></html:h3></label>
+  <description data-l10n-id="pref-reader-desc"></description>
+  <hbox align="center">
+    <html:label
+      for="__addonRef__-chunk-bytes"
+      data-l10n-id="pref-chunk-bytes"
+    ></html:label>
+    <html:input
+      type="number"
+      id="__addonRef__-chunk-bytes"
+      preference="chunkBytes"
+      min="4096"
+      max="40960"
+      step="4096"
+      style="width: 100px"
+    ></html:input>
+  </hbox>
+  <label data-l10n-id="pref-chunk-bytes-hint"></label>
+  <checkbox
+    id="__addonRef__-confirm-first"
+    preference="confirmFirstSend"
+    data-l10n-id="pref-confirm-first"
+  />
+  <checkbox
+    id="__addonRef__-streaming"
+    preference="streaming"
+    data-l10n-id="pref-streaming"
+  />
+  <!--
+    ⚠️ 这条说明是**必要的**，不是装饰。
+    真机自检 + 内省已定位：流式需要 WebSocket，而 WebSocket 握手要带登录 cookie，
+    沙箱里 cookie 罐写不进去 —— 所以它在当前环境**基本不会成功**。
+    没有这条说明，用户会以为勾了就能逐字显示，然后反复排查"为什么没生效"。
+  -->
+  <description data-l10n-id="pref-streaming-hint"></description>
+  <hbox align="center">
+    <html:label
+      for="__addonRef__-answer-lang"
+      data-l10n-id="pref-answer-language"
+    ></html:label>
+    <menulist
+      id="__addonRef__-answer-lang"
+      preference="answerLanguage"
+      native="true"
+    >
+      <menupopup>
+        <menuitem label="中文" value="zh-CN"></menuitem>
+        <menuitem label="English" value="en-US"></menuitem>
+      </menupopup>
+    </menulist>
+  </hbox>
+  <hbox align="center">
+    <html:label
+      for="__addonRef__-highlight-color"
+      data-l10n-id="pref-highlight-color"
+    ></html:label>
+    <html:input
+      type="text"
+      id="__addonRef__-highlight-color"
+      preference="highlightColor"
+      style="width: 100px"
+    ></html:input>
+    <label data-l10n-id="pref-highlight-color-hint"></label>
+  </hbox>
+  <html:textarea
+    id="__addonRef__-custom-commands"
+    preference="customCommands"
+    rows="5"
+    style="width: 420px; font-family: monospace"
+  ></html:textarea>
+  <label data-l10n-id="pref-custom-commands-hint"></label>
+
+  <!--
+    ── 高级 ─────────────────────────────────────────
+    这里放"平时不用动、但出问题时需要调"的项。
+    `requestTimeoutMs` 原先**代码在读、设置页却没有** —— 用户既看不到、也改不了，
+    等于写死 15 秒（半成品残留）。现在暴露出来。
+  -->
+  <label><html:h3 data-l10n-id="pref-advanced"></html:h3></label>
+  <hbox align="center">
+    <html:label
+      for="__addonRef__-request-timeout"
+      data-l10n-id="pref-request-timeout"
+    ></html:label>
+    <html:input
+      type="number"
+      id="__addonRef__-request-timeout"
+      preference="requestTimeoutMs"
+      min="5000"
+      max="120000"
+      step="1000"
+      style="width: 110px"
+    ></html:input>
+    <label data-l10n-id="pref-request-timeout-hint"></label>
+  </hbox>
+  <checkbox
+    id="__addonRef__-install-skill"
+    preference="installSkill"
+    data-l10n-id="pref-install-skill"
+  />
+  <checkbox
+    id="__addonRef__-install-agents"
+    preference="installAgentInstructions"
+    data-l10n-id="pref-install-agents"
+  />
+  <label data-l10n-id="pref-install-hint"></label>
+
+  <vbox>
+    <label
+      data-l10n-id="pref-help"
+      data-l10n-args='{"time": "__buildTime__","name": "__addonName__","version":"__buildVersion__"}'
+    ></label>
+  </vbox>
+</groupbox>
