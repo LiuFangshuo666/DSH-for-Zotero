@@ -57,8 +57,10 @@ const codeTexts = codeFiles.map((f) => [f, readFileSync(f, "utf8")]);
  * 假报了三条失败。用词边界只匹配独立的属性名。
  */
 function boundPreferences() {
-  const names = [...page.matchAll(/(?:^|\s)preference="([^"]+)"/g)].map(
-    (m) => m[1],
+  const names = [...page.matchAll(/(?:^|\s)preference="([^"]+)"/g)].map((m) =>
+    // 源文件用的是 __prefsPrefix__ 占位符（构建时替换成完整键）。
+    // 这里剥掉前缀，取出**键名本身**用于与 prefs.js 的默认值对照。
+    m[1].replace(/^__prefsPrefix__\./, ""),
   );
   assert.ok(names.length > 0, "设置页应当绑定偏好");
   return names;

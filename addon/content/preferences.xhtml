@@ -23,7 +23,7 @@
     <html:input
       type="number"
       id="__addonRef__-isolated-port"
-      preference="isolatedPort"
+      preference="__prefsPrefix__.isolatedPort"
       min="1024"
       max="65535"
       style="width: 90px"
@@ -38,7 +38,7 @@
     <html:input
       type="text"
       id="__addonRef__-harness-dir"
-      preference="harnessDir"
+      preference="__prefsPrefix__.harnessDir"
       style="width: 320px"
     ></html:input>
   </hbox>
@@ -167,7 +167,7 @@
     <html:input
       type="number"
       id="__addonRef__-chunk-bytes"
-      preference="chunkBytes"
+      preference="__prefsPrefix__.chunkBytes"
       min="4096"
       max="40960"
       step="4096"
@@ -177,12 +177,12 @@
   <label data-l10n-id="pref-chunk-bytes-hint"></label>
   <checkbox
     id="__addonRef__-confirm-first"
-    preference="confirmFirstSend"
+    preference="__prefsPrefix__.confirmFirstSend"
     data-l10n-id="pref-confirm-first"
   />
   <checkbox
     id="__addonRef__-streaming"
-    preference="streaming"
+    preference="__prefsPrefix__.streaming"
     data-l10n-id="pref-streaming"
   />
   <!--
@@ -199,7 +199,7 @@
     ></html:label>
     <menulist
       id="__addonRef__-answer-lang"
-      preference="answerLanguage"
+      preference="__prefsPrefix__.answerLanguage"
       native="true"
     >
       <menupopup>
@@ -216,14 +216,14 @@
     <html:input
       type="text"
       id="__addonRef__-highlight-color"
-      preference="highlightColor"
+      preference="__prefsPrefix__.highlightColor"
       style="width: 100px"
     ></html:input>
     <label data-l10n-id="pref-highlight-color-hint"></label>
   </hbox>
   <html:textarea
     id="__addonRef__-custom-commands"
-    preference="customCommands"
+    preference="__prefsPrefix__.customCommands"
     rows="5"
     style="width: 420px; font-family: monospace"
   ></html:textarea>
@@ -297,8 +297,8 @@
     ></html:label>
     <menulist
       id="__addonRef__-model-id"
-      preference="modelId"
-      onsyncfrompreference="Zotero.__addonInstance__.hooks.onPrefsEvent('model-sync', { window, target: this })"
+      preference="__prefsPrefix__.modelId"
+      onsyncfrompreference="__prefsPrefix__.Zotero.__addonInstance__.hooks.onPrefsEvent('model-sync', { window, target: this })"
       style="min-width: 320px"
     >
       <menupopup />
@@ -319,8 +319,8 @@
     ></html:label>
     <menulist
       id="__addonRef__-model-effort"
-      preference="modelReasoningEffort"
-      onsyncfrompreference="Zotero.__addonInstance__.hooks.onPrefsEvent('model-sync', { window, target: this })"
+      preference="__prefsPrefix__.modelReasoningEffort"
+      onsyncfrompreference="__prefsPrefix__.Zotero.__addonInstance__.hooks.onPrefsEvent('model-sync', { window, target: this })"
       style="min-width: 220px"
     >
       <menupopup />
@@ -384,7 +384,7 @@
     <html:input
       type="number"
       id="__addonRef__-request-timeout"
-      preference="requestTimeoutMs"
+      preference="__prefsPrefix__.requestTimeoutMs"
       min="5000"
       max="120000"
       step="1000"
@@ -394,12 +394,12 @@
   </hbox>
   <checkbox
     id="__addonRef__-install-skill"
-    preference="installSkill"
+    preference="__prefsPrefix__.installSkill"
     data-l10n-id="pref-install-skill"
   />
   <checkbox
     id="__addonRef__-install-agents"
-    preference="installAgentInstructions"
+    preference="__prefsPrefix__.installAgentInstructions"
     data-l10n-id="pref-install-agents"
   />
   <label data-l10n-id="pref-install-hint"></label>

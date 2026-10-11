@@ -104,6 +104,54 @@ describe("设置页事件的分发表", function () {
   });
 });
 
+describe("控件与偏好的绑定（Zotero 7+ 要求**完整偏好键**）", function () {
+  it("源文件用 __prefsPrefix__ 占位符，不写短名也不写死前缀", function () {
+    const vals = [...page.matchAll(/(?:^|\s)preference="([^"]+)"/g)].map(
+      (m) => m[1],
+    );
+    assert.ok(vals.length >= 10, `设置页绑定的偏好太少（${vals.length}）`);
+    const bad = vals.filter((v) => !v.startsWith("__prefsPrefix__."));
+    assert.deepEqual(
+      bad,
+      [],
+      `这些 preference 取值不是 __prefsPrefix__.<键> 形式：\n    ${bad.join("\n    ")}\n` +
+        "  ⚠️ Zotero 7+ 的 preference 属性必须是**完整偏好键**（含前缀）。\n" +
+        "  写成短名（如 modelId）时 Zotero 只发一条警告然后**不绑定任何偏好** ——\n" +
+        '  表现是改了存不进去、onsyncfrompreference 不触发，整节"看不出效果"。',
+    );
+  });
+
+  it("**构建产物**里的 preference 都是完整键（这条才是真凭据）", function () {
+    // 必须查产物：源文件里是占位符，只有构建后才看得出前缀对不对。
+    // 而 Zotero 读的正是产物 —— 这一条正是"整节没效果"的根因所在。
+    const built = read(".scaffold/build/addon/content/preferences.xhtml");
+    const vals = [...built.matchAll(/(?:^|\s)preference="([^"]+)"/g)].map(
+      (m) => m[1],
+    );
+    assert.ok(vals.length >= 10, `产物里绑定的偏好太少（${vals.length}）`);
+    const bad = vals.filter((v) => !v.startsWith("extensions.zotero."));
+    assert.deepEqual(
+      bad,
+      [],
+      `产物里这些 preference 不是完整偏好键（Zotero 不会绑定它们）：\n    ${bad.join("\n    ")}`,
+    );
+    const leftovers = vals.filter((v) => v.includes("__"));
+    assert.deepEqual(
+      leftovers,
+      [],
+      `占位符没有被替换：${leftovers.join(", ")}`,
+    );
+    // 前缀必须与 package.json 的 prefsPrefix 一致
+    const pkg = JSON.parse(read("package.json"));
+    for (const v of vals) {
+      assert.ok(
+        v.startsWith(`${pkg.config.prefsPrefix}.`),
+        `${v} 与 package.json 的 prefsPrefix（${pkg.config.prefsPrefix}）不一致`,
+      );
+    }
+  });
+});
+
 describe("hooks 导出对象（oncommand 就是通过它调用的）", function () {
   it("默认导出里必须有 onPrefsEvent", function () {
     // 设置页的每个按钮都是 `Zotero.<addonInstance>.hooks.onPrefsEvent(...)`。

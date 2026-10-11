@@ -378,8 +378,8 @@ describe("设置页的接线", function () {
   });
 
   it("两个下拉框绑定了偏好，且用 onsyncfrompreference 动态填充", function () {
-    assert.match(page, /preference="modelId"/);
-    assert.match(page, /preference="modelReasoningEffort"/);
+    assert.match(page, /preference="__prefsPrefix__\.modelId"/);
+    assert.match(page, /preference="__prefsPrefix__\.modelReasoningEffort"/);
     const sync = page.match(/onsyncfrompreference=/g) ?? [];
     assert.ok(
       sync.length >= 2,
