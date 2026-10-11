@@ -418,7 +418,13 @@ export async function applyProviders(paths: {
 
   try {
     // ① 组合层：package.json 的 bundles + patch 文件的托管区块
-    const pkgPath = `${paths.profileDir}/package.json`;
+    //
+    // ⚠️ 路径必须用 `PathUtils.join` 拼，**不能**用模板字符串写
+    // `${dir}/package.json` —— 那会得到 `…\plugin/package.json`（反斜杠 + 正斜杠混用），
+    // 而 Gecko 的 `IOUtils.exists` 直接抛
+    // `NS_ERROR_FILE_UNRECOGNIZED_PATH`：**整个 provider 写入全盘失败**。
+    // 真机日志里正是这条（`Could not determine if …\plugin/package.json exists`）。
+    const pkgPath = PathUtils.join(paths.profileDir, "package.json");
     if (await IOUtils.exists(pkgPath)) {
       const before = await IOUtils.readUTF8(pkgPath);
       const { text, changed } = ensurePiAiBundle(before, defs.length > 0);
@@ -428,7 +434,7 @@ export async function applyProviders(paths: {
       }
     }
 
-    const patchPath = `${paths.profileDir}/cordis.patch.yml`;
+    const patchPath = PathUtils.join(paths.profileDir, "cordis.patch.yml");
     if (await IOUtils.exists(patchPath)) {
       const before = await IOUtils.readUTF8(patchPath);
       const after = mergeManagedBlock(before, buildProviderPatch(defs));

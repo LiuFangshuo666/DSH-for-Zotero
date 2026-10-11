@@ -177,3 +177,57 @@ export function appendPanelLog(kind: PanelLogKind, message: string): void {
     // 忽略
   }
 }
+
+/** 诊断文件（与面板日志分开：它是"给人贴出来"的，要求可读、分段） */
+const DIAGNOSTIC_FILE = "dsh-for-zotero-diagnostics.txt";
+
+/**
+ * 追加一段诊断（供用户整段复制出来定位问题）。
+ *
+ * ## ⚠️ 两条用血换来的约束
+ *
+ * 1. **不能在模块加载期调用**。这个函数原先写在 `index.ts` 的模块体里，
+ *    而那时 `Zotero.DataDirectory._dir` **尚未初始化** —— `?.dir` 拿到
+ *    undefined，于是整个诊断**什么都没写**。我为了排查"没反应"而加的诊断，
+ *    自己"没反应"了，白绕一圈。数据目录要等 `Zotero.initializationPromise`
+ *    完成，所以调用点必须在 `onStartup` 里。
+ *
+ * 2. **走 `enqueueWrite` 串行追加**，不要"读全文→拼→整体写回"：
+ *    启动期短时间内的并发调用会各自读到同一份旧快照，后写的把先写的盖掉
+ *    （见上面 `enqueueWrite` 的说明，这个坑已经踩过一次）。
+ *
+ * 写失败时退到 `Zotero.logError`，绝不留"什么都没有"的结果。
+ */
+export function appendDiagnostic(title: string, lines: string[]): void {
+  try {
+    const dir = Zotero.DataDirectory?.dir;
+    if (!dir) {
+      Zotero.logError(
+        new Error(
+          `[DSH-for-Zotero] 数据目录未就绪，诊断「${title}」无法落盘：${lines.join("；")}`,
+        ),
+      );
+      return;
+    }
+    const path = PathUtils.join(dir, DIAGNOSTIC_FILE);
+    const body = [
+      "",
+      `---- ${title} @ ${new Date().toISOString()} ----`,
+      ...lines,
+      "",
+    ].join("\n");
+    enqueueWrite(path, body, "panel");
+  } catch (error) {
+    try {
+      Zotero.logError(
+        new Error(
+          `[DSH-for-Zotero] 诊断写入失败：${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        ),
+      );
+    } catch {
+      // 连 logError 都不可用
+    }
+  }
+}

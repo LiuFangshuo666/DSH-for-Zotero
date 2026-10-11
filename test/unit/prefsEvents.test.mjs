@@ -229,6 +229,60 @@ describe("设置页事件的兜底错误处理", function () {
   });
 });
 
+describe("诊断的调用时机（真机上诊断自己「没反应」过）", function () {
+  const index = read("src/index.ts");
+
+  it("引导自检**不在模块体里调用**（那时数据目录还没初始化）", function () {
+    // 真机教训：诊断原先写在 index.ts 的模块体里，而那一刻
+    // Zotero.DataDirectory._dir 还没初始化 —— 结果什么都没写出来。
+    // 为了排查"没反应"而加的诊断，自己先"没反应"了。
+    const bodyAfterDefs = index.slice(
+      index.indexOf("if (!basicTool.getGlobal"),
+    );
+    assert.ok(
+      !/^\s*writeBootstrapSelfCheck\(\);/m.test(bodyAfterDefs),
+      "不要在模块体里调用它 —— 数据目录那时不可用，写了也没有",
+    );
+    assert.match(
+      index,
+      /export function writeBootstrapSelfCheck\(/,
+      "它应当被导出，由 onStartup 在初始化完成后调用",
+    );
+  });
+
+  it("onStartup 在等完初始化 promise 之后才写诊断", function () {
+    const at = hooks.indexOf("async function onStartup");
+    assert.ok(at > 0, "找不到 onStartup");
+    const end = hooks.indexOf('safeRegister("本地化初始化"', at);
+    const body = hooks.slice(at, end > at ? end : at + 3000);
+    const awaitAt = body.indexOf("Zotero.initializationPromise");
+    const diagAt = body.indexOf("writeBootstrapSelfCheck()");
+    assert.ok(awaitAt > 0, "onStartup 应等待 Zotero.initializationPromise");
+    assert.ok(diagAt > 0, "onStartup 应调用 writeBootstrapSelfCheck");
+    assert.ok(
+      diagAt > awaitAt,
+      "写诊断必须在等完初始化之后 —— 否则数据目录还没就绪，等于没写",
+    );
+  });
+
+  it("写诊断不设「取不到目录就静默返回」的路径", function () {
+    const runLog = read("src/dsh/runLog.ts");
+    const at = runLog.indexOf("export function appendDiagnostic");
+    assert.ok(at > 0, "找不到 appendDiagnostic");
+    const body = runLog.slice(at, at + 1600);
+    assert.match(
+      body,
+      /DataDirectory\?\.dir[\s\S]{0,240}logError/,
+      "取不到数据目录时要退到 Zotero.logError，不能什么都不留",
+    );
+    assert.match(
+      body,
+      /enqueueWrite\(/,
+      "必须走串行追加，不要读全文再整体写回",
+    );
+  });
+});
+
 describe("取不到界面元素时不能静默返回", function () {
   const panel = read("src/modules/modelPanel.ts");
 

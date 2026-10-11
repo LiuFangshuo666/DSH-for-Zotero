@@ -1,6 +1,7 @@
 import { BasicTool } from "zotero-plugin-toolkit";
 import Addon from "./addon";
 import { config } from "../package.json";
+import { appendDiagnostic } from "./dsh/runLog";
 
 const basicTool = new BasicTool();
 
@@ -27,7 +28,7 @@ const basicTool = new BasicTool();
  * 所以这里把三件事的结论写进一个文本文件，用户只要把文件内容发出来，
  * 就能立刻定位断在哪一环。这比"请开调试窗口找 Console"现实得多。
  */
-function writeBootstrapSelfCheck(): void {
+export function writeBootstrapSelfCheck(): void {
   const lines: string[] = [];
   const ok = (v: boolean) => (v ? "OK" : "**缺失**");
   try {
@@ -58,45 +59,9 @@ function writeBootstrapSelfCheck(): void {
   }
   lines.push("");
 
-  // 写盘：失败也不能影响启动（所以在最外层再兜一次）。
-  //
-  // ⚠️ 刻意**不用** `Zotero.DataDirectory.dir` —— 它是个 getter，
-  // 在"数据目录尚未初始化"时会**抛异常**（见 Zotero 的 dataDirectory.js）。
-  // 而这里要保证"无论如何都能留下一份可读的证据"，所以用与全项目一致的
-  // 偏好取法（`Zotero.Prefs.get` + `dataDir`），它在本项目里已被反复验证可用。
-  writeDiagnostic(lines);
+  // 写盘：失败也不能影响启动。
+  appendDiagnostic("插件启动", lines);
 }
-
-/**
- * 把诊断行追加到插件数据目录下的一个文本文件（供用户贴出来定位问题）。
- *
- * 独立成函数：启动自检与设置页诊断都要用，写到**同一个文件**里，
- * 这样用户只需提供一个路径。
- */
-function writeDiagnostic(lines: string[]): void {
-  void (async () => {
-    try {
-      const dataDir = String(
-        (Zotero.Prefs.get("dataDir", true) as string | undefined) ?? "",
-      );
-      if (!dataDir) return;
-      const dir = PathUtils.join(dataDir, "dsh-for-zotero");
-      await IOUtils.makeDirectory(dir, { ignoreExisting: true });
-      const path = PathUtils.join(dir, "diagnostics.txt");
-      const prev = (await IOUtils.exists(path))
-        ? await IOUtils.readUTF8(path)
-        : "";
-      // 只留最近若干段，避免无限增长
-      const kept = prev.split("----").slice(-6).join("----");
-      await IOUtils.writeUTF8(path, `${kept}----\n${lines.join("\n")}\n`);
-    } catch {
-      // 写不进去不影响功能
-    }
-  })();
-}
-
-/** 供设置页复用：把一段诊断写进同一个文件 */
-export { writeDiagnostic };
 
 // @ts-expect-error - Plugin instance is not typed
 if (!basicTool.getGlobal("Zotero")[config.addonInstance]) {
@@ -107,8 +72,6 @@ if (!basicTool.getGlobal("Zotero")[config.addonInstance]) {
   // @ts-expect-error - Plugin instance is not typed
   Zotero[config.addonInstance] = addon;
 }
-
-writeBootstrapSelfCheck();
 
 function defineGlobal(name: Parameters<BasicTool["getGlobal"]>[0]): void;
 function defineGlobal(name: string, getter: () => any): void;

@@ -27,7 +27,7 @@
  *  - 在状态行里说明原因与下一步怎么做。
  */
 
-import { requireRuntimeConfig } from "../dsh/config";
+import { requireRuntimeConfig, resolveRuntimeConfig } from "../dsh/config";
 import { mintCookieFromCredentials } from "../dsh/auth";
 import { DshClient, fetchModelCatalog, type ModelCatalog } from "../dsh/rpc";
 import { appendPanelLog } from "../dsh/runLog";
@@ -303,7 +303,7 @@ export async function saveApiKey(win: Window | undefined): Promise<void> {
     const parts: string[] = [];
     if (value) {
       const result = await syncApiKeyToCredentials(
-        `${config.dshHome}/.credentials.yaml`,
+        PathUtils.join(config.dshHome, ".credentials.yaml"),
       );
       parts.push(result.detail);
     }
@@ -362,7 +362,19 @@ export function initModelSection(win: Window | undefined): void {
   if (input) input.value = userApiKey() ?? "";
   const urlInput = el<HTMLInputElement>(win, BASE_URL_ID);
   if (urlInput) urlInput.value = userBaseUrl() ?? "";
-  void fillModelList(win);
+  // 运行时未就绪时**不要**只报一句失败就完事 —— 挂上等待与自动重试。
+  // 真机上"按键没反应"就是这一步没做：用户看到的是空列表 + 一句只写进日志的错。
+  let ready = false;
+  try {
+    ready = Boolean(resolveRuntimeConfig()?.port);
+  } catch {
+    ready = false;
+  }
+  if (ready) {
+    void fillModelList(win);
+  } else {
+    scheduleReadyRefresh(win);
+  }
 }
 
 /** 供选择模型后立刻联动等级下拉框（`modelId` 的 preference 变化时调用） */
@@ -372,6 +384,70 @@ export async function onModelChanged(win: Window | undefined): Promise<void> {
   const pick = decodeModel(list.value);
   if (pick) setSelectedModel({ ...pick, reasoningEffort: "" });
   await fillEffortList(win, list.value);
+}
+
+// ── 运行时未就绪时的自愈 ───────────────────────────────────────
+
+/** 等待上限：首次启动要提取约 330 MB，给足时间 */
+const READY_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
+const READY_POLL_INTERVAL_MS = 3000;
+
+/**
+ * 运行时还没就绪时，**自己等**，而不是让用户对着一个死界面反复点。
+ *
+ * ## 真机反馈（"模型一节的按键都看不出效果"）的真正原因
+ *
+ * 日志（`dsh-for-zotero-panel.txt`）显示：用户在 Zotero 启动后**立刻**打开设置，
+ * 而隔离运行时那时仍在准备/启动中。`resolveRuntimeConfig()` 只在
+ * `phase === "running"` 时返回配置，于是：
+ *
+ *  - 模型列表取不到 → 下拉框是空的；
+ *  - 「保存并写入」抛"运行时尚未就绪" → 只写进日志文件；
+ *  - 「刷新列表」同样。
+ *
+ * 用户看到的就是"点了没反应"。**这不是运行时的错，是界面没把等待状态讲清楚、
+ * 也没自己重试。** 所以这里补上：
+ *
+ *  1. 未就绪时先在状态行说明"正在准备/启动，好了会自动加载"；
+ *  2. 后台轮询等待（最长 30 分钟），就绪后自动填充并重查 provider 状态。
+ *
+ * 轮询而不是订阅：`RuntimeManager` 在 `hooks.ts` 里，从这里引它会造成循环依赖。
+ * 而"每秒查一次状态"本来就够用 —— 用户感知不到差别。
+ */
+export function scheduleReadyRefresh(win: Window | undefined): void {
+  const started = Date.now();
+  let announced = false;
+  const tick = () => {
+    const elapsed = Date.now() - started;
+    let port: number | undefined;
+    try {
+      port = resolveRuntimeConfig()?.port;
+    } catch {
+      port = undefined;
+    }
+    if (port) {
+      // 就绪：自动填充，并重查"是否需要重启"
+      void fillModelList(win);
+      void refreshProvidersStatus(win);
+      return;
+    }
+    if (elapsed > READY_WAIT_TIMEOUT_MS) {
+      setStatus(
+        win,
+        "等了 30 分钟仍未就绪 —— 请到「隔离运行时」一节查看状态与诊断日志。",
+      );
+      return;
+    }
+    if (!announced) {
+      announced = true;
+      setStatus(
+        win,
+        "隔离运行时还在准备/启动中 —— 就绪后这一节会**自动加载**，不用反复点「刷新列表」。",
+      );
+    }
+    setTimeout(tick, READY_POLL_INTERVAL_MS);
+  };
+  tick();
 }
 
 // ── 自定义 provider ────────────────────────────────────────────
@@ -443,8 +519,8 @@ async function refreshProvidersStatus(win: Window | undefined): Promise<void> {
     const readOr = async (p: string) =>
       (await IOUtils.exists(p)) ? await IOUtils.readUTF8(p) : "";
     const stale = compositionNeedsRestart(
-      await readOr(`${paths.profile}/package.json`),
-      await readOr(`${paths.profile}/cordis.patch.yml`),
+      await readOr(PathUtils.join(paths.profile, "package.json")),
+      await readOr(PathUtils.join(paths.profile, "cordis.patch.yml")),
       readProviders(),
     );
     setProvidersStatus(
@@ -546,7 +622,7 @@ export async function saveProviders(win: Window | undefined): Promise<void> {
     }
     const applied = await applyProviders({
       profileDir: paths.profile,
-      credentialsFile: `${paths.home}/.credentials.yaml`,
+      credentialsFile: PathUtils.join(paths.home, ".credentials.yaml"),
     });
     setProvidersStatus(win, applied.detail);
   } catch {

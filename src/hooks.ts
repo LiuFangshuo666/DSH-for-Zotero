@@ -5,7 +5,8 @@
  * M0 阶段只注册"DSH 自检"入口；阅读器面板在 M1 加入。
  */
 
-import { writeDiagnostic } from "./index";
+import { writeBootstrapSelfCheck } from "./index";
+import { appendDiagnostic } from "./dsh/runLog";
 import { SelfCheck } from "./modules/selfCheck";
 import { ReaderPanel } from "./modules/readerPanel";
 import { SelectionToolbar } from "./modules/selectionToolbar";
@@ -193,6 +194,25 @@ async function onStartup() {
     Zotero.unlockPromise,
     Zotero.uiReadyPromise,
   ]);
+
+  // ⚠️ 引导自检**必须放在这里**，不能放在模块加载期。
+  //
+  // 真机教训：它原先写在 `index.ts` 的模块体里，而那一刻
+  // `Zotero.DataDirectory._dir` **尚未初始化** —— `?.dir` 返回 undefined，
+  // 于是诊断**什么都没写**。我为了排查"按键没反应"而加的诊断，
+  // 自己先"没反应"了，白绕一圈才发现。
+  //
+  // 数据目录要等上面这几个 promise 完成才可用，所以调用点在这里。
+  try {
+    writeBootstrapSelfCheck();
+  } catch (error) {
+    appendPanelLog(
+      "runtime",
+      `引导自检失败（不影响功能）：${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
 
   safeRegister("本地化初始化", () => initLocale());
   safeRegister("注册 FTL 资源", () => registerLocaleResources());
@@ -576,7 +596,7 @@ async function dumpPrefsDiagnostics(win: Window | undefined): Promise<void> {
   // 这样用户只需提供一个路径。
   // 刻意不用 `Zotero.DataDirectory.dir`：它是 getter，
   // 数据目录未初始化时会抛异常。
-  writeDiagnostic(lines);
+  appendDiagnostic("设置页诊断", lines);
 }
 
 /** 真正的分发逻辑（由 `onPrefsEvent` 包裹在 try/catch 里调用） */
