@@ -448,6 +448,56 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
     }
   };
 
+  try {
+    await dispatchPrefsEvent(type, data, win, setStatusText);
+  } catch (error) {
+    // ⚠️ 这个兜底是**必需的**，不是防御性编程。
+    //
+    // 真机反馈"按键点了没反应"：`oncommand` 调用的是一个 async 函数，
+    // 而它内部的任何抛出都会变成一个**无人处理的 Promise 拒绝** ——
+    // 界面既不报错、也不显示任何东西，用户只能看到"点了没反应"。
+    // 这个项目里已经出现过多次同类问题（异常被静默吞掉）。
+    //
+    // 所以：把错误**显示到设置页上**（用户当前正看着的界面），
+    // 同时写进诊断日志，让"没反应"变成"有一句话告诉你为什么"。
+    const message = error instanceof Error ? error.message : String(error);
+    appendPanelLog("runtime", `设置页事件「${type}」失败：${message}`);
+    writePrefsError(win, type, message);
+  }
+}
+
+/** 按事件类型把错误写到**对应那一节**的状态行上 */
+function writePrefsError(
+  win: Window | undefined,
+  type: string,
+  message: string,
+): void {
+  const ref = addon.data.config.addonRef;
+  const target = type.startsWith("model-")
+    ? `${ref}-model-status`
+    : type.startsWith("providers-")
+      ? `${ref}-providers-status`
+      : `${ref}-runtime-status`;
+  try {
+    const el = win?.document?.getElementById(target);
+    if (el) {
+      el.textContent =
+        type.startsWith("model-") || type.startsWith("providers-")
+          ? `操作失败：${message}`
+          : `设置页操作失败（${type}）：${message}`;
+    }
+  } catch {
+    // 设置页可能已关闭；日志里已经有一条
+  }
+}
+
+/** 真正的分发逻辑（由 `onPrefsEvent` 包裹在 try/catch 里调用） */
+async function dispatchPrefsEvent(
+  type: string,
+  data: { [key: string]: any },
+  win: Window | undefined,
+  setStatusText: (text: string) => void,
+): Promise<void> {
   switch (type) {
     case "load": {
       // 载入时把当前状态显示出来，用户才知道现在是什么情况
@@ -557,9 +607,41 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
     }
 
     default:
+      // ⚠️ 未处理的事件类型**必须记一条**，不能静默 return。
+      //
+      // 真机反馈"按键点了没反应"：最可能的成因就是设置页发了某个事件，
+      // 而这里没有对应的 case —— 于是既不报错、也什么都不发生，
+      // 用户完全无从判断。记下来至少能在诊断日志里看到。
+      appendPanelLog(
+        "runtime",
+        `设置页发出了未处理的事件「${type}」—— 对应按钮不会有任何反应。` +
+          "这通常是代码里漏了 case，请把它报给插件作者。",
+      );
       return;
   }
 }
+
+/**
+ * 设置页事件类型的**分发表**（供测试核对：设置页发的每个事件都要有人接）。
+ *
+ * 之所以把它单独列出来：`switch` 里的 case 无法在测试里枚举，
+ * 而"设置页加了按钮、忘了加 case"正是"点了没反应"的头号成因。
+ */
+export const PREFS_EVENT_TYPES = [
+  "load",
+  "runtime-prepare",
+  "runtime-start",
+  "runtime-stop",
+  "selfcheck",
+  "selfcheck-stream",
+  "deep-probe",
+  "model-sync",
+  "model-refresh",
+  "model-save-key",
+  "providers-save",
+  "providers-example",
+  "onboarding",
+] as const;
 
 export default {
   onStartup,

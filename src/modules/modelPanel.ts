@@ -264,7 +264,15 @@ async function fillEffortList(
  */
 export async function saveApiKey(win: Window | undefined): Promise<void> {
   const input = el<HTMLInputElement>(win, KEY_ID);
-  if (!input) return;
+  if (!input) {
+    // ⚠️ 不能静默 return —— 那正是"按键点了没反应"。
+    const detail = win
+      ? `找不到 API Key 输入框（id=${KEY_ID}）—— 设置页可能版本不匹配，请重装插件。`
+      : "设置页窗口已关闭。";
+    appendPanelLog("runtime", `模型设置：保存失败 —— ${detail}`);
+    setStatus(win, detail);
+    return;
+  }
   const value = input.value.trim();
   setUserApiKey(value);
 
@@ -399,13 +407,27 @@ const PROVIDER_EXAMPLE = JSON.stringify(
 /** 设置页载入：回填已保存的定义，并显示"是否需要重启" */
 export function initProvidersSection(win: Window | undefined): void {
   const box = el<HTMLTextAreaElement>(win, PROVIDERS_ID);
-  if (!box) return;
+  if (!box) {
+    appendPanelLog(
+      "runtime",
+      `设置页载入：找不到自定义 provider 输入框（id=${PROVIDERS_ID}）`,
+    );
+    return;
+  }
   // 回填时**用格式化后的 JSON**：原始偏好多是压缩成一行的，
   // 直接显示会变成一条难读的长行，而这是要给人编辑的。
   try {
     box.value = JSON.stringify(readProviders(), null, 2);
-  } catch {
+  } catch (error) {
+    // 偏好被手工改坏时 `readProviders` 已有兜底，这里防的是别的意外 ——
+    // 无论如何都要让输入框**可编辑**，否则用户连改回去都做不到。
     box.value = "[]";
+    appendPanelLog(
+      "runtime",
+      `读取自定义 provider 失败（已置空以便你改回）：${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   }
   void refreshProvidersStatus(win);
 }
@@ -458,7 +480,16 @@ export function insertProviderExample(win: Window | undefined): void {
  */
 export async function saveProviders(win: Window | undefined): Promise<void> {
   const box = el<HTMLTextAreaElement>(win, PROVIDERS_ID);
-  if (!box) return;
+  if (!box) {
+    // ⚠️ 不能 `if (!box) return;` —— 那样按钮"点了没反应"，
+    // 而用户完全无从判断（这正是"按键点了没反应"的一类成因）。
+    const detail = win
+      ? `找不到输入框（id=${PROVIDERS_ID}）—— 设置页可能版本不匹配，请重装插件。`
+      : "设置页窗口已关闭。";
+    appendPanelLog("runtime", `自定义 provider：保存失败 —— ${detail}`);
+    setProvidersStatus(win, detail);
+    return;
+  }
 
   let parsed: unknown;
   try {
