@@ -1,4 +1,4 @@
-# Deploy the built XPI into the local Zotero profile (development helper).
+﻿# Deploy the built XPI into the local Zotero profile (development helper).
 #
 # WHY THIS SCRIPT EXISTS -- hard-won lesson:
 # **Never leave backup copies inside the extensions directory.**
@@ -18,7 +18,18 @@
 
 param(
     [string]$ProfilePath = "$env:APPDATA\Zotero\Zotero\Profiles\4gvbpaje.default",
-    [string]$SourceXpi = "$PSScriptRoot\..\.scaffold\build\dsh-for-zotero.xpi",
+    # ⚠️ 这里**不能**用 `$PSScriptRoot` 做默认值！
+    #
+    # 真机故障：param 块的默认值在**被调用的那一刻**求值，而此时 `$PSScriptRoot`
+    # 还是空的（它由 PowerShell 在进入脚本体后才赋值）。于是：
+    #   - `$SourceXpi` 变成 `..\.scaffold\build\dsh-for-zotero.xpi`（坏路径），
+    #     只因当时的工作目录恰好是仓库根，`Test-Path` 居然通过了 —— 掩盖了问题；
+    #   - `$packagePath` 在同一次求值里被污染成空 → `$addonId` 为空
+    #     → 脚本**静默地**把 xpi 部署成一个叫 `.xpi` 的文件，还打印 "deployed"。
+    #
+    # 所以：与脚本自身位置相关的默认值一律留空，改到**脚本体里**再补
+    # （那里 `$PSScriptRoot` 已经有值）。这正是"失败却报成功"的典型成因。
+    [string]$SourceXpi = "",
     [string]$BackupRoot = "$env:APPDATA\Zotero\Zotero\plugin-backups",
     # Staging area must live OUTSIDE extensions/ -- keeping anything that resolves to the
     # same addon id inside extensions/ is exactly what got the plugin uninstalled before.
@@ -26,9 +37,26 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# 到这里 `$PSScriptRoot` 才可用（见 param 块里的说明）
+if ([string]::IsNullOrWhiteSpace($SourceXpi)) {
+    $SourceXpi = Join-Path $PSScriptRoot "..\.scaffold\build\dsh-for-zotero.xpi"
+}
+
 # ⚠️ addonID 从 package.json 读取，而不在这里再写一份字面量 ——
 # 双份字面量在改 ID 时必然分叉，而分叉的后果是部署到错的文件名。
-$addonId = (Get-Content "$PSScriptRoot\..\package.json" -Raw | ConvertFrom-Json).config.addonID
+#
+# 并**校验取到的不是空值**：空 ID 会让脚本把 xpi 部署成 `.xpi`（一个没有 ID 的
+# 垃圾文件），却仍然打印 "deployed" 说成功了。这类"失败却报成功"的脚本比直接
+# 报错危险得多，所以这里显式挡住。
+$packagePath = Join-Path $PSScriptRoot "..\package.json"
+if (-not (Test-Path $packagePath)) {
+    throw "Cannot find package.json at $packagePath (needed to resolve the addon ID)"
+}
+$addonId = (Get-Content $packagePath -Raw | ConvertFrom-Json).config.addonID
+if ([string]::IsNullOrWhiteSpace($addonId)) {
+    throw "package.json has no config.addonID; refusing to deploy a file named '.xpi'"
+}
 $extDir = Join-Path $ProfilePath "extensions"
 $target = Join-Path $extDir "$addonId.xpi"
 $mainName = "$addonId.xpi"

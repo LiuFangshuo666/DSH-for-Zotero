@@ -1,4 +1,4 @@
-# Finish a staged plugin deployment. Run this AFTER fully quitting Zotero.
+﻿# Finish a staged plugin deployment. Run this AFTER fully quitting Zotero.
 #
 # WHY A TWO-PHASE DEPLOY: while Zotero is running it memory-maps the installed xpi,
 # so the file cannot be replaced ("user-mapped section open"). Rather than fight that,

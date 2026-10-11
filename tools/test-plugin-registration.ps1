@@ -1,4 +1,4 @@
-# 受控实验：直接放 xpi 到底能否被 Zotero 重新登记？
+﻿# 受控实验：直接放 xpi 到底能否被 Zotero 重新登记？
 #
 # 背景：本项目反复出现"文件在磁盘上、extensions.json 里却没有记录 → 插件不加载"。
 # 猜测过原因是"手工复制不可靠"，但一直没有做干净的对照实验。
@@ -15,14 +15,31 @@ param(
     [string]$ZoteroExe = "C:\Program Files\Zotero\zotero.exe",
     [string]$ProfileDir = "$env:APPDATA\Zotero\Zotero\Profiles\4gvbpaje.default",
     [string]$LocalProfileDir = "$env:LOCALAPPDATA\Zotero\Zotero\Profiles\4gvbpaje.default",
-    [string]$SourceXpi = "$PSScriptRoot\..\.scaffold\build\dsh-for-zotero.xpi",
-    [string]$StagingXpi = "$env:APPDATA\Zotero\Zotero\plugin-staging\dsh-for-zotero@zotero.cn.xpi"
+    # ⚠️ 不能在这里用 `$PSScriptRoot`：param 默认值在**被调用那一刻**求值，
+    # 那时它还是空的（PowerShell 进入脚本体后才赋值），于是路径被拼成
+    # `..\.scaffold\...` —— 而 `deploy-to-zotero.ps1` 曾因此**静默地把 xpi
+    # 部署成一个叫 `.xpi` 的文件还报成功**。默认值留空，到脚本体里再补。
+    [string]$SourceXpi = "",
+    [string]$StagingXpi = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+# 到这里 `$PSScriptRoot` 才可用（见 param 块里的说明）
+if ([string]::IsNullOrWhiteSpace($SourceXpi)) {
+    $SourceXpi = Join-Path $PSScriptRoot "..\.scaffold\build\dsh-for-zotero.xpi"
+}
+
 # ⚠️ addonID 从 package.json 读取，而不在这里再写一份字面量 ——
 # 双份字面量在改 ID 时必然分叉，而分叉的后果是部署到错的文件名。
-$addonId = (Get-Content "$PSScriptRoot\..\package.json" -Raw | ConvertFrom-Json).config.addonID
+$packagePath = Join-Path $PSScriptRoot "..\package.json"
+$addonId = (Get-Content $packagePath -Raw | ConvertFrom-Json).config.addonID
+if ([string]::IsNullOrWhiteSpace($addonId)) {
+    throw "package.json has no config.addonID; refusing to operate on a file named '.xpi'"
+}
+if ([string]::IsNullOrWhiteSpace($StagingXpi)) {
+    $StagingXpi = Join-Path $env:APPDATA "Zotero\Zotero\plugin-staging\$addonId.xpi"
+}
 $extDir = Join-Path $ProfileDir "extensions"
 $target = Join-Path $extDir "$addonId.xpi"
 $flag = Join-Path $LocalProfileDir ".startup-incomplete"

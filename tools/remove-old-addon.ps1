@@ -1,4 +1,4 @@
-# Remove a previously installed copy of this plugin from the Zotero profile.
+﻿# Remove a previously installed copy of this plugin from the Zotero profile.
 #
 # WHY THIS EXISTS
 #
