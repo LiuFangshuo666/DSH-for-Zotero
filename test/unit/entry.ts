@@ -106,5 +106,6 @@ export {
   API_KEY_REF,
   hasCredentialRef,
   setCredentialRef,
+  validateBaseUrl,
 } from "../../src/dsh/modelConfig";
 export { ChatTransport } from "../../src/chat/transport";

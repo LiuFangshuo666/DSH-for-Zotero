@@ -23,7 +23,138 @@ const bundle = await import(
     `file://${join(here, ".build", "unit-entry.mjs").replace(/\\/g, "/")}`,
   ).href
 );
-const { setCredentialRef, hasCredentialRef, API_KEY_REF } = bundle;
+const { setCredentialRef, hasCredentialRef, API_KEY_REF, validateBaseUrl } =
+  bundle;
+
+describe("第三方端点地址的校验（与 dsh 侧规则逐条对齐）", function () {
+  it("接受正常的 http(s) 根地址", function () {
+    for (const ok of [
+      "https://api.deepseek.com",
+      "http://127.0.0.1:8000",
+      "https://relay.example.com/v1",
+      "https://gateway.corp.cn/deepseek/",
+    ]) {
+      assert.equal(validateBaseUrl(ok), undefined, `应接受 ${ok}`);
+    }
+  });
+
+  it("拒绝非 http(s) 协议", function () {
+    assert.ok(validateBaseUrl("ftp://x.com"), "ftp 应被拒");
+    assert.ok(validateBaseUrl("file:///etc/passwd"), "file 应被拒");
+  });
+
+  it("拒绝带用户名密码的地址（凭据应填在 API Key 那一栏）", function () {
+    assert.match(
+      validateBaseUrl("https://user:pass@api.example.com") ?? "",
+      /用户名/,
+    );
+  });
+
+  it("拒绝查询参数与片段（dsh 侧同样拒绝）", function () {
+    assert.ok(validateBaseUrl("https://api.example.com?key=1"));
+    assert.ok(validateBaseUrl("https://api.example.com#frag"));
+  });
+
+  it("拒绝不是 URL 的输入", function () {
+    assert.ok(validateBaseUrl("随便写的"));
+    assert.ok(validateBaseUrl("api.deepseek.com"), "缺协议也应被拒");
+  });
+
+  it("规则与 dsh 的判定**同源**（不能只靠印象放宽）", function () {
+    const src = read("src/dsh/modelConfig.ts");
+    const at = src.indexOf("export function validateBaseUrl");
+    const body = src.slice(at, at + 1200);
+    // dsh 的判据：protocol ∈ {http,https}、无 username/password、无 search、无 hash
+    for (const token of [
+      "http:",
+      "https:",
+      "username",
+      "password",
+      "search",
+      "hash",
+    ]) {
+      assert.ok(
+        body.includes(token),
+        `校验里缺少 "${token}" —— dsh 侧是会拒绝的，插件不先拦就会变成"问答失败"`,
+      );
+    }
+  });
+});
+
+describe("端点地址写进宿主设置", function () {
+  const src = read("src/dsh/modelConfig.ts");
+
+  it("用 settings/update 的**合并**语义，而不是 replace", function () {
+    // replace 会整段覆盖，把用户在 dsh 网页里配过的其它字段一起抹掉。
+    const at = src.indexOf("export async function syncBaseUrlToHost");
+    const body = src.slice(at, at + 2000);
+    assert.ok(body.includes('"settings/update"'), "必须用 settings/update");
+    assert.ok(
+      !body.includes('"settings/replace"'),
+      "不得用 settings/replace —— 那会抹掉用户其它设置",
+    );
+  });
+
+  it("先 describe 确认命名空间存在，再写（否则失败无法解释）", function () {
+    const at = src.indexOf("export async function syncBaseUrlToHost");
+    const body = src.slice(at, at + 2000);
+    const describeAt = body.indexOf('"settings/describe"');
+    const updateAt = body.indexOf('"settings/update"');
+    assert.ok(describeAt > 0, "必须先读");
+    assert.ok(describeAt < updateAt, "读要在写之前");
+  });
+
+  it("命名空间与 dsh 的派生规则一致（插件的 options.id）", function () {
+    assert.match(
+      src,
+      /LLM_SETTINGS_NS = "llm-deepseek-api-key"/,
+      "命名空间就是那个适配器插件的 id",
+    );
+    assert.match(src, /BASE_URL_FIELD = "baseURL"/, "字段名要与适配器一致");
+  });
+
+  it("地址非法时**不写进宿主**，也不假装成功", function () {
+    const at = src.indexOf("export async function syncBaseUrlToHost");
+    const body = src.slice(at, at + 1200);
+    const invalidAt = body.indexOf("validateBaseUrl(url)");
+    const describeAt = body.indexOf('"settings/describe"');
+    assert.ok(invalidAt > 0 && invalidAt < describeAt, "校验要在写入之前");
+  });
+});
+
+describe("端点地址在设置页的接线", function () {
+  const page = read("addon/content/preferences.xhtml");
+  const prefs = read("addon/prefs.js");
+  const panel = read("src/modules/modelPanel.ts");
+
+  it("有输入框，且是 text 类型（地址不是秘密）", function () {
+    const at = page.indexOf('id="__addonRef__-model-base-url"');
+    assert.ok(at > 0, "设置页缺少端点输入框");
+    const open = page.lastIndexOf("<html:input", at);
+    const element = page.slice(open, page.indexOf(">", at) + 1);
+    assert.match(element, /type="text"/);
+  });
+
+  it("有默认值声明，且载入时回填", function () {
+    assert.match(prefs, /pref\("modelBaseUrl"/, "prefs.js 缺少默认值");
+    assert.match(panel, /userBaseUrl\(\)/, "载入时应回填已保存的值");
+  });
+
+  it("保存时与 API Key 一起提交（换中转站两者通常同时改）", function () {
+    const at = panel.indexOf("export async function saveApiKey");
+    const body = panel.slice(at, at + 2500);
+    assert.match(body, /setUserBaseUrl\(urlValue\)/, "保存时要写入端点偏好");
+    assert.match(body, /syncBaseUrlToHost/, "并要真的应用它");
+  });
+
+  it("地址非法时提前返回（不产生“保存成功但问答失败”的状态）", function () {
+    const at = panel.indexOf("export async function saveApiKey");
+    const body = panel.slice(at, at + 2500);
+    const invalidAt = body.indexOf("if (urlInvalid)");
+    const syncAt = body.indexOf("syncBaseUrlToHost");
+    assert.ok(invalidAt > 0 && invalidAt < syncAt, "校验失败必须提前返回");
+  });
+});
 
 describe("凭据文件的 refs 操作（纯文本）", function () {
   const base = [

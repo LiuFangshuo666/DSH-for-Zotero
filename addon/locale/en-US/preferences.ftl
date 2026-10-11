@@ -41,6 +41,8 @@ pref-model-api-key-hint = Saving writes it into the isolated instance's .credent
 pref-model-id = Model used by sessions
 pref-model-refresh = Refresh list
 pref-model-effort = Reasoning effort
+pref-model-base-url = API base URL (optional)
+pref-model-base-url-hint = Leave empty to use the official DeepSeek endpoint. Relays, self-hosted deployments and corporate gateways work, provided they speak the DeepSeek Messages protocol. Changing this only changes where the request goes, not which protocol is spoken - so an OpenAI /v1/chat/completions URL will not work.
 pref-model-status = (model list not loaded yet)
 
 # ── Advanced (includes what gets written into your dsh home) ─

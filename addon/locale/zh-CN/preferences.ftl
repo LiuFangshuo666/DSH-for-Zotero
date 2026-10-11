@@ -40,6 +40,8 @@ pref-model-api-key-hint = 保存后会写入隔离实例的 .credentials.yaml（
 pref-model-id = 会话使用的模型
 pref-model-refresh = 刷新列表
 pref-model-effort = 推理等级
+pref-model-base-url = API 地址（可选）
+pref-model-base-url-hint = 留空则用 DeepSeek 官方。可填中转站、私有部署或企业网关，前提是它**兼容 DeepSeek Messages 协议**。换地址只是换“请求发往哪里”，并不会换成另一套协议 —— 所以 OpenAI 的 /v1/chat/completions 地址不行。
 pref-model-status = （模型列表尚未加载）
 
 # ── 高级（含写入 dsh 侧的开关）───────────────────────────

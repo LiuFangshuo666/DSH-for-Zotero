@@ -34,9 +34,13 @@ import { appendPanelLog } from "../dsh/runLog";
 import {
   setSelectedModel,
   setUserApiKey,
+  setUserBaseUrl,
   selectedModel,
   syncApiKeyToCredentials,
+  syncBaseUrlToHost,
   userApiKey,
+  userBaseUrl,
+  validateBaseUrl,
 } from "../dsh/modelConfig";
 
 /**
@@ -56,6 +60,7 @@ const REF = "dshforzotero";
 const MODEL_ID = `${REF}-model-id`;
 const EFFORT_ID = `${REF}-model-effort`;
 const KEY_ID = `${REF}-model-api-key`;
+const BASE_URL_ID = `${REF}-model-base-url`;
 const STATUS_ID = `${REF}-model-status`;
 
 /** 最近一次取到的目录（供选择模型后填充等级，避免每次再取一遍） */
@@ -239,33 +244,65 @@ async function fillEffortList(
   }
 }
 
-/** 设置页：点「保存」把 API Key 写进偏好并同步到隔离凭据 */
+/**
+ * 设置页：点「保存」把 API Key 与**端点地址**写进偏好并同步到隔离运行时。
+ *
+ * ## 两者一起保存是有意的
+ *
+ * 换第三方中转站时，**地址与 key 通常要同时换**（旧 key 在新端点上无效）。
+ * 分两次保存会让中间出现"新地址 + 旧 key"或反之的失败状态，
+ * 而那种失败看起来像"中转站不能用"，排查方向完全跑偏。
+ */
 export async function saveApiKey(win: Window | undefined): Promise<void> {
   const input = el<HTMLInputElement>(win, KEY_ID);
   if (!input) return;
   const value = input.value.trim();
   setUserApiKey(value);
 
-  if (!value) {
+  const urlInput = el<HTMLInputElement>(win, BASE_URL_ID);
+  const urlValue = urlInput ? urlInput.value.trim() : "";
+  setUserBaseUrl(urlValue);
+
+  // 地址不合法就**到此为止**：不写进宿主，也不假装成功 ——
+  // 否则用户会拿到一个"保存成功但问答失败"的状态。
+  const urlInvalid = urlValue ? validateBaseUrl(urlValue) : undefined;
+  if (urlInvalid) {
+    setStatus(win, `端点地址无效，未写入：${urlInvalid}`);
+    return;
+  }
+
+  if (!value && !urlValue) {
     setStatus(
       win,
-      "已清空 API Key —— 之后将沿用桌面版 Harness 的凭据（若那边也没配，问答会失败）。",
+      "已清空 API Key 与端点 —— 之后沿用桌面版 Harness 的凭据与 DeepSeek 官方地址。",
     );
     return;
   }
 
-  // 立刻尝试写入隔离凭据：宿主在跑的话，它的凭据服务会监听文件变化并热重载。
+  // 立刻尝试写入隔离实例：宿主在跑的话，凭据服务监听文件变化、
+  // 设置服务直接热应用，两者都不需要重启运行时。
   try {
     const config = requireRuntimeConfig();
-    const path = `${config.dshHome}/.credentials.yaml`;
-    const result = await syncApiKeyToCredentials(path);
-    setStatus(win, result.detail);
+    const parts: string[] = [];
+    if (value) {
+      const result = await syncApiKeyToCredentials(
+        `${config.dshHome}/.credentials.yaml`,
+      );
+      parts.push(result.detail);
+    }
+    if (urlValue) {
+      const client = await connect();
+      if (client) {
+        const result = await syncBaseUrlToHost(client);
+        parts.push(result.detail);
+      } else {
+        parts.push("端点已保存，但隔离运行时未就绪，暂未应用。");
+      }
+    }
+    setStatus(win, parts.join("　"));
   } catch {
-    // 运行时没起来：key 已存进偏好，下次准备运行时会被写进去
-    setStatus(
-      win,
-      "已保存 API Key。隔离运行时还没就绪 —— 启动时它会自动写入。",
-    );
+    // 运行时没起来：两项都已存进偏好，下次准备/启动运行时会被写进去
+    setStatus(win, "已保存。隔离运行时还没就绪 —— 启动时它会自动写入。");
   }
 }
 
@@ -302,10 +339,12 @@ export async function handleModelPrefsEvent(
   }
 }
 
-/** 设置页载入时：回填已保存的 Key，并尝试填充下拉框 */
+/** 设置页载入时：回填已保存的 Key 与端点，并尝试填充下拉框 */
 export function initModelSection(win: Window | undefined): void {
   const input = el<HTMLInputElement>(win, KEY_ID);
   if (input) input.value = userApiKey() ?? "";
+  const urlInput = el<HTMLInputElement>(win, BASE_URL_ID);
+  if (urlInput) urlInput.value = userBaseUrl() ?? "";
   void fillModelList(win);
 }
 

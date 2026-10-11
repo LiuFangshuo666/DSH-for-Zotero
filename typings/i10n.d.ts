@@ -27,6 +27,8 @@ export type FluentMessageId =
   | 'pref-model'
   | 'pref-model-api-key'
   | 'pref-model-api-key-hint'
+  | 'pref-model-base-url'
+  | 'pref-model-base-url-hint'
   | 'pref-model-desc'
   | 'pref-model-effort'
   | 'pref-model-id'

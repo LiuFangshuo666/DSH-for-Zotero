@@ -170,7 +170,147 @@ export function hasCredentialRef(text: string, key: string): boolean {
   return false;
 }
 
-// ── 把 API key 写进隔离实例 ───────────────────────────────────
+// ── 第三方 / 自建端点（API 地址）──────────────────────────────
+
+/**
+ * dsh 侧承载模型端点配置的**设置命名空间**。
+ *
+ * 就是那个插件的 id（`llm-deepseek-api-key`）—— dsh 的设置命名空间按插件的
+ * `options.id` 派生（见 `packages/settings/settings/src/index.ts`）。
+ * 宿主用它来暴露 `baseURL` 等字段，网页版的 Models 页改的也是这一份。
+ */
+export const LLM_SETTINGS_NS = "llm-deepseek-api-key";
+
+/** 设置里承载端点地址的字段名 */
+export const BASE_URL_FIELD = "baseURL";
+
+/** 用户在设置页填的端点地址；没填返回 undefined */
+export function userBaseUrl(): string | undefined {
+  try {
+    const raw = getPref("modelBaseUrl");
+    if (typeof raw !== "string") return undefined;
+    const trimmed = raw.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function setUserBaseUrl(value: string): void {
+  setPref("modelBaseUrl", value.trim());
+}
+
+/**
+ * 校验端点地址，返回 `undefined` 表示合法。
+ *
+ * ## 规则与 dsh 侧**逐条对齐**（不要凭印象放宽）
+ *
+ * dsh 的 `resolveAdapterOptions` 是这么判的：
+ *
+ * ```ts
+ * if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username
+ *     || parsed.password || parsed.search || parsed.hash) throw …
+ * ```
+ *
+ * 在插件侧先判一遍的理由：宿主拒绝时的报错出现在**轮次失败**里
+ * （用户看到的是"问答失败"，而不是"你填的地址不对"），排查成本高得多。
+ *
+ * ## ⚠️ 一个必须说清的边界
+ *
+ * 换 `baseURL` **只是换发往哪里**，协议仍是 DeepSeek Messages 那一套。
+ * 所以中转站、私有部署、企业网关可以；OpenAI 的 `/v1/chat/completions` **不行**
+ * —— 那是另一套协议，得换适配器（`llm-pi-ai`），不是换地址。
+ * 这一点必须写在设置页上，否则用户填了 OpenAI 地址只会得到一堆报错。
+ */
+export function validateBaseUrl(value: string): string | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(value.trim());
+  } catch {
+    return "不是合法的 URL（示例：https://api.deepseek.com）";
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return `协议必须是 http 或 https（现在是 ${parsed.protocol}）`;
+  }
+  if (parsed.username || parsed.password) {
+    return "地址里不能带用户名/密码 —— 凭据请填在 API Key 那一栏";
+  }
+  if (parsed.search) return "地址里不能带查询参数（?…）";
+  if (parsed.hash) return "地址里不能带 # 片段";
+  return undefined;
+}
+
+/** 端点写入的结果（供设置页显示，不含密钥） */
+export interface BaseUrlSyncResult {
+  applied: boolean;
+  detail: string;
+}
+
+/**
+ * 把端点地址写进宿主的设置（热应用，无需重启）。
+ *
+ * ## 为什么走"设置"而不是写 profile 的补丁文件
+ *
+ * 隔离实例的 `profiles/plugin/cordis.patch.yml` 里确实能配 `baseURL`，
+ * 但那是**静态组合**，改了要重启宿主。而 dsh 的设置服务是**热应用**的
+ * —— 用户改完地址就能直接用，不必理解"为什么还要重启一次"。
+ *
+ * ## 先读再写：命名空间不存在就如实说明
+ *
+ * 某些部署里可能没挂 `llm-deepseek-api-key`（例如换成别的适配器）。
+ * 那种情况下盲目写会得到一个我们无法解释的失败，所以先 `settings/describe`
+ * 确认该命名空间存在，再写。
+ */
+export async function syncBaseUrlToHost(client: {
+  call: <T>(
+    method: string,
+    payload: Record<string, unknown>,
+  ) => Promise<{
+    value?: T;
+  }>;
+}): Promise<BaseUrlSyncResult> {
+  const url = userBaseUrl();
+  if (!url) {
+    return {
+      applied: false,
+      detail: "未填写自定义端点，使用 DeepSeek 官方地址。",
+    };
+  }
+  const invalid = validateBaseUrl(url);
+  if (invalid) return { applied: false, detail: `端点地址无效：${invalid}` };
+
+  try {
+    const described = await client.call<{
+      namespaces?: Array<{ ns?: string; revision?: number }>;
+    }>("settings/describe", {});
+    const namespaces = described.value?.namespaces ?? [];
+    const found = namespaces.find((n) => n.ns === LLM_SETTINGS_NS);
+    if (!found) {
+      return {
+        applied: false,
+        detail:
+          `宿主没有暴露设置命名空间「${LLM_SETTINGS_NS}」，无法应用自定义端点。` +
+          "（当前部署可能用了别的模型适配器。）",
+      };
+    }
+    await client.call("settings/update", {
+      ns: LLM_SETTINGS_NS,
+      patch: { [BASE_URL_FIELD]: url },
+      expectedRevision: undefined,
+    });
+    appendPanelLog("runtime", `已把模型端点写入宿主设置：${url}`);
+    return {
+      applied: true,
+      detail: `已把端点设为 ${url}（宿主的设置服务会热应用，无需重启）。`,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appendPanelLog("runtime", `写入模型端点失败：${message}`);
+    return { applied: false, detail: `写入端点失败：${message}` };
+  }
+}
+
+// ── 把 API key 写进隔离实例 ───────────────────────────────
 
 /** API key 写入的结果（供设置页与自检显示，不包含密钥内容） */
 export interface KeySyncResult {

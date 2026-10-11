@@ -73,6 +73,16 @@ pref("highlightColor", "#ffd400");
 // 这与 dsh 自己的做法一致（它也把 key 明文放在该文件里），但要如实告知用户。
 pref("modelApiKey", "");
 
+// 第三方 / 自建端点的 **API 地址**（留空 = 用 DeepSeek 官方）。
+//
+// ⚠️ 需要是 **DeepSeek Messages 兼容**的 http(s) 根地址 —— 换掉 baseURL 并不会
+// 换成"另一个厂商的协议"，只是换了往哪儿发同一个请求。所以中转站、私有部署、
+// 企业网关可以，OpenAI 的 `/v1/chat/completions` 不行。
+//
+// 实现方式是把值写进 dsh 自己的设置命名空间 `llm-deepseek-api-key`，
+// 由宿主的设置服务**热应用**，不需要重启运行时。
+pref("modelBaseUrl", "");
+
 // 会话使用的 provider / 模型 / 推理等级。留空 = 用宿主自己的默认值。
 //
 // ⚠️ 这三项**不要写死候选值**：可选模型与推理等级由模型自己声明，

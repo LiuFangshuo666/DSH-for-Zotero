@@ -272,6 +272,26 @@
 
   <hbox align="center">
     <html:label
+      for="__addonRef__-model-base-url"
+      data-l10n-id="pref-model-base-url"
+    ></html:label>
+    <html:input
+      type="text"
+      id="__addonRef__-model-base-url"
+      style="width: 320px"
+      placeholder="https://api.deepseek.com"
+    ></html:input>
+  </hbox>
+  <!--
+    ⚠️ 这条说明是**必要的**，不是装饰。
+    换 baseURL 只是换"请求发往哪里"，协议仍是 DeepSeek Messages 那一套。
+    没有这条说明，用户会拿 OpenAI 的地址来填，然后得到一堆看不懂的报错 ——
+    而真正的原因是"那是另一套协议"，不是地址写错了。
+  -->
+  <label data-l10n-id="pref-model-base-url-hint"></label>
+
+  <hbox align="center">
+    <html:label
       for="__addonRef__-model-id"
       data-l10n-id="pref-model-id"
     ></html:label>
