@@ -104,6 +104,38 @@ describe("设置页事件的分发表", function () {
   });
 });
 
+describe("hooks 导出对象（oncommand 就是通过它调用的）", function () {
+  it("默认导出里必须有 onPrefsEvent", function () {
+    // 设置页的每个按钮都是 `Zotero.<addonInstance>.hooks.onPrefsEvent(...)`。
+    // 只要这个**导出名**不对（改名、漏掉、写成别的名字），
+    // **所有**按钮都会静默失败 —— 表现就是"按键点了没反应"，
+    // 而且构建、类型、lint 全都不会报警。
+    const at = hooks.indexOf("export default {");
+    assert.ok(at > 0, "找不到 hooks 的默认导出");
+    const body = hooks.slice(at, hooks.indexOf("}", at));
+    assert.match(
+      body,
+      /^\s*onPrefsEvent,\s*$/m,
+      "默认导出里必须有 onPrefsEvent（否则设置页按钮全部无效）",
+    );
+  });
+
+  it("onPrefsEvent 是以函数声明定义的（会被提升，导出不会拿到 undefined）", function () {
+    assert.match(hooks, /async function onPrefsEvent\(/);
+  });
+
+  it("XHTML 用占位符引用实例名，不写死", function () {
+    const pkg = JSON.parse(read("package.json"));
+    assert.ok(pkg.config.addonInstance, "package.json 缺少 addonInstance");
+    const used = [...page.matchAll(/Zotero\.__addonInstance__\./g)].length;
+    assert.ok(used > 0, "设置页应通过占位符引用实例名");
+    assert.ok(
+      !page.includes("Zotero.DSHForZotero."),
+      "源文件里应使用 __addonInstance__ 占位符（由构建替换）",
+    );
+  });
+});
+
 describe("设置页事件的兜底错误处理", function () {
   it("onPrefsEvent 必须有 try/catch 兜底", function () {
     // 没有它：处理函数里的任何抛出都会变成**无人处理的 Promise 拒绝** ——
