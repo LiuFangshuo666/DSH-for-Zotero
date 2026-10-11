@@ -9,6 +9,7 @@ import { SelfCheck } from "./modules/selfCheck";
 import { ReaderPanel } from "./modules/readerPanel";
 import { SelectionToolbar } from "./modules/selectionToolbar";
 import { SessionPane } from "./modules/sessionPane";
+import { handleModelPrefsEvent, initModelSection } from "./modules/modelPanel";
 import { RuntimeManager, describeRuntime } from "./dsh/isolatedRuntime";
 import { getString, initLocale } from "./utils/locale";
 import { createZToolkit } from "./utils/ztoolkit";
@@ -447,6 +448,10 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
       const manager = runtimeManager();
       setStatusText(describeRuntime(manager.getStatus()));
       manager.onStatus((status) => setStatusText(describeRuntime(status)));
+      // 模型一节：回填已保存的 API Key，并尝试填充模型/等级下拉框。
+      // 取不到目录时会**如实说明原因**（而不是给一份猜的清单）——
+      // 见 modelPanel.ts 顶部关于"为什么候选值必须动态取"的说明。
+      initModelSection(win);
       break;
     }
 
@@ -501,6 +506,18 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
 
     case "deep-probe": {
       void selfCheck.deepProbe(win);
+      break;
+    }
+
+    // ── 模型（API Key 与推理等级）──────────────────────────
+    //
+    // 三个事件交给 `modelPanel` 处理：下拉框同步（model-sync）、刷新列表
+    // （model-refresh）、保存 Key（model-save-key）。放在一个入口里分发，
+    // 是为了让设置页的 xhtml 里只出现一处 `onPrefsEvent` 调用形态。
+    case "model-sync":
+    case "model-refresh":
+    case "model-save-key": {
+      void handleModelPrefsEvent(type, { window: win, target: data?.target });
       break;
     }
 

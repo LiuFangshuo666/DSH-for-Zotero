@@ -101,4 +101,10 @@ export {
 } from "../../src/dsh/askUser";
 // 工作区 README 的拼装（`buildSkillFile` 已在上面导出，勿重复）
 export { buildWorkspaceReadme } from "../../src/modules/sessionPane";
+// 模型配置（API Key 与推理等级）的纯逻辑部分
+export {
+  API_KEY_REF,
+  hasCredentialRef,
+  setCredentialRef,
+} from "../../src/dsh/modelConfig";
 export { ChatTransport } from "../../src/chat/transport";

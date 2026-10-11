@@ -306,8 +306,12 @@ describe("构建产物结构", function () {
       [...prefsSource.matchAll(/pref\(\s*"([^"]+)"/g)].map((m) => strip(m[1])),
     );
 
-    const bound = [...uiSource.matchAll(/preference="([^"]+)"/g)].map((m) =>
-      strip(m[1]),
+    // ⚠️ 必须带词边界：裸的 /preference="([^"]+)"/ 会把
+    // `onsyncfrompreference="…"` 的**尾巴**也当成一个偏好名（因为
+    // `…preference="` 本身含那个子串），于是报出一堆并不存在的"偏好"。
+    // 本项目刚因此假报过失败（见 preferences.test.mjs 的同类修正）。
+    const bound = [...uiSource.matchAll(/(?:^|\s)preference="([^"]+)"/g)].map(
+      (m) => strip(m[1]),
     );
     assert.ok(bound.length >= 8, `设置界面绑定的偏好太少（${bound.length}）`);
     for (const name of bound) {

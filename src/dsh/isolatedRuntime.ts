@@ -29,6 +29,7 @@ import {
   logCredentialMerge,
   mergeProviderCredentials,
 } from "./credentialMerge";
+import { syncApiKeyToCredentials } from "./modelConfig";
 import { defaultDshHome } from "./config";
 import {
   ASAR_PREFIX,
@@ -380,6 +381,12 @@ export class RuntimeManager {
       // 只复制模型账号相关记录；宿主的浏览器会话密钥保持独立（见 credentialMerge.ts）。
       report("正在准备模型凭据…");
       await this.copyProviderCredentials(paths);
+      // 设置页里填过 API Key 的话，它**优先于**刚从桌面版复制来的值
+      // （见 modelConfig.ts 的规则表）。放在复制之后，顺序不能反。
+      const keyResult = await syncApiKeyToCredentials(
+        PathUtils.join(paths.home, ".credentials.yaml"),
+      );
+      this.log(`模型 API Key：${keyResult.detail}`);
 
       await this.saveState({
         preparedAt: new Date().toISOString(),

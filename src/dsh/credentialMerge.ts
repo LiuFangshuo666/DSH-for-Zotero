@@ -33,6 +33,7 @@
  */
 
 import { appendPanelLog } from "./runLog";
+import { API_KEY_REF, setCredentialRef, userApiKey } from "./modelConfig";
 
 /** dsh 的浏览器会话记录键：绝不跨实例复制 */
 const BROWSER_SESSION_KEY = "client-connection/browser-session";
@@ -153,24 +154,43 @@ export async function mergeProviderCredentials(
       result.copied.push(key);
     }
 
-    // ② 模型 API key
-    if (!/DEEPSEEK_API_KEY\s*:/.test(updated)) {
+    // ② 模型 API key —— **用户自己填的优先**
+    //
+    // ⚠️ 顺序很重要。这里原先只做"目标里没有就搬运源里的"，于是用户在设置页
+    // 填了 key 之后仍会被桌面版的值盖过去（或者根本写不进去）——
+    // 而"我在插件里填了 key 却还是报 no API key"是最难自查的一类故障。
+    //
+    // 所以：用户在设置页填过 → 用他的；没填过 → 沿用桌面版的（保持原行为）。
+    // 两种来源都记进结果，便于自检显示"当前用的是哪一个"。
+    const userKey = userApiKey();
+    if (userKey) {
+      // `setCredentialRef` 是 `modelConfig.ts` 里的实现（按行替换，不解析 YAML）
+      const replaced = setCredentialRef(updated, API_KEY_REF, userKey);
+      if (replaced === undefined) {
+        result.error = "目标凭据里没有 refs 段，无法写入 API key";
+        return result;
+      }
+      if (replaced !== updated) {
+        updated = replaced;
+        changed = true;
+      }
+      result.copied.push("refs.DEEPSEEK_API_KEY（设置页填写）");
+    } else if (!/DEEPSEEK_API_KEY\s*:/.test(updated)) {
       const refLine = extractRefLine(source, "DEEPSEEK_API_KEY");
       if (!refLine) {
         result.missing.push("refs.DEEPSEEK_API_KEY");
       } else {
         const lines = updated.split(/\r?\n/);
-        let refsAt = lines.findIndex((l) => /^refs\s*:\s*$/.test(l));
+        const refsAt = lines.findIndex((l) => /^refs\s*:\s*$/.test(l));
         if (refsAt < 0) {
           // 没有 refs 段就补一个在末尾
           lines.push("refs:", refLine);
-          refsAt = lines.length - 2;
         } else {
           lines.splice(refsAt + 1, 0, refLine);
         }
         updated = lines.join("\n");
         changed = true;
-        result.copied.push("refs.DEEPSEEK_API_KEY");
+        result.copied.push("refs.DEEPSEEK_API_KEY（沿用桌面版）");
       }
     }
 

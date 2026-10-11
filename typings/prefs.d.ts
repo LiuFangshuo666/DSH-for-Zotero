@@ -18,6 +18,10 @@ declare namespace _ZoteroTypes {
       "installSkill": boolean;
       "customCommands": string;
       "highlightColor": string;
+      "modelApiKey": string;
+      "modelProvider": string;
+      "modelId": string;
+      "modelReasoningEffort": string;
       "answerLanguage": string;
     };
   }

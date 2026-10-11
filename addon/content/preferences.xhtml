@@ -230,6 +230,85 @@
   <label data-l10n-id="pref-custom-commands-hint"></label>
 
   <!--
+    ── 模型 ─────────────────────────────────────────
+    ⚠️ 这一节补的是一个**真实的可用性缺口**，不是"多一个设置项"。
+
+    隔离实例的模型凭据一律从本机桌面版 Harness 复制（见 credentialMerge.ts）。
+    于是**没装过桌面版、或装了但没登录/没配 key** 的用户完全用不了插件 ——
+    而错误藏在 turn/end 的 reason 里，界面只表现为问答失败、看不出原因。
+
+    所以这里让用户能**在 Zotero 里直接填**：填了就用他的，没填就沿用桌面版。
+
+    推理等级的候选值**不写死**：由 `onPrefsEvent` 从 `session/modelCatalog`
+    动态填充（模型自己声明有哪些等级）。写死一份的话，模型换了就会给出
+    宿主不接受的取值，而失败是静默的（用户只看到"没生效"）。
+  -->
+  <label><html:h3 data-l10n-id="pref-model"></html:h3></label>
+  <description data-l10n-id="pref-model-desc"></description>
+
+  <hbox align="center">
+    <html:label
+      for="__addonRef__-model-api-key"
+      data-l10n-id="pref-model-api-key"
+    ></html:label>
+    <!-- 刻意用 type="password"：肩窥与截图场景下不该直接暴露密钥 -->
+    <html:input
+      type="password"
+      id="__addonRef__-model-api-key"
+      style="width: 320px"
+      placeholder="sk-…"
+    ></html:input>
+    <html:button
+      id="__addonRef__-model-save-key"
+      data-l10n-id="pref-model-save-key"
+      oncommand="
+        Zotero.__addonInstance__.hooks.onPrefsEvent('model-save-key', {
+          window,
+        })
+      "
+    ></html:button>
+  </hbox>
+  <label data-l10n-id="pref-model-api-key-hint"></label>
+
+  <hbox align="center">
+    <html:label
+      for="__addonRef__-model-id"
+      data-l10n-id="pref-model-id"
+    ></html:label>
+    <menulist
+      id="__addonRef__-model-id"
+      preference="modelId"
+      onsyncfrompreference="Zotero.__addonInstance__.hooks.onPrefsEvent('model-sync', { window, target: this })"
+      style="min-width: 320px"
+    >
+      <menupopup />
+    </menulist>
+    <html:button
+      id="__addonRef__-model-refresh"
+      data-l10n-id="pref-model-refresh"
+      oncommand="
+        Zotero.__addonInstance__.hooks.onPrefsEvent('model-refresh', { window })
+      "
+    ></html:button>
+  </hbox>
+
+  <hbox align="center">
+    <html:label
+      for="__addonRef__-model-effort"
+      data-l10n-id="pref-model-effort"
+    ></html:label>
+    <menulist
+      id="__addonRef__-model-effort"
+      preference="modelReasoningEffort"
+      onsyncfrompreference="Zotero.__addonInstance__.hooks.onPrefsEvent('model-sync', { window, target: this })"
+      style="min-width: 220px"
+    >
+      <menupopup />
+    </menulist>
+  </hbox>
+  <label data-l10n-id="pref-model-status"></label>
+
+  <!--
     ── 高级 ─────────────────────────────────────────
     这里放"平时不用动、但出问题时需要调"的项。
     `requestTimeoutMs` 原先**代码在读、设置页却没有** —— 用户既看不到、也改不了，

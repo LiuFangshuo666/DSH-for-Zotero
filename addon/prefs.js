@@ -58,6 +58,32 @@ pref("highlightColor", "#ffd400");
 // （实测 dsh 不返回 CORS 头），只能看不能问 —— 留着会让用户选到"看着一样、
 // 实际不能对话"的形态。代码见 sessionPane.ts 的 mountMode()。
 
+// ── 模型 ─────────────────────────────────────────────────
+// ## ⚠️ 这一节解决的是一个真实的可用性缺口
+//
+// 隔离实例的模型凭据是**从本机桌面版 Harness 复制**过来的（见 credentialMerge.ts）。
+// 于是没有装过桌面版、或装了但没登录/没配 key 的用户，插件**完全用不了** ——
+// 表现为问答一直失败，错误藏在 turn/end 的 reason 里：
+//
+//   llm-deepseek: no API key for provider route "deepseek-official" …
+//
+// 所以这里让用户**在 Zotero 里直接填**。填了就用他的；没填就沿用桌面版（原行为）。
+//
+// ⚠️ 明文存储：偏好写在 prefs.js 里（明文），隔离实例的 .credentials.yaml 同样是明文。
+// 这与 dsh 自己的做法一致（它也把 key 明文放在该文件里），但要如实告知用户。
+pref("modelApiKey", "");
+
+// 会话使用的 provider / 模型 / 推理等级。留空 = 用宿主自己的默认值。
+//
+// ⚠️ 这三项**不要写死候选值**：可选模型与推理等级由模型自己声明，
+// 设置页里是从 `session/modelCatalog` **动态读取**的（见 modelConfig.ts）。
+// 写死一份的话，模型换了、等级加了之后，设置页会给出宿主并不接受的取值 ——
+// 而失败是静默的（selectModel 抛错，用户只看到"没生效"）。
+pref("modelProvider", "");
+pref("modelId", "");
+// 推理等级（如 off / low / high / max，具体取值由模型决定）
+pref("modelReasoningEffort", "");
+
 // ── 界面 ─────────────────────────────────────────────────
 // 回答显示语言：zh-CN | en-US | follow
 pref("answerLanguage", "zh-CN");

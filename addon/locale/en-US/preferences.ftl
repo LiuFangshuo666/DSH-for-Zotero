@@ -30,6 +30,19 @@ pref-highlight-color = Highlight colour
 pref-highlight-color-hint = A Zotero palette value; the default yellow is #ffd400
 pref-custom-commands-hint = A JSON array whose entries carry label and instruction fields, e.g. "Reviewer view / list three main reviewer concerns"; empty means the five built-ins only
 
+# ── Model (API key and reasoning effort) ─────────────────────
+# This section closes a real gap: without desktop Harness credentials the plugin
+# cannot answer at all, and the failure is only visible deep in a turn's reason.
+pref-model = Model
+pref-model-desc = On first start the isolated runtime copies model credentials from your local desktop Harness. If you have not installed it, or have not signed in or stored a key there, enter one here — a key entered here takes precedence, and leaving it empty keeps using the desktop copy.
+pref-model-api-key = DeepSeek API key
+pref-model-save-key = Save and write
+pref-model-api-key-hint = Saving writes it into the isolated instance's .credentials.yaml as refs.DEEPSEEK_API_KEY; the host's credential service watches that file and reloads it. Stored in plain text, exactly as the desktop Harness does. Empty means keep using the desktop credentials.
+pref-model-id = Model used by sessions
+pref-model-refresh = Refresh list
+pref-model-effort = Reasoning effort
+pref-model-status = (model list not loaded yet)
+
 # ── Advanced (includes what gets written into your dsh home) ─
 pref-advanced = Advanced
 pref-request-timeout = Request timeout

@@ -30,6 +30,18 @@ pref-highlight-color = 高亮颜色
 pref-highlight-color-hint = Zotero 调色板取值，默认黄 #ffd400
 pref-custom-commands-hint = JSON 数组，元素包含 label 与 instruction 两个字段，例如"审稿视角 / 像审稿人一样列出三条主要意见"；留空则只用内置五条
 
+# ── 模型（API Key 与推理等级）───────────────────────────
+# ⚠️ 这一节补的是"没有桌面版凭据就用不了"这个真实缺口，文案要把这层因果讲清。
+pref-model = 模型
+pref-model-desc = 隔离运行时第一次启动时会从本机桌面版 Harness 复制模型凭据。如果你没装过桌面版、或装了但没登录/没配 Key，就在这里直接填 —— 填了就优先用这里的，没填则沿用桌面版。
+pref-model-api-key = DeepSeek API Key
+pref-model-save-key = 保存并写入
+pref-model-api-key-hint = 保存后会写入隔离实例的 .credentials.yaml（refs.DEEPSEEK_API_KEY），宿主的凭据服务会监听文件变化并热重载。⚠️ 与桌面版 Harness 一样是明文存储；留空则沿用桌面版的凭据。
+pref-model-id = 会话使用的模型
+pref-model-refresh = 刷新列表
+pref-model-effort = 推理等级
+pref-model-status = （模型列表尚未加载）
+
 # ── 高级（含写入 dsh 侧的开关）───────────────────────────
 pref-advanced = 高级
 pref-request-timeout = 请求超时

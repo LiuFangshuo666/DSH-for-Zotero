@@ -26,6 +26,7 @@
  */
 
 import { mintCookieFromCredentials, type AuthCookie } from "../dsh/auth";
+import { selectedModel } from "../dsh/modelConfig";
 import {
   credentialsPath,
   resolveRuntimeConfig,
@@ -38,6 +39,7 @@ import {
   DshRpcError,
   listSessions,
   promptSession,
+  selectSessionModel,
   type SessionSummary,
 } from "../dsh/rpc";
 import {
@@ -709,10 +711,58 @@ export class ChatTransport {
         return undefined;
       }
       const created = await createSession(client, { cwd });
-      return created.value?.sessionId;
+      const sessionId = created.value?.sessionId;
+      // 用户选过模型/推理等级的话，把选择装到这条新会话上。
+      // 放在这里而不是调用方，是为了**每条新建路径都覆盖到**（建会话、
+      // 会话丢失后自愈重建、以及测试用的直建）—— 漏一条就会出现
+      // "有的会话按我选的等级跑、有的不按"，那种不一致极难自查。
+      if (sessionId) await this.applyModelSelection(client, sessionId);
+      return sessionId;
     } catch (error) {
       this.log(`新建会话失败：${this.describeError(error)}`);
       return undefined;
+    }
+  }
+
+  /**
+   * 把用户在设置页选的 provider / 模型 / 推理等级装到某条会话上。
+   *
+   * ## 三个都要注意的点
+   *
+   * 1. **没选就什么都不做** —— 保持宿主自己的默认，不替用户做决定；
+   * 2. dsh 侧要求**先显式恢复会话**再选（`selectModel` 内部会 `resolveAgent`）——
+   *    所以调用它的时机必须在 `session/create` 之后（本方法的所有调用点都满足）；
+   * 3. **失败不抛出**：模型选择失败不该让建会话整体失败 ——
+   *    那用户会看到"会话建不出来"，而真实原因是"等级填错了"。
+   *    这里记日志并继续，让问答照常进行（用宿主默认等级）。
+   */
+  private async applyModelSelection(
+    client: DshClient,
+    sessionId: string,
+  ): Promise<void> {
+    const choice = selectedModel();
+    if (!choice) return;
+    try {
+      await selectSessionModel(client, {
+        sessionId,
+        provider: choice.provider,
+        model: choice.model,
+        // 空串表示"用模型的默认等级"，此时**不要**传这个字段 ——
+        // 传空串会被宿主当成无效的 ReasoningEffortId。
+        ...(choice.reasoningEffort
+          ? { reasoningEffort: choice.reasoningEffort }
+          : {}),
+      });
+      this.log(
+        `已为会话 ${sessionId} 选定模型 ${choice.provider}/${choice.model}` +
+          (choice.reasoningEffort
+            ? `（推理等级 ${choice.reasoningEffort}）`
+            : ""),
+      );
+    } catch (error) {
+      this.log(
+        `选定模型失败（继续用宿主默认，问答不受影响）：${this.describeError(error)}`,
+      );
     }
   }
 

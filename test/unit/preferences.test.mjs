@@ -47,6 +47,23 @@ const codeFiles = [
 ].filter((f) => !f.includes(".scaffold"));
 const codeTexts = codeFiles.map((f) => [f, readFileSync(f, "utf8")]);
 
+/**
+ * 取出设置页里绑定的**偏好名**。
+ *
+ * ⚠️ 不能直接用 /preference="([^"]+)"/ —— 它会把
+ * `onsyncfrompreference="…"` 的**尾巴**也当成一个偏好名
+ * （因为 `…preference="` 本身就含那个子串），
+ * 于是报出一堆根本不存在的“偏好”。本项目刚因此
+ * 假报了三条失败。用词边界只匹配独立的属性名。
+ */
+function boundPreferences() {
+  const names = [...page.matchAll(/(?:^|\s)preference="([^"]+)"/g)].map(
+    (m) => m[1],
+  );
+  assert.ok(names.length > 0, "设置页应当绑定偏好");
+  return names;
+}
+
 describe("设置页与代码的一致性", function () {
   it("页面用到的每个文案键都有定义，且没有未使用的文案", function () {
     const used = new Set(
@@ -75,9 +92,7 @@ describe("设置页与代码的一致性", function () {
   });
 
   it("设置页绑定的每个偏好都被代码读过（没有摆设开关）", function () {
-    const bound = [...page.matchAll(/preference="([^"]+)"/g)].map((m) => m[1]);
-    assert.ok(bound.length > 0, "设置页应当绑定偏好");
-    for (const name of bound) {
+    for (const name of boundPreferences()) {
       const read = codeTexts.some(
         ([file, text]) =>
           !file.endsWith("preferences.xhtml") &&
@@ -89,7 +104,7 @@ describe("设置页与代码的一致性", function () {
   });
 
   it("每个绑定只出现一次（避免重复控件改同一个偏好）", function () {
-    const bound = [...page.matchAll(/preference="([^"]+)"/g)].map((m) => m[1]);
+    const bound = boundPreferences();
     const dup = bound.filter((n, i) => bound.indexOf(n) !== i);
     assert.deepEqual(dup, [], `同一偏好被绑定多次：${dup.join(", ")}`);
   });

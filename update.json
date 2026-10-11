@@ -3,9 +3,9 @@
     "dsh-for-zotero@zotero.cn": {
       "updates": [
         {
-          "version": "0.3.0",
-          "update_link": "https://gitee.com/laofashi666/dsh-for-zotero/releases/download/v0.3.0/dsh-for-zotero.xpi",
-          "update_hash": "sha512:0b29ccf07f334084f40ab192d83ffee8994682808205bc53ab69b1e0946338229861f8678b0e68f3a052f42a68d6a281a43208e4823b79eebaef3286f9a61098",
+          "version": "0.4.0",
+          "update_link": "https://gitee.com/laofashi666/dsh-for-zotero/releases/download/v0.4.0/dsh-for-zotero.xpi",
+          "update_hash": "sha512:d5f3e0f9125946d9d68fb475ebcc8caff3796cb814c7f1c816a1e1be8b6d3798544574b95c784a5d6e6768bc31bb833801bd28d5bfb197e8c87bb4c400224cd0",
           "applications": {
             "zotero": {
               "strict_min_version": "10.0",

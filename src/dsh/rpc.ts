@@ -436,4 +436,85 @@ export async function cancelSession(
   });
 }
 
+// ── 模型选择（推理等级） ────────────────────────────────────────
+
+/** 一个可选的推理等级（由模型自己声明，不是我们写死的） */
+export interface ModelReasoningEffort {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+/** 某个模型支持的推理等级与默认值 */
+export interface ModelReasoning {
+  efforts: ModelReasoningEffort[];
+  defaultEffort?: string;
+}
+
+/** 目录里的一个模型 */
+export interface ModelCatalogModel {
+  id: string;
+  name: string;
+  description?: string;
+  reasoning?: ModelReasoning;
+}
+
+/** 一个 provider 及其可用模型 */
+export interface ModelProviderGroup {
+  id: string;
+  name: string;
+  models: ModelCatalogModel[];
+}
+
+/**
+ * 模型目录。
+ *
+ * ## 为什么用它而不是在设置页写死选项
+ *
+ * **可选模型与推理等级都是模型自己声明的**（dsh 侧由适配器提供）。写死一份的话，
+ * 模型换了、等级加了，设置页就会给出宿主根本不接受的取值 —— 而失败是静默的
+ * （`selectModel` 抛错、用户只看到"没生效"）。
+ *
+ * 实测 `deepseek-official` 的等级是 `off` / `low` / `high` / `max`（默认 `high`），
+ * 但这个结论来自 dsh 源码，**不该由插件固化**。
+ */
+export interface ModelCatalog {
+  default: { provider?: string; model?: string; reasoningEffort?: string };
+  routableProviders: string[];
+  groups: ModelProviderGroup[];
+  /** 加载失败的 provider（例如没有凭据）—— 设置页要如实显示 */
+  failures: Array<{ id: string; name: string; message: string }>;
+}
+
+/** 取模型目录（设置页据此填充下拉框） */
+export async function fetchModelCatalog(
+  client: DshClient,
+): Promise<DshCallResult<ModelCatalog>> {
+  return client.call<ModelCatalog>("session/modelCatalog", {});
+}
+
+/**
+ * 为某条会话选定模型与推理等级。
+ *
+ * ⚠️ dsh 侧的注释写明要"**显式恢复该会话**"之后再选 —— 所以调用方应先
+ * `session/create`（带 sessionId 即恢复），再调这个。
+ *
+ * `reasoningEffort` 省略时用模型的默认等级；传了宿主不接受的值会抛错，
+ * 所以设置页的取值只能来自 {@link fetchModelCatalog}。
+ */
+export async function selectSessionModel(
+  client: DshClient,
+  request: {
+    sessionId: string;
+    provider: string;
+    model: string;
+    reasoningEffort?: string;
+  },
+): Promise<DshCallResult<{ selected: Record<string, unknown> }>> {
+  return client.call<{ selected: Record<string, unknown> }>(
+    "session/selectModel",
+    { request },
+  );
+}
+
 export { newRpcId };
