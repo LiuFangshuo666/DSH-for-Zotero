@@ -30,6 +30,7 @@ import {
   mergeProviderCredentials,
 } from "./credentialMerge";
 import { syncApiKeyToCredentials } from "./modelConfig";
+import { applyProviders } from "./providers";
 import { defaultDshHome } from "./config";
 import {
   ASAR_PREFIX,
@@ -362,6 +363,21 @@ export class RuntimeManager {
       await IOUtils.makeDirectory(paths.runtime, { ignoreExisting: true });
       await IOUtils.makeDirectory(paths.profile, { ignoreExisting: true });
       await this.writeProfileFiles(paths, report);
+
+      // ⚠️ 组合层里与应用户相关的那部分：自定义 provider。
+      //
+      // 必须在**拉起宿主之前**写完 —— `package.json` 的 `bundles` 决定宿主
+      // 启动时组合哪些包，启动之后再改是无效的（要重启）。
+      // 放在 `writeProfileFiles` 之后：那个方法只在文件不存在时写入基础内容，
+      // 而这里做的是"在既有内容上并入托管区块"。
+      report("正在写入模型 provider 配置…");
+      const applied = await applyProviders({
+        profileDir: paths.profile,
+        credentialsFile: PathUtils.join(paths.home, ".credentials.yaml"),
+      });
+      if (applied.needsRestart) {
+        this.log(`自定义 provider 配置已更新：${applied.detail}`);
+      }
 
       report("正在提取 dsh 运行时（约 110 MB，首次约 10 秒）…");
       await this.extractFromAsar(found.location, paths, report);

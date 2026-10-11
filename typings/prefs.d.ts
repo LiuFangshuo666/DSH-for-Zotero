@@ -20,6 +20,7 @@ declare namespace _ZoteroTypes {
       "highlightColor": string;
       "modelApiKey": string;
       "modelBaseUrl": string;
+      "customProviders": string;
       "modelProvider": string;
       "modelId": string;
       "modelReasoningEffort": string;

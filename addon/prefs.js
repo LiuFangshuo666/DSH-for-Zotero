@@ -83,6 +83,19 @@ pref("modelApiKey", "");
 // 由宿主的设置服务**热应用**，不需要重启运行时。
 pref("modelBaseUrl", "");
 
+// 自定义 provider 列表：JSON 数组，元素形如
+//   { "route":"glm", "api":"openai-completions",
+//     "baseURL":"https://open.bigmodel.cn/api/v1",
+//     "apiKey":"…", "displayName":"智谱 GLM",
+//     "models":[{"id":"glm-4.7","name":"GLM-4.7"}] }
+//
+// ⚠️ 这一项与上面的「API 地址」是**两条不同的路**：
+//  · 「API 地址」换的是 llm-deepseek 适配器的端点（Anthropic Messages 协议）；
+//  · 这一项会挂载 llm-pi-ai 适配器，支持 OpenAI 兼容 / Anthropic Messages /
+//    OpenAI Responses 三种协议，用来接 GLM、Moonshot、Qwen 等第三方端点。
+// 改动这一项需要**重启隔离运行时**（profile 的组合发生在宿主启动时）。
+pref("customProviders", "[]");
+
 // 会话使用的 provider / 模型 / 推理等级。留空 = 用宿主自己的默认值。
 //
 // ⚠️ 这三项**不要写死候选值**：可选模型与推理等级由模型自己声明，

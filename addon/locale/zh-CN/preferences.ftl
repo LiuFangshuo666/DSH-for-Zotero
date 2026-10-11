@@ -45,6 +45,13 @@ pref-model-base-url-hint = 留空则用 DeepSeek 官方。可填中转站、私�
 pref-model-status = （模型列表尚未加载）
 
 # ── 高级（含写入 dsh 侧的开关）───────────────────────────
+pref-providers = 自定义模型 provider（GLM / Moonshot / Qwen / 自建等）
+pref-providers-desc = 上面的「API 地址」换的是 DeepSeek 适配器的端点（Anthropic Messages 协议）；而这里可以挂载多个任意 provider，支持 OpenAI 兼容 / Anthropic / OpenAI Responses 三种协议。填 JSON 数组，每项：route（路由名，也是模型选择器里显示的 provider）、api、baseURL、apiKey、models（id 必填）。例：[{"route":"glm","api":"openai-completions","baseURL":"https://open.bigmodel.cn/api/v1","apiKey":"…","models":[{"id":"glm-4.7","name":"GLM-4.7"}]}]
+pref-providers-save = 保存并应用
+pref-providers-example = 填入示例
+pref-providers-status = （尚未保存）
+
+# ── 高级 ───────────────────────────────────────
 pref-advanced = 高级
 pref-request-timeout = 请求超时
 pref-request-timeout-hint = 单次请求 dsh 的超时（毫秒，默认 15000）。网络慢或长任务可调大。

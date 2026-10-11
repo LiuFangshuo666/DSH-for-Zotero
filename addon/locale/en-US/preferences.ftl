@@ -46,6 +46,13 @@ pref-model-base-url-hint = Leave empty to use the official DeepSeek endpoint. Re
 pref-model-status = (model list not loaded yet)
 
 # ── Advanced (includes what gets written into your dsh home) ─
+pref-providers = Custom model providers (GLM, Moonshot, Qwen, self-hosted)
+pref-providers-desc = The API base URL above changes the endpoint of the DeepSeek adapter, which speaks the Anthropic Messages protocol. This one mounts additional providers speaking OpenAI Completions, OpenAI Responses or Anthropic Messages. Provide a JSON array; each entry needs route (also the provider name shown in the model picker), api, baseURL, apiKey and models (id required). Example: [{"route":"glm","api":"openai-completions","baseURL":"https://open.bigmodel.cn/api/v1","apiKey":"...","models":[{"id":"glm-4.7","name":"GLM-4.7"}]}]
+pref-providers-save = Save and apply
+pref-providers-example = Insert example
+pref-providers-status = (not saved yet)
+
+# ── 高级 ───────────────────────────────────────
 pref-advanced = Advanced
 pref-request-timeout = Request timeout
 pref-request-timeout-hint = Per-request timeout for dsh in milliseconds (default 15000). Raise it on slow machines or for long tasks.

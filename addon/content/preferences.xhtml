@@ -329,6 +329,47 @@
   <label data-l10n-id="pref-model-status"></label>
 
   <!--
+    ── 自定义 provider（GLM / Moonshot / Qwen / 自建…）──────────
+    ⚠️ 与上面的「API 地址」是**两条不同的路**，必须在界面上讲清：
+      · 上面那栏换的是 llm-deepseek 适配器的端点（Anthropic Messages 协议）；
+      · 这一栏会挂载 llm-pi-ai，支持 OpenAI 兼容 / Anthropic / OpenAI Responses。
+    用 JSON 编辑而不是动态表单：provider 是"数量不定、每个含模型清单"的结构，
+    做成表单会非常庞大；而目标用户（要接自建端点的人）对 JSON 不陌生。
+  -->
+  <label><html:h3 data-l10n-id="pref-providers"></html:h3></label>
+  <description data-l10n-id="pref-providers-desc"></description>
+  <html:textarea
+    id="__addonRef__-custom-providers"
+    rows="10"
+    style="
+      width: 100%;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 12px;
+    "
+  ></html:textarea>
+  <hbox align="center">
+    <html:button
+      id="__addonRef__-providers-save"
+      data-l10n-id="pref-providers-save"
+      oncommand="
+        Zotero.__addonInstance__.hooks.onPrefsEvent('providers-save', {
+          window,
+        })
+      "
+    ></html:button>
+    <html:button
+      id="__addonRef__-providers-example"
+      data-l10n-id="pref-providers-example"
+      oncommand="
+        Zotero.__addonInstance__.hooks.onPrefsEvent('providers-example', {
+          window,
+        })
+      "
+    ></html:button>
+  </hbox>
+  <label data-l10n-id="pref-providers-status"></label>
+
+  <!--
     ── 高级 ─────────────────────────────────────────
     这里放"平时不用动、但出问题时需要调"的项。
     `requestTimeoutMs` 原先**代码在读、设置页却没有** —— 用户既看不到、也改不了，

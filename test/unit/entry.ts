@@ -108,4 +108,19 @@ export {
   setCredentialRef,
   validateBaseUrl,
 } from "../../src/dsh/modelConfig";
+// 自定义 provider（GLM / Moonshot / 自建端点）的纯逻辑
+export {
+  SUPPORTED_APIS,
+  PI_AI_PACKAGE,
+  MANAGED_START,
+  MANAGED_END,
+  credentialRefForRoute,
+  validateProvider,
+  validateEndpointUrl,
+  buildProviderPatch,
+  mergeManagedBlock,
+  extractManagedBlock,
+  ensurePiAiBundle,
+  compositionNeedsRestart,
+} from "../../src/dsh/providers";
 export { ChatTransport } from "../../src/chat/transport";

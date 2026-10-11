@@ -42,6 +42,15 @@ import {
   userBaseUrl,
   validateBaseUrl,
 } from "../dsh/modelConfig";
+import {
+  applyProviders,
+  compositionNeedsRestart,
+  readProviders,
+  validateProvider,
+  writeProviders,
+  type ProviderDefinition,
+} from "../dsh/providers";
+import { resolveRuntimePaths } from "../dsh/isolatedPaths";
 
 /**
  * 宽松的下拉框类型。
@@ -355,4 +364,164 @@ export async function onModelChanged(win: Window | undefined): Promise<void> {
   const pick = decodeModel(list.value);
   if (pick) setSelectedModel({ ...pick, reasoningEffort: "" });
   await fillEffortList(win, list.value);
+}
+
+// ── 自定义 provider ────────────────────────────────────────────
+
+const PROVIDERS_ID = `${REF}-custom-providers`;
+const PROVIDERS_STATUS_ID = `${REF}-providers-status`;
+
+function setProvidersStatus(win: Window | undefined, text: string): void {
+  const node = el<HTMLElement>(win, PROVIDERS_STATUS_ID);
+  if (node) node.textContent = text;
+  appendPanelLog("runtime", `自定义 provider：${text}`);
+}
+
+/** 给用户的示例（同时起"这份 JSON 长什么样"的文档作用） */
+const PROVIDER_EXAMPLE = JSON.stringify(
+  [
+    {
+      route: "glm",
+      api: "openai-completions",
+      baseURL: "https://open.bigmodel.cn/api/v1",
+      apiKey: "在这里填该端点的 API Key",
+      displayName: "智谱 GLM",
+      models: [
+        { id: "glm-4.7", name: "GLM-4.7" },
+        { id: "glm-4.5-air", name: "GLM-4.5-Air" },
+      ],
+    },
+  ],
+  null,
+  2,
+);
+
+/** 设置页载入：回填已保存的定义，并显示"是否需要重启" */
+export function initProvidersSection(win: Window | undefined): void {
+  const box = el<HTMLTextAreaElement>(win, PROVIDERS_ID);
+  if (!box) return;
+  // 回填时**用格式化后的 JSON**：原始偏好多是压缩成一行的，
+  // 直接显示会变成一条难读的长行，而这是要给人编辑的。
+  try {
+    box.value = JSON.stringify(readProviders(), null, 2);
+  } catch {
+    box.value = "[]";
+  }
+  void refreshProvidersStatus(win);
+}
+
+/** 对比磁盘与用户定义，给出"是否需要重启"的结论 */
+async function refreshProvidersStatus(win: Window | undefined): Promise<void> {
+  try {
+    const paths = resolveRuntimePaths();
+    if (!paths) {
+      setProvidersStatus(win, "（无法定位隔离实例的 profile 目录）");
+      return;
+    }
+    const readOr = async (p: string) =>
+      (await IOUtils.exists(p)) ? await IOUtils.readUTF8(p) : "";
+    const stale = compositionNeedsRestart(
+      await readOr(`${paths.profile}/package.json`),
+      await readOr(`${paths.profile}/cordis.patch.yml`),
+      readProviders(),
+    );
+    setProvidersStatus(
+      win,
+      stale
+        ? "⚠️ 配置已改但**尚未生效** —— 请到上面的「隔离运行时」一节点「停止」再「启动」。"
+        : "已生效。",
+    );
+  } catch {
+    setProvidersStatus(win, "（隔离运行时未就绪，保存后在下次启动时生效）");
+  }
+}
+
+/** 插入示例，方便用户改而不是从零写 */
+export function insertProviderExample(win: Window | undefined): void {
+  const box = el<HTMLTextAreaElement>(win, PROVIDERS_ID);
+  if (!box) return;
+  box.value = PROVIDER_EXAMPLE;
+  setProvidersStatus(
+    win,
+    "已填入示例 —— 请把 baseURL、apiKey 与 models 改成你自己的，再点保存。",
+  );
+}
+
+/**
+ * 保存并应用自定义 provider。
+ *
+ * ## 校验在**写盘之前**做完整
+ *
+ * 逐条校验并把**具体哪一条、哪个字段**说清楚。原因很实际：这个配置的失败
+ * 出现在宿主启动阶段（组合 profile 时），那时用户看到的是一句
+ * "启动失败"，与"我第 3 个 provider 的 baseURL 写错了"之间的距离非常远。
+ */
+export async function saveProviders(win: Window | undefined): Promise<void> {
+  const box = el<HTMLTextAreaElement>(win, PROVIDERS_ID);
+  if (!box) return;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(box.value.trim() || "[]");
+  } catch (error) {
+    setProvidersStatus(
+      win,
+      `JSON 解析失败：${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
+  if (!Array.isArray(parsed)) {
+    setProvidersStatus(
+      win,
+      "顶层必须是数组（`[…]`），里面每个对象是一个 provider。",
+    );
+    return;
+  }
+
+  // 逐条校验；把重复路由也一并查出来（validateProvider 需要"已有的其它路由"）
+  const defs: ProviderDefinition[] = [];
+  for (const [i, raw] of parsed.entries()) {
+    const label = `第 ${i + 1} 条`;
+    if (typeof raw !== "object" || raw === null) {
+      setProvidersStatus(win, `${label}不是对象。`);
+      return;
+    }
+    const def = raw as ProviderDefinition;
+    const others = [
+      ...defs.map((d) => d.route),
+      ...parsed
+        .slice(i + 1)
+        .map((r) => (r as ProviderDefinition)?.route)
+        .filter((r): r is string => typeof r === "string"),
+    ];
+    const invalid = validateProvider(def, others);
+    if (invalid) {
+      setProvidersStatus(
+        win,
+        `${label}（route=${def.route || "未填"}）：${invalid}`,
+      );
+      return;
+    }
+    defs.push(def);
+  }
+
+  writeProviders(defs);
+  // 立刻写盘（配置 + 凭据），并把"是否需要重启"如实告诉用户
+  try {
+    const paths = resolveRuntimePaths();
+    if (!paths) {
+      setProvidersStatus(win, "已保存，但无法定位 profile 目录，未应用。");
+      return;
+    }
+    const applied = await applyProviders({
+      profileDir: paths.profile,
+      credentialsFile: `${paths.home}/.credentials.yaml`,
+    });
+    setProvidersStatus(win, applied.detail);
+  } catch {
+    setProvidersStatus(
+      win,
+      "已保存。隔离运行时未就绪 —— 启动时它会写入 profile 与凭据。",
+    );
+  }
 }

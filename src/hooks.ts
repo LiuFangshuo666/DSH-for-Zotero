@@ -9,7 +9,13 @@ import { SelfCheck } from "./modules/selfCheck";
 import { ReaderPanel } from "./modules/readerPanel";
 import { SelectionToolbar } from "./modules/selectionToolbar";
 import { SessionPane } from "./modules/sessionPane";
-import { handleModelPrefsEvent, initModelSection } from "./modules/modelPanel";
+import {
+  handleModelPrefsEvent,
+  initModelSection,
+  initProvidersSection,
+  insertProviderExample,
+  saveProviders,
+} from "./modules/modelPanel";
 import { RuntimeManager, describeRuntime } from "./dsh/isolatedRuntime";
 import { getString, initLocale } from "./utils/locale";
 import { createZToolkit } from "./utils/ztoolkit";
@@ -452,6 +458,8 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
       // 取不到目录时会**如实说明原因**（而不是给一份猜的清单）——
       // 见 modelPanel.ts 顶部关于"为什么候选值必须动态取"的说明。
       initModelSection(win);
+      // 自定义 provider：回填已保存的定义，并显示"是否需要重启"
+      initProvidersSection(win);
       break;
     }
 
@@ -518,6 +526,20 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
     case "model-refresh":
     case "model-save-key": {
       void handleModelPrefsEvent(type, { window: win, target: data?.target });
+      break;
+    }
+
+    // ── 自定义 provider（GLM / Moonshot / Qwen / 自建…）────
+    //
+    // 与上面的「API 地址」是两条不同的路：这条路会挂载 llm-pi-ai 适配器，
+    // 支持 OpenAI 兼容 / Anthropic / OpenAI Responses 三种协议。
+    case "providers-save": {
+      void saveProviders(win);
+      break;
+    }
+
+    case "providers-example": {
+      insertProviderExample(win);
       break;
     }
 
