@@ -86,9 +86,22 @@ function el<T extends Element>(
   }
 }
 
+/**
+ * 写模型一节的状态行。
+ *
+ * ## 为什么前面加一个时间戳
+ *
+ * 真机反馈"点任何按键都没有文字"。状态行确实在更新（id 修好之后），
+ * 但**两段文字看起来很像**时，用户无法判断"它到底变了没有" ——
+ * 于是仍然报"没反应"。
+ *
+ * 加上 `HH:MM:SS` 之后，点一次就会看到一个**明显不同**的时间，
+ * 这是最便宜的"它活着"的证据。同时诊断文件里也留着时间线。
+ */
 function setStatus(win: Window | undefined, text: string): void {
+  const stamp = new Date().toLocaleTimeString();
   const node = el<HTMLElement>(win, STATUS_ID);
-  if (node) node.textContent = text;
+  if (node) node.textContent = `[${stamp}] ${text}`;
   appendPanelLog("runtime", `模型设置：${text}`);
 }
 
@@ -460,9 +473,11 @@ export function scheduleReadyRefresh(win: Window | undefined): void {
 const PROVIDERS_ID = `${REF}-custom-providers`;
 const PROVIDERS_STATUS_ID = `${REF}-providers-status`;
 
+/** 写自定义 provider 一节的状态行（同样加时间戳，理由见 setStatus） */
 function setProvidersStatus(win: Window | undefined, text: string): void {
+  const stamp = new Date().toLocaleTimeString();
   const node = el<HTMLElement>(win, PROVIDERS_STATUS_ID);
-  if (node) node.textContent = text;
+  if (node) node.textContent = `[${stamp}] ${text}`;
   appendPanelLog("runtime", `自定义 provider：${text}`);
 }
 

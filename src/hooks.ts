@@ -451,6 +451,32 @@ async function onNotify(
 }
 
 /**
+ * 按键回执：在**主窗口右下角**弹一条通知。
+ *
+ * ## 为什么必须在状态行之外再加这一条（真机反馈"点任何按键都没有文字"）
+ *
+ * 设置页的状态行位于各节**下方**，而设置页会滚动 —— 点一个按钮后，
+ * 它要汇报的那行字可能正好在**可视区域之外**，用户看到的就是"没有文字"。
+ * 排查时我反复要求"点一下，看状态行有没有字"，而同一个人可能根本看不到
+ * 那一行：这不是他没看清，是界面把反馈放错了地方。
+ *
+ * 弹窗在**屏幕右下角**，与设置页的滚动位置无关，因此不可能被漏看。
+ * 它同时也是最直接的证据：如果连弹窗都不出现，那才是"处理函数真的没跑"。
+ */
+function notifyPrefs(text: string, kind: "default" | "fail" = "default"): void {
+  try {
+    new ztoolkit.ProgressWindow(addon.data.config.addonName, {
+      closeOnClick: true,
+      closeTime: 5000,
+    })
+      .createLine({ text, type: kind, progress: 100 })
+      .show();
+  } catch {
+    // 通知失败不影响功能；诊断文件里仍有记录
+  }
+}
+
+/**
  * 设置面板事件。
  *
  * 隔离运行时的三个按钮直接在这里处理：准备/启动都是耗时操作，
@@ -483,6 +509,8 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
         `事件 = ${type}`,
         `结果 = 处理完成（${Date.now() - started} ms）`,
       ]);
+      // 状态行可能不在可视区域内，所以**再弹一条**（见 notifyPrefs 的说明）
+      notifyPrefs(`已处理：${type}`, "default");
     }
   } catch (error) {
     // ⚠️ 这个兜底是**必需的**，不是防御性编程。
@@ -502,6 +530,7 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
         `结果 = **失败**（${Date.now() - started} ms）`,
         `错误 = ${message}`,
       ]);
+      notifyPrefs(`${type} 失败：${message}`, "fail");
     }
     writePrefsError(win, type, message);
   }

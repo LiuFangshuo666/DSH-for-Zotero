@@ -283,6 +283,45 @@ describe("诊断的调用时机（真机上诊断自己「没反应」过）", f
   });
 });
 
+describe("每次按键都必须有「看得见」的回执", function () {
+  it("处理完成后会弹一条通知（状态行可能在可视区域之外）", function () {
+    // 真机反馈"点任何按键都没有文字"。状态行位于各节**下方**，设置页会滚动 ——
+    // 点一个按钮后，它要汇报的那行字可能正好在可视区域之外。
+    // 用户不是没看清，是界面把反馈放错了地方。
+    // 所以除状态行之外，必须再有一条与滚动位置无关的回执。
+    const at = hooks.indexOf("async function onPrefsEvent");
+    assert.ok(at > 0, "找不到 onPrefsEvent");
+    const body = hooks.slice(at, hooks.indexOf("function writePrefsError", at));
+    const okAt = body.indexOf("notifyPrefs(`已处理：${type}`");
+    const failAt = body.indexOf("notifyPrefs(`${type} 失败");
+    assert.ok(okAt > 0, "成功路径必须有通知 —— 否则用户可能什么都看不到");
+    assert.ok(failAt > 0, "失败路径必须有通知");
+  });
+
+  it("通知走 ProgressWindow，且会自动消失（不挡操作）", function () {
+    const at = hooks.indexOf("function notifyPrefs");
+    assert.ok(at > 0, "找不到 notifyPrefs");
+    const body = hooks.slice(at, at + 700);
+    assert.match(body, /ztoolkit\.ProgressWindow/, "用 Zotero 自己的进度窗口");
+    assert.match(body, /closeTime:\s*\d+/, "必须设关闭时间，否则要用户手动关");
+  });
+
+  it("两个状态行都会带上时间戳（让「变了没有」一眼可辨）", function () {
+    // 两段文字很像时，用户无法判断它到底有没有更新 —— 于是仍然报"没反应"。
+    // 时间戳是最便宜的"它活着"的证据。
+    const panel = read("src/modules/modelPanel.ts");
+    for (const fn of ["function setStatus", "function setProvidersStatus"]) {
+      const at = panel.indexOf(fn);
+      assert.ok(at > 0, `找不到 ${fn}`);
+      assert.match(
+        panel.slice(at, at + 500),
+        /toLocaleTimeString/,
+        `${fn} 应给文字加时间戳`,
+      );
+    }
+  });
+});
+
 describe("状态行必须有 id（否则它就是「没反应」的一部分）", function () {
   /**
    * 代码要写入的状态行。
