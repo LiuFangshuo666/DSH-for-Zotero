@@ -168,9 +168,37 @@ describe("生成 cordis.patch.yml 的托管区块", function () {
     );
   });
 
-  it("没有 provider 时返回空串（调用方据此删掉整个区块）", function () {
-    // 留一个空的 providers: {} 等于让宿主加载一个没有任何路由的适配器。
-    assert.equal(buildProviderPatch([]), "");
+  it("关掉 web_search 的条目**总会出现**（与 provider 数量无关）", function () {
+    // 这不是"顺带"的配置：它是这个托管区块存在的两个理由之一。
+    // 没有它，模型会用 dsh 的 web_search 去找论文 —— 而那走的是**模型服务端**，
+    // 看不见用户机构（大学图书馆）的订阅，拿到一堆抓不到全文的网页结果。
+    for (const defs of [[], [glm]]) {
+      const patch = buildProviderPatch(defs);
+      assert.match(
+        patch,
+        /- id: tool-web/,
+        `provider 数=${defs.length} 时缺少 tool-web 条目 —— web_search 就不会被关掉`,
+      );
+      assert.match(patch, /search: false/, "必须显式关掉 search");
+      assert.match(
+        patch,
+        /fetch: true/,
+        "**必须保留 fetch** —— web_fetch 在用户本机发请求，抓 PDF 直链要用它",
+      );
+    }
+  });
+
+  it("没有 provider 时只输出关 web_search 的条目，不写休眠的 llm-pi-ai", function () {
+    // 空的 `providers:` 其实是**安全**的（dsh 的 pi-ai config 注释写明
+    // "An omitted dict resolves to the empty, dormant route set"），
+    // 但没有必要时就不写 —— 补丁越小越好读。
+    const patch = buildProviderPatch([]);
+    assert.ok(patch.includes("tool-web"), "关 web_search 的条目要在");
+    assert.ok(
+      !patch.includes("llm-pi-ai"),
+      "没有自定义 provider 时不该出现休眠的 llm-pi-ai 条目",
+    );
+    assert.ok(!/providers:/.test(patch), "也不该出现空的 providers:");
   });
 
   it("含特殊字符的值会被加引号（否则 YAML 语义会变）", function () {

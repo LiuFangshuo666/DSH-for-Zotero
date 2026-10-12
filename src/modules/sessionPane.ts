@@ -75,6 +75,18 @@ import {
   type ToolCall,
   type ToolResult,
 } from "../dsh/zoteroTool";
+import {
+  formatCandidates,
+  PAPER_NEXT_STEP_HINT,
+  rankCandidates,
+  validatePaperQuery,
+  type PaperQuery,
+} from "../dsh/paperSearch";
+import {
+  attachBestPdf,
+  findOpenAccessPdf,
+  searchPapers,
+} from "../dsh/paperFetch";
 import { getPref } from "../utils/prefs";
 
 /** 会话入口笔记的标签，用于识别与清理 */
@@ -1118,6 +1130,13 @@ function describeNewItem(args: Record<string, unknown>): string {
   const collectionKey = argString(args, "collectionKey");
   if (collectionKey)
     bits.push(`加入分类 ${collectionNameFor(collectionKey) ?? collectionKey}`);
+  // ⚠️ 也要写明"会去取全文"：确认界面是用户授权的地方，
+  // 而取全文会**发起网络请求、下载文件、在库里多一个附件条目** ——
+  // 这三件事用户都有权在点"确认"之前看到。
+  const wantsPdf = args.fetchPdf !== false;
+  const explicitPdfUrl = argString(args, "pdfUrl");
+  if (explicitPdfUrl) bits.push("将下载指定 PDF 作为附件");
+  else if (wantsPdf) bits.push("将按 DOI 尝试获取全文 PDF 作为附件");
   return bits.join(" · ");
 }
 
@@ -2358,6 +2377,8 @@ export class SessionPane {
           return { id, ok: true, data: await this.toolGetNotes(record, args) };
         case "getFullText":
           return { id, ok: true, data: await this.toolGetFullText(args) };
+        case "findPaper":
+          return { id, ok: true, data: await this.toolFindPaper(args) };
         case "setTags":
           return { id, ok: true, data: await this.toolSetTags(record, args) };
         case "addNote":
@@ -2635,6 +2656,65 @@ export class SessionPane {
     };
   }
 
+  /**
+   * `findPaper` —— 在**外部数据库**里检索论文（Crossref）。
+   *
+   * ## 为什么不走 dsh 的 web search（这是本操作存在的全部理由）
+   *
+   * dsh 的 `web_search` 用的是**模型服务端**的联网能力：
+   *
+   *  - 看不见用户机构的订阅 —— 那是基于来源 IP 或机构代理的授权，
+   *    服务端的检索请求不带这些身份；
+   *  - 返回的是网页摘要，不是结构化元数据，拿去建条目要再解析一遍；
+   *  - 无论如何都够不到 `Zotero.Items`，**建不了条目、挂不了全文**。
+   *
+   * 而这里发请求用的是 `Zotero.HTTP`，**带用户的 cookie 与代理**，
+   * 所以走的是用户本机那条路（详见 `paperSearch.ts` 与 `paperFetch.ts` 的文件头）。
+   *
+   * ⚠️ 这是**读**操作：只发一次 HTTPS 请求、不写任何东西，所以直接执行，
+   * 与 `search` / `getFullText` 同类。
+   */
+  private async toolFindPaper(args: Record<string, unknown>): Promise<unknown> {
+    const query: PaperQuery = {
+      doi: argString(args, "doi"),
+      title: argString(args, "title"),
+      author: argString(args, "author"),
+      query: argString(args, "query"),
+      year: argInt(args, "year"),
+      limit: argInt(args, "limit"),
+    };
+    const invalid = validatePaperQuery(query);
+    if (invalid) throw new Error(invalid);
+
+    const found = await searchPapers(query);
+    const ranked = rankCandidates(found, query).slice(0, query.limit ?? 10);
+
+    // 给每条候选补一个"能不能直接下"的判断：只在**已知 DOI** 时才去查开放获取，
+    // 避免为 10 条候选发 10 个请求（那会让一次检索慢到几十秒）。
+    const top = ranked[0];
+    let oaForTop: string | undefined;
+    if (top?.doi) {
+      oaForTop = await findOpenAccessPdf(top.doi);
+    }
+
+    const withOa = ranked.map((c, i) =>
+      i === 0 && oaForTop ? { ...c, pdfUrl: oaForTop } : c,
+    );
+
+    return {
+      命中条数: found.length,
+      返回条数: withOa.length,
+      结果文本: formatCandidates(withOa, {
+        max: withOa.length,
+        note: PAPER_NEXT_STEP_HINT,
+      }),
+      候选: withOa,
+      提示:
+        "把你要的那条的 DOI 填进 createItem 的 fields.DOI（并保留 fetchPdf 默认 true），" +
+        "插件会在用户确认后用本机网络与机构登录去取全文并挂成附件。",
+    };
+  }
+
   /** 跨文库按 key 找条目（读操作用；写操作仍严格限定在会话范围） */
   private findItemAnywhere(key: string): Zotero.Item | undefined {
     try {
@@ -2779,10 +2859,41 @@ export class SessionPane {
         await item.saveTx({ undoAction: "undo-action-add-tag" } as never);
       }
 
+      // ── 取全文并挂成附件（用户确认之后才走到这里）────────────────
+      //
+      // ## 为什么放在**确认之后**
+      //
+      // 下载全文会长时间占用网络、可能弹验证码、还会在库里产生一个附件条目 ——
+      // 这属于"结构性改动"，与新建条目一样必须由用户点头。放在这里正好：
+      // 用户点"确认"就是授权了"建条目 + 取全文"这一整套。
+      //
+      // ## 为什么失败**不算**本次操作失败
+      //
+      // 用户要的是"这条文献进库"。拿不到全文（没开放获取版、机构没订阅、
+      // 需要先登录）是常见情况，把"没有全文"变成"条目也没建"是明显的倒退。
+      // 所以附件失败只并入 detail 说明，`ok` 仍为 true。
+      const wantsPdf = args.fetchPdf !== false; // 默认开
+      const explicitPdfUrl = argString(args, "pdfUrl");
+      let pdfNote = "";
+      if (wantsPdf || explicitPdfUrl) {
+        const doiField = String(item.getField?.("DOI") ?? "").trim();
+        appendPanelLog(
+          "session",
+          `开始取全文（DOI=${doiField || "（无）"}${explicitPdfUrl ? "，有直链" : ""}）…`,
+        );
+        const outcome = await attachBestPdf(item, {
+          doi: doiField || undefined,
+          pdfUrl: explicitPdfUrl,
+        });
+        pdfNote = outcome.ok ? `；${outcome.detail}` : `；⚠️ ${outcome.detail}`;
+        appendPanelLog("session", `取全文结果：${outcome.detail}`);
+      }
+
       const detail =
         `已新建 ${normalizedType}「${String(rawFields.title).slice(0, 50)}」（key=${item.key}，` +
         `字段 ${accepted.length} 个，作者 ${creatorCount} 位${collectionNote}）` +
-        (ignored.length ? `；忽略的字段：${ignored.join("、")}` : "");
+        (ignored.length ? `；忽略的字段：${ignored.join("、")}` : "") +
+        pdfNote;
       appendPanelLog("session", detail);
       return { ok: true, detail };
     } catch (error) {

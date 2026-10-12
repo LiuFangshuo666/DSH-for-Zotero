@@ -124,3 +124,22 @@ export {
   compositionNeedsRestart,
 } from "../../src/dsh/providers";
 export { ChatTransport } from "../../src/chat/transport";
+
+// 论文检索与全文获取（不走 dsh 的 web search）的纯逻辑
+export {
+  buildCrossrefSearch,
+  doiUrl,
+  formatCandidates,
+  isPlausiblePdfUrl,
+  looksLikeDoi,
+  looksPaywalled,
+  normalizeDoi,
+  PAPER_NEXT_STEP_HINT,
+  parseCrossrefItems,
+  pickOpenAccessPdf,
+  rankCandidates,
+  stripJats,
+  validatePaperQuery,
+} from "../../src/dsh/paperSearch";
+// 只拿纯函数（attachBestPdf 会发网络请求，不在单测里跑）
+export { isPdfBytes } from "../../src/dsh/paperFetch";

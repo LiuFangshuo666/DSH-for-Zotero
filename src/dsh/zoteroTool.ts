@@ -55,6 +55,14 @@ export const READ_OPS = [
   // 此前工作区里只有"会话建立时"写入的 paper.txt，分类会话根本没有全文，
   // 于是 Agent 只能靠标题与摘要判断内容（真机反馈过这个限制）。
   "getFullText",
+  // 在**外部数据库**里检索论文（Crossref / DOI），返回候选与 DOI。
+  //
+  // 为什么单独做成一个 op，而不是让 Agent 用 dsh 的 web_search：
+  //  - web_search 走**模型服务端**的联网，看不见用户机构的订阅（授权基于 IP/代理）；
+  //  - 它返回网页摘要，不是结构化元数据，拿去建条目要再解析；
+  //  - 它够不到 Zotero，建不了条目、挂不了全文。
+  // 详见 paperSearch.ts 顶部的说明。
+  "findPaper",
 ] as const;
 
 /** 写操作：直接执行 + 撤销栈 */
@@ -235,6 +243,14 @@ export function describeOps(): string {
     "  - 首次读某篇可能**稍慢**（缓存不存在时会先触发一次 Zotero 全文索引）。",
     "  - 扫描件可能没有文字层，此时会明确说明，而不是返回空。",
     "  - ⚠️ 这个操作**按 key 在整个文库内查找**（读允许跨库；写操作才限定在本会话范围）。",
+    "- `findPaper` args `{doi?, title?, author?, year?, query?, limit?}` —— " +
+      "**在外部数据库里检索论文**（Crossref），拿回标题/作者/年份/期刊/**DOI**/摘要",
+    "  - **这是找论文该用的操作，不要用 web search**。原因：它走的是**用户本机的网络**，",
+    "    因此能利用用户机构（大学图书馆）的订阅与代理；web search 走模型服务端，看不见这些。",
+    "  - 已知 DOI 时**优先传 `doi`** —— 唯一、不用猜，也不会返回一堆同名文章。",
+    "  - 只有标题片段时传 `title`（比 `query` 准）；`query` 是最宽的兜底。",
+    "  - `year` 用于收窄（同名文章很多时很有用）。`limit` 默认 10、最多 50。",
+    "  - 返回值里每条都带 `DOI`；**下一步就是拿这个 DOI 去 `createItem`**（见下）。",
     "",
     "**写**（直接执行，进入 Zotero 撤销栈）：",
     "- `setTags` args `{key, tags:[…]}` —— 覆盖该条目的标签（`_` 开头的系统标签保留）",
@@ -244,7 +260,7 @@ export function describeOps(): string {
     "- `addToCollection` args `{key, collectionKey}` —— 把条目加入分类",
     "",
     "**结构性改动**（不会立即执行，需用户确认）：",
-    "- `createItem` args `{itemType?, fields:{…}, creators?, collectionKey?, tags?}` —— **新建条目**",
+    "- `createItem` args `{itemType?, fields:{…}, creators?, collectionKey?, tags?, fetchPdf?, pdfUrl?}` —— **新建条目**",
     "  - **`itemType` 可省略**（默认 `journalArticle`）。给的时候必须用英文标识符，不要写中文：",
     "    `journalArticle`（期刊文章）、`conferencePaper`（会议论文）、`book`（图书）、",
     "    `bookSection`（章节）、`report`（报告）、`thesis`（学位论文）、`preprint`（预印本）、",
@@ -254,14 +270,22 @@ export function describeOps(): string {
     "    `proceedingsTitle`、`bookTitle`、`publisher`、`place`、`volume`、`issue`、`pages`、",
     "    `DOI`、`ISBN`、`ISSN`、`url`、`language`、`extra`、`university`、`institution`、`reportNumber`",
     "    - 值必须是**非空字符串**；空串、纯空白或非字符串会被**当作没给**（并在返回值里列出）。",
+    "    - ⚠️ **`findPaper` 查到的 `DOI` 一定要填进 `fields.DOI`** —— 取全文靠它。",
     "  - `creators` 每项**必须有 `lastName`**（非空），否则该位作者会被**静默跳过**。",
+    "  - **`fetchPdf`（默认 `true`）**：用户确认后，插件会**用用户本机的网络与机构登录**",
+    "    去取全文 PDF 并挂成附件。不需要全文时传 `false`。",
+    "  - `pdfUrl` 可选：明确指定要下载的 PDF 直链（`findPaper` 结果里的「开放获取 PDF」）。",
+    "    不给时插件会让 Zotero 自己按 DOI / url / 开放获取去找。",
+    "  - ⚠️ **取全文可能要几十秒**（跟随 DOI 跳转、机构代理认证）。这是正常的，",
+    "    用户确认后请告诉他在等下载，不要因为「没立刻看到附件」就重复提交。",
     "  - 完整示例：",
     "    ```json",
     '    { "id": "7", "op": "createItem", "args": {',
-    '        "itemType": "webpage",',
-    '        "fields": { "title": "…", "url": "https://…", "date": "2026-09-30" },',
+    '        "itemType": "journalArticle",',
+    '        "fields": { "title": "…", "DOI": "10.1145/…", "date": "2023",',
+    '                    "publicationTitle": "…" },',
     '        "creators": [{ "firstName": "A", "lastName": "B" }],',
-    '        "collectionKey": "VZVXRZ6D" } }',
+    '        "collectionKey": "VZVXRZ6D", "fetchPdf": true } }',
     "    ```",
     "- `deleteItems` args `{keys:[…]}`（也接受单个 `{key}`）—— 登记为待确认",
     "- `deleteNote` args `{key}` —— 同上",

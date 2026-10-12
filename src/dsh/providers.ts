@@ -285,18 +285,72 @@ function yamlScalar(value: string): string {
  * `.credentials.yaml`（dsh 自己的做法），配置里只留引用名。
  * 这样配置文件可以安全地被复制/贴出来排查。
  *
- * 没有 provider 时返回**空串**（调用方据此把整个区块删掉，
- * 而不是留下一个空的 `providers: {}` 条目 —— 那会让宿主加载一个
- * 没有任何路由的适配器）。
+ * ## 返回值里**总会**包含一条关闭 web_search 的条目
+ *
+ * 与 provider 数量无关：那是这个区块存在的另一个理由（见下面的说明）。
+ * 所以"没有 provider"时不再返回空串 —— 调用方区分"要不要写 pi-ai 条目"
+ * 由函数内部处理。
+ *
+ * ## ⚠️ 关于"空的 providers"
+ *
+ * 这里原有一句注释说"空 `providers: {}` 会让宿主加载一个没有任何路由的适配器"。
+ * 核对 dsh 源码后确认那句话**是错的**：
+ *
+ * ```text
+ *   llm-pi-ai/src/config.ts:224  An empty (or omitted) dict is …
+ *   llm-pi-ai/src/config.ts:405  routes. An omitted dict resolves to the
+ *                                empty, dormant route set.
+ * ```
+ *
+ * 空 dict 等于**休眠**，是安全的。不过在没有 provider 时**不写这个条目**
+ * 仍是更好的选择 —— 补丁越小越好读，也少一层"这条为什么在这"的疑问。
  */
 export function buildProviderPatch(defs: ProviderDefinition[]): string {
-  if (defs.length === 0) return "";
-  const lines: string[] = [
+  const lines: string[] = [];
+
+  // ── 关掉 web_search，保留 web_fetch ─────────────────────────────
+  //
+  // ## 为什么必须关掉它
+  //
+  // dsh 的 `web_search` 走**模型服务端**的联网能力，因此：
+  //
+  //  - **看不见用户机构的订阅** —— 那是基于来源 IP 或机构代理的授权，
+  //    服务端的检索请求不带这些身份。用户装了大学图书馆的访问权限，
+  //    它一点也用不上；
+  //  - 返回的是网页摘要，不是结构化元数据，拿去建条目要再解析；
+  //  - 无论如何够不到 `Zotero.Items`，建不了条目、挂不了全文。
+  //
+  // 所以我们用 `findPaper`（走用户本机网络与代理）替代它。
+  // **留着它反而有害**：模型会在"找一篇论文"时优先用熟悉的 web_search，
+  // 于是绕过机构访问，拿到一堆抓不到全文的网页结果。
+  //
+  // ## 为什么只关 search、**保留 fetch**
+  //
+  // `web_fetch` 是在**用户本机**发请求的（匿名 HTTP 客户端），
+  // 换来的能力是"把某个已知 URL 的内容取回来"—— 抓 PDF 直链、
+  // 读文档页面都用得上，且不受上面那些限制。
+  // 而 `tool-web` 的 config 里 `search` 与 `fetch` 是**两个独立开关**
+  // （见 `packages/web/tool-web/src/index.ts`：`search`/`fetch` 各有 default(true)），
+  // 所以可以精确地只关一个。
+  lines.push(
+    `# 关掉 web_search（它走模型服务端，用不上用户的机构订阅）；保留 web_fetch。`,
+    `- id: tool-web`,
+    `  name: "@deepseek-ai/dsh-tool-web"`,
+    `  config:`,
+    `    search: false`,
+    `    fetch: true`,
+  );
+
+  // 没有自定义 provider 时到此为止：不要再写一个休眠的 llm-pi-ai 条目
+  if (defs.length === 0) return lines.join("\n") + "\n";
+
+  lines.push(
+    ``,
     `- id: llm-pi-ai`,
     `  name: "${PI_AI_PACKAGE}"`,
     `  config:`,
     `    providers:`,
-  ];
+  );
   for (const def of defs) {
     lines.push(`      ${yamlScalar(def.route)}:`);
     lines.push(`        api: ${def.api}`);

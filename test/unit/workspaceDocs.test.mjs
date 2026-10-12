@@ -27,7 +27,62 @@ const bundle = await import(
     `file://${join(here, ".build", "unit-entry.mjs").replace(/\\/g, "/")}`,
   ).href
 );
-const { buildSkillFile, buildWorkspaceReadme } = bundle;
+const { buildSkillFile, buildWorkspaceReadme, describeOps } = bundle;
+
+describe("操作文档必须覆盖**全部**已实现的 op（改 op 时的强制同步）", function () {
+  /**
+   * 真机暴露过的问题：我加了 `getFullText` / `createItem`，
+   * 而工作区 README 里**完全没提**它们 —— Agent 于是声称自己读不了正文。
+   *
+   * 原来的测试只抽查了 4 个 op 名，加新 op 时**不会失败**。
+   * 这条改成与实现里的三个清单**逐一对照**：新增 op 忘了写文档，直接红。
+   */
+  it("describeOps() 里列出了每一个 op", function () {
+    const doc = describeOps();
+    const missing = [
+      ...bundle.READ_OPS,
+      ...bundle.WRITE_OPS,
+      ...bundle.DESTRUCTIVE_OPS,
+    ].filter((op) => !new RegExp(`\`${op}\``).test(doc));
+    assert.deepEqual(
+      missing,
+      [],
+      `这些 op 已实现但**没有写进给 Agent 的操作说明** —— ` +
+        `Agent 不会知道它们存在（真机上因此说过「我读不了正文」）：\n    ` +
+        missing.join("\n    ") +
+        `\n  修法：在 zoteroTool.ts 的 describeOps() 里补上，` +
+        `并检查工作区 README 的能力索引是否也该提一句。`,
+    );
+  });
+
+  it("读能力里必须有 findPaper，且明确否掉 web search", function () {
+    // 这条单独钉住：findPaper 的意义就是**替代 web search**，
+    // 若说明里不提「不要用 web search」，模型会退回它熟悉的那个
+    // —— 而那条路看不见用户的机构订阅。
+    const doc = describeOps();
+    assert.ok(doc.includes("findPaper"), "操作说明里必须有 findPaper");
+    assert.match(
+      doc,
+      /不要用 web search/,
+      "必须明确告诉 Agent「找论文不要用 web search」并说明原因",
+    );
+  });
+
+  it("createItem 的说明里必须有 DOI 与取全文的指引", function () {
+    const doc = describeOps();
+    assert.match(
+      doc,
+      /fields\.DOI/,
+      "必须点明把 findPaper 查到的 DOI 填进 fields.DOI —— 取全文靠它",
+    );
+    assert.match(doc, /fetchPdf/, "必须说明 fetchPdf 参数");
+    assert.match(
+      doc,
+      /取全文可能要几十秒|几十秒/,
+      "必须预告取全文耗时，否则模型会以为卡住而重复提交",
+    );
+  });
+});
 
 describe("技能说明的适用范围", function () {
   const skill = buildSkillFile();
