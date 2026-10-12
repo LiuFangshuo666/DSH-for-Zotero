@@ -478,7 +478,7 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
   const started = Date.now();
   try {
     await dispatchPrefsEvent(type, data, win, setStatusText);
-    if (type !== "load") {
+    if (type !== "load" && type !== "showing") {
       appendDiagnostic("设置页事件", [
         `事件 = ${type}`,
         `结果 = 处理完成（${Date.now() - started} ms）`,
@@ -496,7 +496,7 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
     // 同时写进诊断日志，让"没反应"变成"有一句话告诉你为什么"。
     const message = error instanceof Error ? error.message : String(error);
     appendPanelLog("runtime", `设置页事件「${type}」失败：${message}`);
-    if (type !== "load") {
+    if (type !== "load" && type !== "showing") {
       appendDiagnostic("设置页事件", [
         `事件 = ${type}`,
         `结果 = **失败**（${Date.now() - started} ms）`,
@@ -627,12 +627,20 @@ async function dispatchPrefsEvent(
   setStatusText: (text: string) => void,
 ): Promise<void> {
   switch (type) {
-    case "load": {
+    // `showing`：面板从隐藏切回可见时 Zotero 派发的事件。
+    //
+    // ⚠️ 必须处理，否则"退出重进设置页后下拉框变空"（真机反馈）。
+    // 面板内容被缓存在 DOM 里，重进时 `load` **不再触发**，
+    // 于是没人重新填充下拉框；而 menulist 在偏好同步时找不到对应 item，
+    // `value` 就变成空串。这里与 `load` 走同一条初始化路径。
+    case "load":
+    case "showing": {
       // ⚠️ 第一件事：记下"这个面板窗口里到底能看到什么"。
       // 真机反馈"模型一节的按键都看不出效果"，而按键失效的原因可能在这
       // **之前**就发生了（元素没渲染出来、id 不匹配、窗口取不到）。
       // 把它落盘，就能从文件读出断在哪一环，而不是靠猜。
-      void dumpPrefsDiagnostics(win);
+      // （只在 `load` 记一次：`showing` 会反复触发。）
+      if (type === "load") void dumpPrefsDiagnostics(win);
       // 载入时把当前状态显示出来，用户才知道现在是什么情况
       const manager = runtimeManager();
       setStatusText(describeRuntime(manager.getStatus()));
@@ -762,6 +770,7 @@ async function dispatchPrefsEvent(
  */
 export const PREFS_EVENT_TYPES = [
   "load",
+  "showing",
   "runtime-prepare",
   "runtime-start",
   "runtime-stop",

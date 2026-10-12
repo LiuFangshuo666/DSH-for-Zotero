@@ -1,8 +1,23 @@
 <linkset>
   <html:link rel="localization" href="__addonRef__-preferences.ftl" />
 </linkset>
+<!--
+  ⚠️ `onload` 与 `onshowing` **都要**挂，这不是冗余。
+
+  真机反馈："下拉框先是正常，退出重进设置页后变空。"
+
+  原因：Zotero 把面板内容**缓存**在 DOM 里 —— 切到别的设置页只是把它隐藏，
+  再切回来时 `onload` **不会再触发**（它只在片段插入时触发一次）。
+  于是重进之后没人重新填充下拉框，而 menulist 在偏好同步时找不到对应
+  item，`value` 就变成空串 —— 看起来就是"变空了"。
+
+  Zotero 在显示面板时会给容器的每个子元素派发 `showing` 事件
+  （见 Zotero 的 `preferences.js` `_showPane`：`child.dispatchEvent(new Event('showing'))`）。
+  所以用 `onshowing` 重跑一次初始化，重进也能恢复正常。
+-->
 <groupbox
   onload="Zotero.__addonInstance__.hooks.onPrefsEvent('load', { window })"
+  onshowing="Zotero.__addonInstance__.hooks.onPrefsEvent('showing', { window })"
 >
   <label><html:h2 data-l10n-id="pref-title"></html:h2></label>
 
@@ -43,7 +58,10 @@
     ></html:input>
   </hbox>
   <hbox align="center">
-    <label data-l10n-id="pref-runtime-status"></label>
+    <label
+      id="__addonRef__-runtime-status"
+      data-l10n-id="pref-runtime-status"
+    ></label>
     <description
       id="__addonRef__-runtime-status"
       data-l10n-id="pref-runtime-unknown"
@@ -298,7 +316,7 @@
     <menulist
       id="__addonRef__-model-id"
       preference="__prefsPrefix__.modelId"
-      onsyncfrompreference="__prefsPrefix__.Zotero.__addonInstance__.hooks.onPrefsEvent('model-sync', { window, target: this })"
+      onsyncfrompreference="Zotero.__addonInstance__.hooks.onPrefsEvent('model-sync', { window, target: this })"
       style="min-width: 320px"
     >
       <menupopup />
@@ -320,13 +338,16 @@
     <menulist
       id="__addonRef__-model-effort"
       preference="__prefsPrefix__.modelReasoningEffort"
-      onsyncfrompreference="__prefsPrefix__.Zotero.__addonInstance__.hooks.onPrefsEvent('model-sync', { window, target: this })"
+      onsyncfrompreference="Zotero.__addonInstance__.hooks.onPrefsEvent('model-sync', { window, target: this })"
       style="min-width: 220px"
     >
       <menupopup />
     </menulist>
   </hbox>
-  <label data-l10n-id="pref-model-status"></label>
+  <label
+    id="__addonRef__-model-status"
+    data-l10n-id="pref-model-status"
+  ></label>
 
   <!--
     ── 自定义 provider（GLM / Moonshot / Qwen / 自建…）──────────
@@ -367,7 +388,10 @@
       "
     ></html:button>
   </hbox>
-  <label data-l10n-id="pref-providers-status"></label>
+  <label
+    id="__addonRef__-providers-status"
+    data-l10n-id="pref-providers-status"
+  ></label>
 
   <!--
     ── 高级 ─────────────────────────────────────────

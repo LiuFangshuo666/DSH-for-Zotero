@@ -283,6 +283,130 @@ describe("诊断的调用时机（真机上诊断自己「没反应」过）", f
   });
 });
 
+describe("状态行必须有 id（否则它就是「没反应」的一部分）", function () {
+  /**
+   * 代码要写入的状态行。
+   *
+   * 真机故障：`<label data-l10n-id="pref-model-status"></label>` **没有 id**，
+   * 于是 `getElementById("dshforzotero-model-status")` 永远返回 null，
+   * `setStatus()` 静默什么都不做 —— 用户点了按钮，界面上**一个字都不出现**。
+   *
+   * 这条缺陷的表现与"代码没跑"完全一样，而诊断文件其实早已打印出
+   * "控件缺失：model-status, providers-status"，只是没去追问为什么。
+   * 所以现在用测试钉死：文案元素可以有 data-l10n-id，但**要写入的必须有 id**。
+   */
+  const STATUS_IDS = ["model-status", "providers-status", "runtime-status"];
+
+  it("每个状态行元素都有 __addonRef__-<名字> 形式的 id", function () {
+    for (const name of STATUS_IDS) {
+      const marker = `id="__addonRef__-${name}"`;
+      assert.ok(
+        page.includes(marker),
+        `设置页里没有 ${marker} —— setStatus 会静默失效，用户看不到任何文字`,
+      );
+    }
+  });
+
+  it("构建产物里这些 id 被替换成真实前缀", function () {
+    const built = read(".scaffold/build/addon/content/preferences.xhtml");
+    for (const name of STATUS_IDS) {
+      assert.ok(
+        built.includes(`id="dshforzotero-${name}"`),
+        `产物里缺少 id="dshforzotero-${name}"`,
+      );
+    }
+  });
+
+  it("代码里要写入的**状态行**都能在产物里找到", function () {
+    // 反过来查：代码里凡是用前缀拼出的**状态行**名字，产物里都得有对应 id。
+    //
+    // ⚠️ 判据只取以 `-status` 结尾的名字。早先不设后缀，把
+    // `addonRef}-preferences`（面板 id）与 `addonRef}/content`（路径）
+    // 也当成了元素 id —— 误报会让检查被无视，比没有检查更糟。
+    const built = read(".scaffold/build/addon/content/preferences.xhtml");
+    const used = new Set();
+    for (const text of [hooks, read("src/modules/modelPanel.ts")]) {
+      for (const m of text.matchAll(/addonRef\}-([a-z][a-z-]*status)\b/g))
+        used.add(m[1]);
+      for (const m of text.matchAll(/REF\}-([a-z][a-z-]*status)\b/g))
+        used.add(m[1]);
+    }
+    assert.ok(used.size >= 3, `识别到的状态行太少（${[...used].join(", ")}）`);
+    const missing = [...used].filter(
+      (name) => !built.includes(`id="dshforzotero-${name}"`),
+    );
+    assert.deepEqual(
+      missing,
+      [],
+      `代码要写入这些状态行，但产物里没有它们的 id（点了不会有任何文字）：\n    ` +
+        missing.join("\n    "),
+    );
+  });
+});
+
+describe("onsyncfrompreference 不能被当成 preference 改写", function () {
+  it("源文件里的 onsyncfrompreference 是**可执行代码**，不带偏好键前缀", function () {
+    // 真机故障：一个"给 preference 补前缀"的脚本用了 /preference="…"/，
+    // 而 `onsyncfrompreference="…"` **也含这个子串** —— 于是前缀被加到了
+    // JavaScript 代码前面，得到
+    //   onsyncfrompreference="extensions.zotero.dshforzotero.Zotero.DSHForZotero…"
+    // 每次面板同步都抛错，下拉框因此**重进后变空**。
+    const hits = [...page.matchAll(/onsyncfrompreference="([^"]*)"/g)];
+    assert.ok(hits.length >= 2, `onsyncfrompreference 太少（${hits.length}）`);
+    for (const m of hits) {
+      assert.ok(
+        m[1].trim().startsWith("Zotero."),
+        `onsyncfrompreference 应是可执行代码（以 Zotero. 开头），实际：${m[1].slice(0, 80)}`,
+      );
+      assert.ok(
+        !m[1].includes("extensions.zotero"),
+        `onsyncfrompreference 里混进了偏好键，会被当成 JS 执行并抛错：${m[1].slice(0, 80)}`,
+      );
+    }
+  });
+
+  it("构建产物里也没有被改坏", function () {
+    const built = read(".scaffold/build/addon/content/preferences.xhtml");
+    assert.ok(
+      !/onsyncfrompreference="extensions\./.test(built),
+      "产物里 onsyncfrompreference 被加上了偏好键前缀 —— 下拉框会重进后变空",
+    );
+  });
+});
+
+describe("面板重进时也要初始化（load 只在首次插入时触发）", function () {
+  it("根元素同时挂 onload 与 onshowing", function () {
+    // Zotero 把面板内容缓存在 DOM 里：切走只是隐藏，切回来 `load` 不再触发。
+    // Zotero 在显示时会派发 `showing`（preferences.js 的 _showPane），
+    // 所以必须也处理它，否则"退出重进后下拉框变空"。
+    assert.match(page, /onload="[^"]*onPrefsEvent\('load'/);
+    assert.match(page, /onshowing="[^"]*onPrefsEvent\('showing'/);
+  });
+
+  it("showing 与 load 走同一条初始化路径", function () {
+    const at = hooks.indexOf('case "load":');
+    assert.ok(at > 0, "找不到 load 分支");
+    const body = hooks.slice(at, at + 200);
+    assert.match(
+      body,
+      /case "showing":/,
+      "showing 应与 load 共用分支（否则两侧初始化逻辑会分叉）",
+    );
+    assert.match(
+      hooks.slice(at, at + 900),
+      /if \(type === "load"\) void dumpPrefsDiagnostics/,
+      "诊断应只在 load 记录，避免 showing 反复触发把文件刷满",
+    );
+  });
+
+  it("showing 已登记进分发表（否则会被当成死代码）", function () {
+    assert.ok(
+      declaredEventTypes().includes("showing"),
+      "PREFS_EVENT_TYPES 里要登记 showing",
+    );
+  });
+});
+
 describe("取不到界面元素时不能静默返回", function () {
   const panel = read("src/modules/modelPanel.ts");
 
