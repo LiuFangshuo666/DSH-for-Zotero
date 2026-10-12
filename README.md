@@ -404,6 +404,24 @@ Gitee → 发行版 → 新建，tag 填 v0.6.8，
 
 （测试数量不写在这里 —— 它会变，而写死的数字一定会过时。跑一次就有。）
 
+### 提交前的验收基线是 `npm run verify`
+
+```bash
+npm run verify
+#  1. npm run build              构建 + tsc --noEmit
+#  2. npm run test:unit          单元测试
+#  3. npm run update:json        同步仓库根的 update.json
+#  4. node tools/verify-bundle.mjs   核对产物 + 核对清单哈希
+```
+
+**第 3 步不能省**：构建**每次都生成不同的 xpi**（内嵌构建时间戳，不可重现），
+所以清单里的 sha512 只有跟着重建才对得上。第 4 步会**核对这一点** ——
+忘了同步就失败。
+
+> 这条检查是踩出来的：`update.json` 的哈希一度指向上一份产物，而它**安静地**
+> 让用户更新失败（上传的 xpi 与清单哈希不是同一份，Zotero 校验不通过）。
+> 现在它是 `verify` 的一部分，漏了就直接红。
+
 单元测试通过 `test/unit/entry.ts` 这个**唯一入口**把被测模块打包出来（`esbuild` + `mocha`）。
 入口文件决定了哪些内部函数可以被单测 —— 新增可测的纯函数时需要在 `entry.ts` 里导出。
 

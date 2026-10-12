@@ -6,14 +6,26 @@
 //
 // 用法：node tools/verify-bundle.mjs
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+/**
+ * 仓库根目录。
+ *
+ * ⚠️ 用**脚本自身位置**推导，不要用产物路径往上数几层 ——
+ * 数错过一次（`../../../` 只到了 `.scaffold/`），而那种错误会让校验
+ * 以"读不到文件"的形式失败，看起来像清单不存在，而不是路径写错。
+ */
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 const file =
   process.argv[2] ??
-  "E:/zotero-plugin-project/dsh-for-zotero/.scaffold/build/addon/content/scripts/dshforzotero.js";
+  join(repoRoot, ".scaffold/build/addon/content/scripts/dshforzotero.js");
 const text = readFileSync(file, "utf8");
-const contentDir = file.replace(/scripts\/dshforzotero\.js$/, "");
-const page = readFileSync(`${contentDir}sessionPage.js`, "utf8");
-const xhtml = readFileSync(`${contentDir}session.xhtml`, "utf8");
+const contentDir = file.replace(/scripts[\\/]dshforzotero\.js$/, "");
+const page = readFileSync(join(contentDir, "sessionPage.js"), "utf8");
+const xhtml = readFileSync(join(contentDir, "session.xhtml"), "utf8");
 
 /** 把 JS 源码里的 \uXXXX 转义还原，便于按中文查找 */
 function decodeEscapes(input) {
@@ -87,8 +99,13 @@ for (const [label, test] of checks) {
 }
 
 // bootstrap.js 单独核对
+//
+// ⚠️ 路径分隔符要同时接受 `/` 与 `\`：早先只写了 `content/scripts/`，
+// 而用 `path.join` 拼出来的路径在 Windows 上是反斜杠 —— 正则不匹配时
+// `replace` 原样返回补丁**自身**的路径，于是这里读到的是 `dshforzotero.js`
+// 的内容，三项 bootstrap 检查全部失败，看起来像"产物缺了 bootstrap 特性"。
 const bootstrap = readFileSync(
-  file.replace(/content\/scripts\/dshforzotero\.js$/, "bootstrap.js"),
+  file.replace(/content[\\/]scripts[\\/]dshforzotero\.js$/, "bootstrap.js"),
   "utf8",
 );
 const bootstrapChecks = [
@@ -112,6 +129,47 @@ const bootstrapChecks = [
 for (const [label, ok] of bootstrapChecks) {
   if (!ok) failed++;
   console.log(`${ok ? "✅" : "❌"} ${label}`);
+}
+
+// ── update.json 必须与**当前产物**一致 ────────────────────────────
+//
+// 真机踩到：`npm run build` 会生成**新的 xpi**（构建内嵌时间戳，字节每次都不同），
+// 但仓库根的 `update.json` **不会**跟着变 —— 于是清单里的 sha512 指向上一份产物。
+//
+// 后果是**安静而严重**的：发布者在 Gitee 上传的是新 xpi，而清单哈希是旧的，
+// 用户自动更新时校验不通过 → 更新失败，而两边看起来都"正常"。
+//
+// 所以把这条纳入 `npm run verify`。注意 `verify` 的顺序里**先 build、
+// 再 update:json、最后才是这里** —— 否则 build 刚换过产物，清单必然对不上，
+// 这条检查会永远失败（本检查上线时就踩了这一步）。
+{
+  const rootUpdate = join(repoRoot, "update.json");
+  const xpiPath = join(repoRoot, ".scaffold/build/dsh-for-zotero.xpi");
+  let note;
+  try {
+    const manifest = JSON.parse(readFileSync(rootUpdate, "utf8"));
+    const key = Object.keys(manifest.addons ?? {})[0];
+    const want = manifest.addons?.[key]?.updates?.[0]?.update_hash;
+    const xpi = readFileSync(xpiPath);
+    const have = `sha512:${createHash("sha512").update(xpi).digest("hex")}`;
+    if (!want) note = ["update.json 里没有 update_hash", false];
+    else if (want === have) note = ["update.json 的哈希与产物一致", true];
+    else
+      note = [
+        "update.json 的哈希与产物**不一致** —— 构建后忘了同步清单。" +
+          "跑 `npm run update:json`（它会校验并搬运脚手架生成的清单）",
+        false,
+      ];
+  } catch (error) {
+    note = [
+      `读不到仓库根的 update.json：${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      false,
+    ];
+  }
+  if (!note[1]) failed++;
+  console.log(`${note[1] ? "✅" : "❌"} ${note[0]}`);
 }
 
 console.log("");
