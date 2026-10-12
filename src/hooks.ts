@@ -430,36 +430,24 @@ async function onNotify(
 }
 
 /**
- * 按键回执：在**主窗口右下角**弹一条通知。
- *
- * ## 为什么必须在状态行之外再加这一条（真机反馈"点任何按键都没有文字"）
- *
- * 设置页的状态行位于各节**下方**，而设置页会滚动 —— 点一个按钮后，
- * 它要汇报的那行字可能正好在**可视区域之外**，用户看到的就是"没有文字"。
- * 排查时我反复要求"点一下，看状态行有没有字"，而同一个人可能根本看不到
- * 那一行：这不是他没看清，是界面把反馈放错了地方。
- *
- * 弹窗在**屏幕右下角**，与设置页的滚动位置无关，因此不可能被漏看。
- * 它同时也是最直接的证据：如果连弹窗都不出现，那才是"处理函数真的没跑"。
- */
-function notifyPrefs(text: string, kind: "default" | "fail" = "default"): void {
-  try {
-    new ztoolkit.ProgressWindow(addon.data.config.addonName, {
-      closeOnClick: true,
-      closeTime: 5000,
-    })
-      .createLine({ text, type: kind, progress: 100 })
-      .show();
-  } catch {
-    // 通知失败不影响功能；诊断文件里仍有记录
-  }
-}
-
-/**
  * 设置面板事件。
  *
  * 隔离运行时的三个按钮直接在这里处理：准备/启动都是耗时操作，
  * 因此**立即返回并在后台推进**，进度写进诊断日志（设置页不便持续刷新）。
+ *
+ * ## ⚠️ 这里曾经弹通知，已删除（真机反馈）
+ *
+ * 我原先在每次处理完事件后弹一条 `ProgressWindow`，理由是状态行可能在
+ * 可视区域之外。但用户反馈：**弹窗会把主窗口带到前台，导致页面从别处
+ * 跳到设置页** —— 点一个按钮就被抢一次焦点，比"看不到文字"更烦人。
+ *
+ * 所以反馈一律走**设置页内的状态行**（它们已有 `id`，且带时间戳，
+ * 见 modelPanel.ts 的 `setStatus` / `setProvidersStatus`）：
+ *
+ *  - `writePrefsError`：失败时按事件名写到**对应那一节**的状态行；
+ *  - 各处理函数自己：成功时更新自己那一节的状态行。
+ *
+ * 教训：为了"让用户看见"而抢焦点，是拿一个更严重的问题换一个更轻的问题。
  */
 async function onPrefsEvent(type: string, data: { [key: string]: any }) {
   const win = data?.window as Window | undefined;
@@ -476,11 +464,6 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
 
   try {
     await dispatchPrefsEvent(type, data, win, setStatusText);
-    if (type !== "load" && type !== "showing") {
-      // 状态行可能不在可视区域内（面板会滚动），所以**再弹一条** ——
-      // 见 notifyPrefs 的说明。这是用户唯一一定会看到的反馈。
-      notifyPrefs(`已处理：${type}`, "default");
-    }
   } catch (error) {
     // ⚠️ 这个兜底是**必需的**，不是防御性编程。
     //
@@ -488,36 +471,45 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
     // **无人处理的 Promise 拒绝** —— 界面既不报错、也不显示任何东西，
     // 用户看到的只是"点了没反应"。这个项目里反复踩过同类问题。
     //
-    // 所以：把错误**显示到设置页上**（用户当前正看着的界面）并弹一条通知，
-    // 让"没反应"变成"有一句话告诉你为什么"。
+    // 所以：把错误**显示到设置页上**（用户当前正看着的那个窗口，
+    // 不抢焦点），让"没反应"变成"有一句话告诉你为什么"。
     const message = error instanceof Error ? error.message : String(error);
     appendPanelLog("runtime", `设置页事件「${type}」失败：${message}`);
-    if (type !== "load" && type !== "showing") {
-      notifyPrefs(`${type} 失败：${message}`, "fail");
-    }
     writePrefsError(win, type, message);
   }
 }
 
-/** 按事件类型把错误写到**对应那一节**的状态行上 */
+/**
+ * 按事件类型把错误写到**对应那一节**的状态行上。
+ *
+ * 这是失败时的**唯一**反馈通道 —— 弹窗已删除（它会抢焦点、把主窗口
+ * 带到设置页前面，用户明确要求去掉）。所以这里必须可靠：
+ *
+ *  - 写到用户正在看的那一节（模型 / provider / 运行时），而不是全塞到运行时那一行；
+ *  - 加时间戳，与 `modelPanel.ts` 的两个 `setStatus` 一致 ——
+ *    两段文字相似时，只有变化的时间戳能让用户确认"它确实响应了"。
+ */
 function writePrefsError(
   win: Window | undefined,
   type: string,
   message: string,
 ): void {
   const ref = addon.data.config.addonRef;
-  const target = type.startsWith("model-")
+  const isModel = type.startsWith("model-");
+  const isProviders = type.startsWith("providers-");
+  const target = isModel
     ? `${ref}-model-status`
-    : type.startsWith("providers-")
+    : isProviders
       ? `${ref}-providers-status`
       : `${ref}-runtime-status`;
   try {
     const el = win?.document?.getElementById(target);
     if (el) {
+      const stamp = new Date().toLocaleTimeString();
       el.textContent =
-        type.startsWith("model-") || type.startsWith("providers-")
-          ? `操作失败：${message}`
-          : `设置页操作失败（${type}）：${message}`;
+        isModel || isProviders
+          ? `[${stamp}] 操作失败：${message}`
+          : `[${stamp}] 设置页操作失败（${type}）：${message}`;
     }
   } catch {
     // 设置页可能已关闭；日志里已经有一条

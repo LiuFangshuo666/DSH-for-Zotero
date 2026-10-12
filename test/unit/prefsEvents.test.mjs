@@ -319,30 +319,49 @@ describe("oncommand 只能挂在 XUL 元素上（html:button 不发 command 事�
   });
 });
 
-describe("每次按键都必须有「看得见」的回执", function () {
-  it("处理完成后会弹一条通知（状态行可能在可视区域之外）", function () {
-    // 真机反馈"点任何按键都没有文字"。状态行位于各节**下方**，设置页会滚动 ——
-    // 点一个按钮后，它要汇报的那行字可能正好在可视区域之外。
-    // 用户不是没看清，是界面把反馈放错了地方。
-    // 所以除状态行之外，必须再有一条与滚动位置无关的回执。
+describe("按键的反馈一律走设置页内的状态行（**不弹窗**）", function () {
+  it("设置页事件**不**弹通知 —— 弹窗会把主窗口抢到前台", function () {
+    // 真机反馈：弹窗导致「页面跳到设置页前面」—— 点一个按钮就被抢一次焦点。
+    // 我原先加弹窗是为了解决"状态行在可视区域之外"，但那是拿一个更严重的问题
+    // 换一个更轻的问题。现在反馈只走设置页内的状态行（它们已有 id 与时间戳）。
     const at = hooks.indexOf("async function onPrefsEvent");
     assert.ok(at > 0, "找不到 onPrefsEvent");
-    const body = hooks.slice(at, hooks.indexOf("function writePrefsError", at));
-    const okAt = body.indexOf("notifyPrefs(`已处理：${type}`");
-    const failAt = body.indexOf("notifyPrefs(`${type} 失败");
-    assert.ok(okAt > 0, "成功路径必须有通知 —— 否则用户可能什么都看不到");
-    assert.ok(failAt > 0, "失败路径必须有通知");
+    const body = hooks.slice(at, hooks.indexOf("/** 按事件类型把错误", at));
+    assert.ok(
+      !/ProgressWindow/.test(body) && !/notifyPrefs/.test(body),
+      "设置页事件的处理路径里不得再弹通知 —— 它会抢焦点、把主窗口带到设置页前面",
+    );
   });
 
-  it("通知走 ProgressWindow，且会自动消失（不挡操作）", function () {
-    const at = hooks.indexOf("function notifyPrefs");
-    assert.ok(at > 0, "找不到 notifyPrefs");
-    const body = hooks.slice(at, at + 700);
-    assert.match(body, /ztoolkit\.ProgressWindow/, "用 Zotero 自己的进度窗口");
-    assert.match(body, /closeTime:\s*\d+/, "必须设关闭时间，否则要用户手动关");
+  it("失败时写到**对应那一节**的状态行（这是失败的唯一反馈通道）", function () {
+    const at = hooks.indexOf("function writePrefsError");
+    assert.ok(at > 0, "找不到 writePrefsError");
+    const body = hooks.slice(at, at + 1400);
+    // 三节各有各的状态行，不能全塞到运行时那一行
+    assert.match(body, /model-status/, "模型一节的失败要写到模型那一行");
+    assert.match(body, /providers-status/, "provider 一节同理");
+    assert.match(body, /runtime-status/, "其余落到运行时那一行");
+    // 失败也必须能被看见 —— 所以要走设置页元素
+    assert.match(body, /getElementById/, "必须真的写到界面上");
+    assert.match(body, /textContent/, "必须真的写进去");
   });
 
-  it("两个状态行都会带上时间戳（让「变了没有」一眼可辨）", function () {
+  it("启动时的后台准备仍然用进度窗口（那是耗时任务，不是按键回执）", function () {
+    // ⚠️ 别把这一处也当成"冗余弹窗"删掉：首次要提取约 330 MB（10–30 秒），
+    // 没有进度窗口用户不知道还要等多久 —— 它与"按键点了没反应"是两回事。
+    //
+    // 注意区分：`runtime-prepare` **按钮**只写状态行（那是一次点击的回执）；
+    // 进度窗口在 `onStartup` 的后台准备里（`safeRegister("隔离运行时（后台准备）")`）。
+    const at = hooks.indexOf('safeRegister("隔离运行时（后台准备）"');
+    assert.ok(at > 0, "找不到后台准备的注册");
+    assert.match(
+      hooks.slice(at, at + 2000),
+      /ProgressWindow/,
+      "启动时的后台准备应保留进度窗口（否则用户不知道还要等多久）",
+    );
+  });
+
+  it("三个状态行都会带上时间戳（让「变了没有」一眼可辨）", function () {
     // 两段文字很像时，用户无法判断它到底有没有更新 —— 于是仍然报"没反应"。
     // 时间戳是最便宜的"它活着"的证据。
     const panel = read("src/modules/modelPanel.ts");
@@ -355,6 +374,12 @@ describe("每次按键都必须有「看得见」的回执", function () {
         `${fn} 应给文字加时间戳`,
       );
     }
+    const err = hooks.slice(hooks.indexOf("function writePrefsError"));
+    assert.match(
+      err.slice(0, 1400),
+      /toLocaleTimeString/,
+      "writePrefsError 也要加时间戳，与另两个状态行一致",
+    );
   });
 });
 
