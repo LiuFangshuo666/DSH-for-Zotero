@@ -35,10 +35,12 @@ pref-custom-commands-hint = JSON 数组，元素包含 label 与 instruction 两
 pref-model = 模型
 pref-model-desc = 隔离运行时第一次启动时会从本机桌面版 Harness 复制模型凭据。如果你没装过桌面版、或装了但没登录/没配 Key，就在这里直接填 —— 填了就优先用这里的，没填则沿用桌面版。
 pref-model-api-key = DeepSeek API Key
-pref-model-save-key = 保存并写入
+pref-model-save-key =
+    .label = 保存并写入
 pref-model-api-key-hint = 保存后会写入隔离实例的 .credentials.yaml（refs.DEEPSEEK_API_KEY），宿主的凭据服务会监听文件变化并热重载。⚠️ 与桌面版 Harness 一样是明文存储；留空则沿用桌面版的凭据。
 pref-model-id = 会话使用的模型
-pref-model-refresh = 刷新列表
+pref-model-refresh =
+    .label = 刷新列表
 pref-model-effort = 推理等级
 pref-model-base-url = API 地址（可选）
 pref-model-base-url-hint = 留空则用 DeepSeek 官方。可填中转站、私有部署或企业网关，前提是它**兼容 DeepSeek Messages 协议**。换地址只是换“请求发往哪里”，并不会换成另一套协议 —— 所以 OpenAI 的 /v1/chat/completions 地址不行。
@@ -47,8 +49,10 @@ pref-model-status = （模型列表尚未加载）
 # ── 高级（含写入 dsh 侧的开关）───────────────────────────
 pref-providers = 自定义模型 provider（GLM / Moonshot / Qwen / 自建等）
 pref-providers-desc = 上面的「API 地址」换的是 DeepSeek 适配器的端点（Anthropic Messages 协议）；而这里可以挂载多个任意 provider，支持 OpenAI 兼容 / Anthropic / OpenAI Responses 三种协议。填 JSON 数组，每项：route（路由名，也是模型选择器里显示的 provider）、api、baseURL、apiKey、models（id 必填）。例：[{"route":"glm","api":"openai-completions","baseURL":"https://open.bigmodel.cn/api/v1","apiKey":"…","models":[{"id":"glm-4.7","name":"GLM-4.7"}]}]
-pref-providers-save = 保存并应用
-pref-providers-example = 填入示例
+pref-providers-save =
+    .label = 保存并应用
+pref-providers-example =
+    .label = 填入示例
 pref-providers-status = （尚未保存）
 
 # ── 高级 ───────────────────────────────────────

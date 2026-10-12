@@ -36,10 +36,12 @@ pref-custom-commands-hint = A JSON array whose entries carry label and instructi
 pref-model = Model
 pref-model-desc = On first start the isolated runtime copies model credentials from your local desktop Harness. If you have not installed it, or have not signed in or stored a key there, enter one here — a key entered here takes precedence, and leaving it empty keeps using the desktop copy.
 pref-model-api-key = DeepSeek API key
-pref-model-save-key = Save and write
+pref-model-save-key =
+    .label = Save and write
 pref-model-api-key-hint = Saving writes it into the isolated instance's .credentials.yaml as refs.DEEPSEEK_API_KEY; the host's credential service watches that file and reloads it. Stored in plain text, exactly as the desktop Harness does. Empty means keep using the desktop credentials.
 pref-model-id = Model used by sessions
-pref-model-refresh = Refresh list
+pref-model-refresh =
+    .label = Refresh list
 pref-model-effort = Reasoning effort
 pref-model-base-url = API base URL (optional)
 pref-model-base-url-hint = Leave empty to use the official DeepSeek endpoint. Relays, self-hosted deployments and corporate gateways work, provided they speak the DeepSeek Messages protocol. Changing this only changes where the request goes, not which protocol is spoken - so an OpenAI /v1/chat/completions URL will not work.
@@ -48,8 +50,10 @@ pref-model-status = (model list not loaded yet)
 # ── Advanced (includes what gets written into your dsh home) ─
 pref-providers = Custom model providers (GLM, Moonshot, Qwen, self-hosted)
 pref-providers-desc = The API base URL above changes the endpoint of the DeepSeek adapter, which speaks the Anthropic Messages protocol. This one mounts additional providers speaking OpenAI Completions, OpenAI Responses or Anthropic Messages. Provide a JSON array; each entry needs route (also the provider name shown in the model picker), api, baseURL, apiKey and models (id required). Example: [{"route":"glm","api":"openai-completions","baseURL":"https://open.bigmodel.cn/api/v1","apiKey":"...","models":[{"id":"glm-4.7","name":"GLM-4.7"}]}]
-pref-providers-save = Save and apply
-pref-providers-example = Insert example
+pref-providers-save =
+    .label = Save and apply
+pref-providers-example =
+    .label = Insert example
 pref-providers-status = (not saved yet)
 
 # ── 高级 ───────────────────────────────────────

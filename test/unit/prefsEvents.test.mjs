@@ -283,6 +283,86 @@ describe("诊断的调用时机（真机上诊断自己「没反应」过）", f
   });
 });
 
+describe("oncommand 只能挂在 XUL 元素上（html:button 不发 command 事件）", function () {
+  /**
+   * 真机故障（最难查的一次）：设置页里「隔离运行时」的按钮有反应，
+   * 「模型」一节的按钮**完全没反应**。
+   *
+   * 差别只在元素类型：
+   *
+   * ```xml
+   * <button oncommand="…">          ← XUL 按钮，发送 command 事件 ✅
+   * <html:button oncommand="…">     ← HTML 按钮，发送的是 click 事件 ❌
+   * ```
+   *
+   * `oncommand` 在 HTML `<button>` 上**永远不会触发** ——
+   * 不报错、不警告、界面与代码都"看着对"，只是点了什么都不发生。
+   *
+   * Zotero 自己的设置面板可以作证：那些 `oncommand` 全部挂在
+   * XUL 的 `<button>` / `<checkbox>` / `<key>` 上，`onclick` 只出现 1 次。
+   */
+  it("设置页里没有 html:button（它收不到 command）", function () {
+    assert.ok(
+      !/<html:button\b/.test(page),
+      "设置页里有 html:button —— 它不发送 command 事件，oncommand 永不触发。\n" +
+        '  改用 XUL 的 <button data-l10n-id="…" oncommand="…" />（与 Zotero 自己的面板一致）。',
+    );
+    const built = read(".scaffold/build/addon/content/preferences.xhtml");
+    assert.ok(!/<html:button\b/.test(built), "产物里仍有 html:button");
+  });
+
+  it("每个 oncommand 都挂在 XUL button / checkbox / key 上", function () {
+    const built = read(".scaffold/build/addon/content/preferences.xhtml");
+    const lines = built.split("\n");
+    const bad = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (!lines[i].includes("oncommand")) continue;
+      for (let k = i; k >= Math.max(0, i - 8); k--) {
+        const m = lines[k].match(/<([a-zA-Z:]+)/);
+        if (!m) continue;
+        if (
+          !["button", "checkbox", "key", "menuitem", "toolbarbutton"].includes(
+            m[1],
+          )
+        ) {
+          bad.push(`行 ${k + 1}: <${m[1]}>`);
+        }
+        break;
+      }
+    }
+    assert.deepEqual(
+      bad,
+      [],
+      `这些 oncommand 挂在了不发 command 事件的元素上：\n    ${bad.join("\n    ")}`,
+    );
+  });
+
+  it("XUL 按钮的文案必须有 .label（XUL 套的是 label 属性）", function () {
+    // XUL `<button data-l10n-id="x">` 取的是 FTL 里的 `x.label`。
+    // 若文案只写成 `x = 保存`（没有 .label），按钮会**显示为空**。
+    const built = read(".scaffold/build/addon/content/preferences.xhtml");
+    const ids = [...built.matchAll(/<button[^>]*data-l10n-id="([^"]+)"/g)].map(
+      (m) => m[1],
+    );
+    assert.ok(ids.length >= 4, `带文案的 XUL 按钮太少（${ids.length}）`);
+    for (const locale of ["zh-CN", "en-US"]) {
+      const ftl = read(`addon/locale/${locale}/preferences.ftl`);
+      for (const id of ids) {
+        const short = id.replace(/^dshforzotero-/, "");
+        const re = new RegExp(
+          `^${short}\\s*=[\\s\\S]{0,120}?\\.label\\s*=`,
+          "m",
+        );
+        assert.match(
+          ftl,
+          re,
+          `${locale} 的 ${short} 缺少 .label —— XUL 按钮会显示为空`,
+        );
+      }
+    }
+  });
+});
+
 describe("每次按键都必须有「看得见」的回执", function () {
   it("处理完成后会弹一条通知（状态行可能在可视区域之外）", function () {
     // 真机反馈"点任何按键都没有文字"。状态行位于各节**下方**，设置页会滚动 ——
