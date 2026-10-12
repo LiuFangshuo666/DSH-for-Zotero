@@ -253,10 +253,54 @@ export class DshClient {
       const fresh = await this.refreshCookie();
       if (!fresh) throw error;
       this.cookie = fresh;
+      // ⚠️ 重签之后必须**先清掉罐里的旧条目**再写新的。
+      //
+      // 真机故障：401 之后重签、重试，仍然是 401 —— 而两次请求的 cookie
+      // 明明不同（signature 变了）。原因是罐里那条**旧 cookie 顶掉了新写入**：
+      // 同名同域的 cookie 在罐里可能因为 path / originAttributes 差异共存，
+      // 于是宿主每次拿到的都还是那条已失效的。
+      //
+      // 清一次再写，让"重签"这件事真的生效。清不掉也不阻断（退回 XHR 显式带头）。
+      try {
+        clearCookieFromJar(this.config);
+      } catch {
+        // 清不掉就继续，下面的 prepare 会按结果回退到 XHR
+      }
       this.jarWritten = false;
       this.prepare();
-      return this.send<T>(url, body, rpcId);
+      try {
+        return await this.send<T>(url, body, rpcId);
+      } catch (retryError) {
+        // 第二次仍失败：把**认证相关的关键事实**附进错误里。
+        //
+        // 为什么必须附：这条路径上"401"可能有四种成因（宿主换了密钥、
+        // cookie 罐里残留旧条目、投递方式退回了 fetch、authority 与宿主
+        // 实际监听的不一致），而它们的表现完全一样。没有这些事实，
+        // 只能靠猜 —— 这个项目已经在这上面绕过好几圈。
+        throw this.enrichAuthFailure(retryError);
+      }
     }
+  }
+
+  /** 给认证类失败补上可定位的事实（不改变错误类型与可读文案） */
+  private enrichAuthFailure(error: unknown): unknown {
+    if (!(error instanceof DshRpcError)) return error;
+    const facts = this.describeRequest();
+    const detail = [
+      `authority=${facts.authority}`,
+      `delivery=${this.delivery}`,
+      `cookieName=${facts.cookieName}`,
+      `cookieLen=${facts.cookieValueLength}`,
+      `issuedAtDigits=${facts.issuedAtDigits}`,
+      `expiresAtDigits=${facts.expiresAtDigits}`,
+      `jarWritten=${this.jarWritten}`,
+    ].join(" ");
+    try {
+      error.message = `${error.message}｜认证事实：${detail}`;
+    } catch {
+      // message 只读就放弃改写，facts 仍会由调用方记日志
+    }
+    return error;
   }
 
   /** 判断错误是否为 401（认证失败） */

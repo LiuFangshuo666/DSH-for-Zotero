@@ -469,8 +469,21 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
     }
   };
 
+  // ⚠️ 每个事件都记一条诊断（含结果）。
+  //
+  // 真机反馈"按键点了没反应"，而我手上只有一句"没反应" —— 既不知道
+  // 用户点的是哪个键，也不知道处理函数跑没跑、结果是什么。
+  // 这条记录把"点击 → 结果"固定下来：用户点一遍，文件里就有完整轨迹。
+  // （`load` 不记：它每次开面板都触发，会把有用的记录淹掉。）
+  const started = Date.now();
   try {
     await dispatchPrefsEvent(type, data, win, setStatusText);
+    if (type !== "load") {
+      appendDiagnostic("设置页事件", [
+        `事件 = ${type}`,
+        `结果 = 处理完成（${Date.now() - started} ms）`,
+      ]);
+    }
   } catch (error) {
     // ⚠️ 这个兜底是**必需的**，不是防御性编程。
     //
@@ -483,6 +496,13 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
     // 同时写进诊断日志，让"没反应"变成"有一句话告诉你为什么"。
     const message = error instanceof Error ? error.message : String(error);
     appendPanelLog("runtime", `设置页事件「${type}」失败：${message}`);
+    if (type !== "load") {
+      appendDiagnostic("设置页事件", [
+        `事件 = ${type}`,
+        `结果 = **失败**（${Date.now() - started} ms）`,
+        `错误 = ${message}`,
+      ]);
+    }
     writePrefsError(win, type, message);
   }
 }

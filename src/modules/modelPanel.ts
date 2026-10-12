@@ -30,7 +30,7 @@
 import { requireRuntimeConfig, resolveRuntimeConfig } from "../dsh/config";
 import { mintCookieFromCredentials } from "../dsh/auth";
 import { DshClient, fetchModelCatalog, type ModelCatalog } from "../dsh/rpc";
-import { appendPanelLog } from "../dsh/runLog";
+import { appendDiagnostic, appendPanelLog } from "../dsh/runLog";
 import {
   setSelectedModel,
   setUserApiKey,
@@ -159,6 +159,11 @@ async function fillModelList(win: Window | undefined): Promise<void> {
     // ⚠️ 取不到目录时**不放任何候选项**：给一份猜的清单会让用户选到宿主不接受的值，
     // 而那种失败是静默的。这里如实说明原因与下一步。
     setStatus(win, result.reason);
+    // 同时落进诊断文件：状态行会被后续操作覆盖，而诊断文件留得住。
+    // 401 的成因不止一种（宿主换了密钥、罐里残留旧 cookie、投递方式退回 fetch、
+    // authority 与宿主实际监听的不一致），表现完全一样 ——
+    // 所以要把 rpc 层补上的"认证事实"一起留下，否则只能继续猜。
+    appendDiagnostic("模型目录", [`结果 = 失败`, `原因 = ${result.reason}`]);
     return;
   }
 
