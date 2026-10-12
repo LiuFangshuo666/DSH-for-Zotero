@@ -98,8 +98,38 @@ describe("操作文档必须覆盖**全部**已实现的 op（改 op 时的强�
     const m = readme.match(/dsh-materials-version:\s*(\d+)/);
     assert.ok(m, "工作区 README 首行必须有材料版本标记（老会话靠它自动刷新）");
     assert.ok(
-      Number(m[1]) >= 6,
-      "材料版本应 >= 6（第 6 版加了 findPaper 与取全文的说明）",
+      Number(m[1]) >= 7,
+      "材料版本应 >= 7（第 6 版加 findPaper；第 7 版加自动归类与会话分类的说明）",
+    );
+  });
+
+  it("分类会话的 README 必须写明「新建条目会自动进本会话分类」", function () {
+    // 真机缺陷（用户回报）："条目新建成功，附件挂载成功，
+    // 但是条目没有进这个会话所在的分类。"
+    //
+    // 根因：分类只从 `args.collectionKey` 取，而那是可选参数 ——
+    // Agent 在分类会话里**没有任何理由知道**要传它。
+    // 现在默认加入会话分类，Agent 也必须知道这个默认行为，
+    // 否则它会自己传 key（可能传错），或者以为条目丢了。
+    const readme = buildWorkspaceReadme({
+      kind: "collection",
+      scopeTitle: "测试分类",
+    });
+    assert.match(
+      readme,
+      /自动进入本会话的分类/,
+      "分类会话的 README 必须写明默认归类，否则 Agent 会自行传 collectionKey",
+    );
+    assert.match(
+      readme,
+      /不需要传 `collectionKey`/,
+      "要明确说「通常不需要传」，否则 Agent 会画蛇添足",
+    );
+    // 条目会话没有分类，不该出现这句
+    const item = buildWorkspaceReadme({ kind: "item", scopeTitle: "某论文" });
+    assert.ok(
+      !item.includes("自动进入本会话的分类"),
+      "条目会话没有分类，不该出现归类说明",
     );
   });
 

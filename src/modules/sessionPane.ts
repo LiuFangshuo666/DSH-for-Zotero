@@ -774,6 +774,18 @@ export function buildWorkspaceReadme(input: {
       `本插件的检索走**用户本机的网络与机构订阅**（大学图书馆的代理与登录态），` +
       `而 web search 走模型服务端，拿不到那些授权，也够不到 Zotero。`,
     ``,
+    // ⚠️ 真机缺陷（用户回报）："条目新建成功，附件挂载成功，
+    // 但是条目没有进这个会话所在的分类。" —— 因为分类只从 `args.collectionKey` 取，
+    // 而 Agent 在分类会话里**没有任何理由知道**要传它。现在默认加入本会话分类，
+    // 这里必须写明，否则 Agent 会自己传 key（可能传错）或以为条目丢了。
+    ...(kind === "collection"
+      ? [
+          `⚠️ **在分类会话里新建的条目会自动进入本会话的分类**，` +
+            `所以调 \`createItem\` 时**不需要传 \`collectionKey\`**；` +
+            `只有要放进**别的**分类时才传。`,
+          ``,
+        ]
+      : []),
     `调用方式与完整参数见 **\`${TOOL_DIR}/README.md\`**（**请先读它再动手**）。`,
     ``,
     `⚠️ 不要直接改 Zotero 数据库 —— Zotero 运行时独占它，且那样会绕过撤销栈。` +
@@ -1103,9 +1115,10 @@ const STALE_DIR = "_stale";
  * | 版本 | 改了什么 |
  * | --- | --- |
  * | 5 | 工作区 README 的能力索引（Agent 曾声称只会联网、不知道能读写文献库） |
- * | **6** | **新增 `findPaper`（论文检索）与 `createItem` 的取全文说明** |
+ * | 6 | 新增 `findPaper`（论文检索）与 `createItem` 的取全文说明 |
+ * | **7** | **`createItem`：默认加入会话所属分类；字段按类型校验的说明** |
  */
-const MATERIALS_VERSION = 6;
+const MATERIALS_VERSION = 7;
 
 /** 材料版本标记的写法（写在 README 首行，便于解析与人工辨认） */
 function materialsStamp(version: number): string {
@@ -1130,8 +1143,16 @@ async function readMaterialsVersion(workspace: string): Promise<number> {
  *
  * 待确认界面必须让用户**看懂要建什么**才谈得上确认 —— 只显示一个 `createItem`
  * 字样毫无意义。这里把关键字段拼成一行：类型 + 标题 + DOI/年份 + 作者数。
+ *
+ * @param effectiveCollectionKey 实际会加入的分类 key。
+ *   由调用方算好（会话分类优先，`args.collectionKey` 覆盖）后传进来 ——
+ *   这里**不再自己从 args 取**，否则摘要与实际行为会分叉：
+ *   真机上摘要没写分类、条目也确实没进分类，而两者本可以同时暴露这个缺陷。
  */
-function describeNewItem(args: Record<string, unknown>): string {
+function describeNewItem(
+  args: Record<string, unknown>,
+  effectiveCollectionKey?: string,
+): string {
   const fields = (args.fields ?? {}) as Record<string, unknown>;
   const title = typeof fields.title === "string" ? fields.title : "（无标题）";
   const itemType = argString(args, "itemType") ?? "journalArticle";
@@ -1142,9 +1163,11 @@ function describeNewItem(args: Record<string, unknown>): string {
   const creators = Array.isArray(args.creators) ? args.creators.length : 0;
   if (creators > 0) bits.push(`${creators} 位作者`);
   // 显示**具体分类名**，而不是"加入指定分类" —— 用户要知道进哪个分类才谈得上确认
-  const collectionKey = argString(args, "collectionKey");
-  if (collectionKey)
-    bits.push(`加入分类 ${collectionNameFor(collectionKey) ?? collectionKey}`);
+  if (effectiveCollectionKey) {
+    bits.push(
+      `加入分类 ${collectionNameFor(effectiveCollectionKey) ?? effectiveCollectionKey}`,
+    );
+  }
   // ⚠️ 也要写明"会去取全文"：确认界面是用户授权的地方，
   // 而取全文会**发起网络请求、下载文件、在库里多一个附件条目** ——
   // 这三件事用户都有权在点"确认"之前看到。
@@ -1153,6 +1176,23 @@ function describeNewItem(args: Record<string, unknown>): string {
   if (explicitPdfUrl) bits.push("将下载指定 PDF 作为附件");
   else if (wantsPdf) bits.push("将按 DOI 尝试获取全文 PDF 作为附件");
   return bits.join(" · ");
+}
+
+/**
+ * 条目**实际**会加入的分类 key。
+ *
+ * 抽成函数是为了让"登记待确认"与"真正执行"用**同一个判断** ——
+ * 两处各写一遍必然分叉，而真机上已经出现过一次
+ * "摘要里没写分类、条目也确实没进分类"。
+ */
+function effectiveCollectionKey(
+  record: Pick<SessionRecord, "kind" | "scopeKey"> | undefined,
+  args: Record<string, unknown>,
+): string {
+  return (
+    argString(args, "collectionKey") ||
+    (record?.kind === "collection" ? (record.scopeKey ?? "").trim() : "")
+  );
 }
 
 /** 由分类 key 取可读名称（取不到就退回 key 本身，至少能辨认） */
@@ -2319,7 +2359,11 @@ export class SessionPane {
     try {
       if (isDestructiveOp(op)) {
         if (op === "createItem") {
-          const summary = describeNewItem(args);
+          // 摘要里要写出**实际会加入的分类**（会话分类优先，见 effectiveCollectionKey）
+          const summary = describeNewItem(
+            args,
+            effectiveCollectionKey(record, args),
+          );
           this.pendingDeletions.push({
             sessionId: record.sessionId,
             op,
@@ -2804,6 +2848,59 @@ export class SessionPane {
     const rawFields = (args.fields ?? {}) as Record<string, unknown>;
     const accepted: string[] = [];
     const ignored: string[] = [];
+    /** 白名单里有、但**该条目类型不支持**的字段（与 ignored 分开报，原因不同） */
+    const notForThisType: string[] = [];
+
+    /**
+     * 该条目类型是否有这个字段。
+     *
+     * ## ⚠️ 真机缺陷：白名单是**跨类型**的，而 Zotero 按类型校验
+     *
+     * 用户实测撞到：
+     *
+     * ```text
+     *   新建条目失败：Error: 'institution' is not a valid field for type 'preprint'
+     * ```
+     *
+     * `institution` 在 `ALLOWED_FIELDS` 里（它对 `thesis`/`report` 是对的），
+     * 但 `preprint` 没有这个字段 —— 于是 `setField` 抛错，**整个新建失败**。
+     * 对 Agent 尤其糟：它照着工具文档填字段，却因为一个它无从判断的
+     * 类型差异而全盘失败（它也确实这么反馈了）。
+     *
+     * 修法：填之前问 Zotero 一次。`isValidForType` 语义正是"字段不在该类型里
+     * 就返回 false"（不会抛错，见 `itemFields.js`），拿它过滤掉即可。
+     *
+     * 拿不到 API 时**返回 true**（放行）—— 宁可退回原来的行为，
+     * 也不要因为查询失败而把正常字段也拦掉。
+     */
+    const typeAccepts = (fieldName: string): boolean => {
+      try {
+        const fields = (
+          Zotero as unknown as {
+            ItemFields?: {
+              getID?: (n: string) => number | false;
+              isValidForType?: (f: number | string, t: number) => boolean;
+            };
+          }
+        ).ItemFields;
+        const types = (
+          Zotero as unknown as { ItemTypes?: { getID?: (n: string) => number } }
+        ).ItemTypes;
+        const fieldID = fields?.getID?.(fieldName);
+        const typeID = types?.getID?.(normalizedType);
+        if (
+          !fieldID ||
+          !typeID ||
+          typeof fields?.isValidForType !== "function"
+        ) {
+          return true;
+        }
+        return fields.isValidForType(fieldID, typeID);
+      } catch {
+        // 字段表尚未加载等异常：放行，让原来的路径去处理
+        return true;
+      }
+    };
 
     try {
       const item = new Zotero.Item(
@@ -2816,6 +2913,11 @@ export class SessionPane {
           !value.trim()
         ) {
           ignored.push(name);
+          continue;
+        }
+        // 类型不支持就跳过并**单独报告** —— 不是"没给"，也不是静默丢弃
+        if (!typeAccepts(name)) {
+          notForThisType.push(name);
           continue;
         }
         item.setField(name as never, value.trim() as never);
@@ -2849,23 +2951,46 @@ export class SessionPane {
       item.libraryID = libraryID;
       await item.saveTx();
 
-      // 加入分类（可选）
-      const collectionKey = argString(args, "collectionKey");
+      // ── 加入分类 ────────────────────────────────────────────────
+      //
+      // ## ⚠️ 真机缺陷：分类会话里新建的条目**没有进这个分类**
+      //
+      // 用户反馈："条目新建成功，附件挂载成功，但是条目没有进这个会话所在的分类。"
+      //
+      // 根因：分类只从 `args.collectionKey` 取，而那是**可选参数** ——
+      // Agent 在分类会话里建条目时**没有任何理由知道**要传它（会话本身就是
+      // 那个分类的上下文）。于是条目落在文库根，用户在分类视图里找不到。
+      //
+      // 修法：**默认加入会话所属分类**。分类会话的 `record.scopeKey` 就是分类 key
+      // （见 `session.ts` 的说明：空字符串表示"我的文库"根，此时不加）。
+      // 显式传了 `collectionKey` 时仍以它为准 —— 那是"我要放进别处"的明确意图。
+      const record = this.sessionCache.get(sessionId);
+      const scopeKey = record?.scopeKey?.trim() ?? "";
+      const explicitKey = argString(args, "collectionKey");
+      const collectionKey = effectiveCollectionKey(record, args);
       let collectionNote = "";
       if (collectionKey) {
         const collection = Zotero.Collections.getByLibraryAndKey(
-          libraryID,
+          record?.scopeLibraryID ?? libraryID,
           collectionKey,
-        );
-        if (collection) {
-          item.addToCollection((collection as unknown as { id: number }).id);
+        ) as unknown as { id?: number; name?: string } | undefined;
+        if (collection?.id) {
+          item.addToCollection(collection.id);
           await item.saveTx({
             undoAction: "undo-action-add-to-collection",
           } as never);
-          collectionNote = `，已加入分类 ${collectionKey}`;
+          const name = collection.name
+            ? `「${collection.name}」`
+            : collectionKey;
+          collectionNote = explicitKey
+            ? `，已加入分类 ${name}`
+            : `，已加入本会话的分类 ${name}`;
         } else {
           collectionNote = `，但找不到分类 ${collectionKey}（条目已创建）`;
         }
+      } else if (record?.kind === "collection" && !scopeKey) {
+        // 根会话：没有具体分类可加，说明一句免得看起来像漏了
+        collectionNote = "，本会话是文库根，未加入任何分类";
       }
 
       const tags = argStringArray(args, "tags") ?? [];
@@ -2908,6 +3033,12 @@ export class SessionPane {
         `已新建 ${normalizedType}「${String(rawFields.title).slice(0, 50)}」（key=${item.key}，` +
         `字段 ${accepted.length} 个，作者 ${creatorCount} 位${collectionNote}）` +
         (ignored.length ? `；忽略的字段：${ignored.join("、")}` : "") +
+        // 单独报"类型不支持"：这与"没给/不是字符串"是**不同**的原因，
+        // Agent 需要知道是**类型**不匹配，才不会照着文档再填一次同样的字段。
+        (notForThisType.length
+          ? `；⚠️ 这些字段 ${normalizedType} 类型不支持，已跳过：${notForThisType.join("、")}` +
+            `（不要重试同样的字段；换成类型支持的字段，或改用合适的 itemType）`
+          : "") +
         pdfNote;
       appendPanelLog("session", detail);
       return { ok: true, detail };
