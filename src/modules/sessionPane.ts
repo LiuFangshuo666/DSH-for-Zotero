@@ -763,8 +763,16 @@ export function buildWorkspaceReadme(input: {
     `| --- | --- | --- |`,
     `| 读 | \`search\` \`getItem\` \`listItems\` \`listCollections\` \`getNotes\` | 搜索、元数据、条目清单、分类树、笔记 |`,
     `| **读正文** | \`getFullText\` | **读某条目的论文原文**（长文用 \`offset\` 分段读） |`,
+    `| **找论文** | \`findPaper\` | **在外部数据库检索**（Crossref），拿回标题/作者/年份/期刊/**DOI** |`,
     `| 写 | \`setTags\` \`addNote\` \`addToCollection\` | 改标签、加笔记、加入分类 |`,
     `| **需用户确认** | \`createItem\` \`deleteItems\` \`deleteNote\` | 新建条目与删除**不会立即执行**，会登记为待确认 |`,
+    ``,
+    // ⚠️ 这一条必须写在**能力索引**里，不能只留在 `zotero/README.md`：
+    // 模型对"找论文"的第一反应是它训练里熟悉的 web search，而那条路
+    // 走模型服务端、**看不见用户机构的订阅**。不在这里点明，它就会绕过机构访问。
+    `⚠️ **找论文用 \`findPaper\`，不要用 web search**：` +
+      `本插件的检索走**用户本机的网络与机构订阅**（大学图书馆的代理与登录态），` +
+      `而 web search 走模型服务端，拿不到那些授权，也够不到 Zotero。`,
     ``,
     `调用方式与完整参数见 **\`${TOOL_DIR}/README.md\`**（**请先读它再动手**）。`,
     ``,
@@ -1089,8 +1097,15 @@ const STALE_DIR = "_stale";
  * 所以：**每次改动工作区材料的内容，就把这个数字加一**。
  * 插件启动时会比对已写材料里的版本，发现落后就**自动刷新** ——
  * 用户不需要记得点「刷新材料」，Agent 也不会拿着旧说明书干活。
+ *
+ * ## 版本历史
+ *
+ * | 版本 | 改了什么 |
+ * | --- | --- |
+ * | 5 | 工作区 README 的能力索引（Agent 曾声称只会联网、不知道能读写文献库） |
+ * | **6** | **新增 `findPaper`（论文检索）与 `createItem` 的取全文说明** |
  */
-const MATERIALS_VERSION = 5;
+const MATERIALS_VERSION = 6;
 
 /** 材料版本标记的写法（写在 README 首行，便于解析与人工辨认） */
 function materialsStamp(version: number): string {
