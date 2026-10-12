@@ -41,6 +41,8 @@ const {
   formatCandidates,
   PAPER_NEXT_STEP_HINT,
   isPdfBytes,
+  itemTypeFromDataCite,
+  parseDataCite,
 } = bundle;
 
 describe("DOI 规整（少剥一层就会 404，而 404 看起来像「这篇不存在」）", function () {
@@ -212,6 +214,137 @@ describe("Crossref 响应解析", function () {
     );
     assert.equal(stripJats("<p>a</p><br/><p>b</p>"), "a b");
     assert.equal(stripJats("&nbsp;x&nbsp;"), "x", "&nbsp; 也要处理");
+  });
+});
+
+describe("DataCite 解析（arXiv / Zenodo / 机构库的 DOI 在这里）", function () {
+  /** 真实响应的形状（取自 api.datacite.org 对 10.48550/arXiv.1706.03762 的返回） */
+  const payload = {
+    data: {
+      attributes: {
+        doi: "10.48550/arxiv.1706.03762",
+        titles: [{ title: "Attention Is All You Need" }],
+        creators: [
+          {
+            givenName: "Ashish",
+            familyName: "Vaswani",
+            name: "Vaswani, Ashish",
+          },
+          { givenName: "Noam", familyName: "Shazeer", name: "Shazeer, Noam" },
+          { name: "某机构作者" },
+        ],
+        publicationYear: 2017,
+        publisher: "arXiv",
+        container: {},
+        url: "https://arxiv.org/abs/1706.03762",
+        // ⚠️ 第一个 description **不是**摘要 —— 真实数据里就是这个顺序
+        descriptions: [
+          { description: "15 pages, 5 figures", descriptionType: "Other" },
+          {
+            description: "<p>The dominant sequence transduction models…</p>",
+            descriptionType: "Abstract",
+          },
+        ],
+        // DataCite 明确给出资源类型，据此可把预印本建成 preprint
+        types: { resourceTypeGeneral: "Preprint", resourceType: "Article" },
+      },
+    },
+  };
+
+  it("取到标题/作者/年份/DOI/URL", function () {
+    const c = parseDataCite(payload);
+    assert.ok(c, "应解析成功");
+    assert.equal(c.title, "Attention Is All You Need");
+    assert.deepEqual(c.authors, [
+      "Ashish Vaswani",
+      "Noam Shazeer",
+      "某机构作者",
+    ]);
+    assert.equal(c.year, 2017);
+    assert.equal(c.doi, "10.48550/arxiv.1706.03762");
+    assert.equal(c.url, "https://arxiv.org/abs/1706.03762");
+    assert.equal(c.source, "datacite");
+  });
+
+  it("**按 descriptionType 取摘要**，不能拿第一个 description", function () {
+    // 真实数据里第一个是 "15 pages, 5 figures"（Other）——
+    // 直接取第一个会把篇幅说明当摘要写进条目。
+    const c = parseDataCite(payload);
+    assert.match(c.abstract ?? "", /dominant sequence transduction/);
+    assert.ok(
+      !/15 pages/.test(c.abstract ?? ""),
+      "不能把 Other 类型的 description 当摘要",
+    );
+  });
+
+  it("预印本没有 container 时用 publisher 顶上（否则界面缺一块）", function () {
+    const c = parseDataCite(payload);
+    assert.equal(c.venue, "arXiv");
+    const withContainer = parseDataCite({
+      data: {
+        attributes: {
+          ...payload.data.attributes,
+          container: { title: "NeurIPS" },
+        },
+      },
+    });
+    assert.equal(withContainer.venue, "NeurIPS");
+  });
+
+  it("结构不对时返回 undefined 而不是抛错", function () {
+    for (const bad of [null, {}, { data: {} }, { data: { attributes: {} } }]) {
+      assert.equal(parseDataCite(bad), undefined);
+    }
+  });
+
+  it("resourceTypeGeneral 映射成 Zotero 条目类型", function () {
+    // 不映射的话 arXiv 预印本会被建成 journalArticle（默认值），
+    // 而两者字段表不同 —— 真机上正是 preprint 才撞出字段校验错。
+    assert.equal(itemTypeFromDataCite(payload), "preprint");
+    assert.equal(
+      itemTypeFromDataCite({
+        data: {
+          attributes: { types: { resourceTypeGeneral: "JournalArticle" } },
+        },
+      }),
+      "journalArticle",
+    );
+    assert.equal(
+      itemTypeFromDataCite({
+        data: { attributes: { types: { resourceTypeGeneral: "Dataset" } } },
+      }),
+      "document",
+    );
+    assert.equal(
+      itemTypeFromDataCite({
+        data: { attributes: { types: { resourceTypeGeneral: "未知类型" } } },
+      }),
+      undefined,
+      "不认识的类型应返回 undefined，由调用方回退到默认",
+    );
+    assert.equal(itemTypeFromDataCite(null), undefined);
+  });
+});
+
+describe("同一论文的多个 DOI 登记（真机上选错了一条）", function () {
+  it("下一步指引必须警告不要只看排序或有无 PDF", function () {
+    // 真机：arXiv 的 DOI 查不到（注册在 DataCite），模型于是从近似结果里
+    // 挑了一条 2025 年的第三方重复登记，DOI 与年份都错了，
+    // 而标题作者看起来完全正常 —— 错元数据因此进了用户库。
+    assert.match(
+      PAPER_NEXT_STEP_HINT,
+      /多个 DOI 登记|不要仅因为/,
+      "必须警告「可能有多条登记，别只看排序或有无 PDF」",
+    );
+    assert.match(PAPER_NEXT_STEP_HINT, /年份与作者/);
+    assert.match(PAPER_NEXT_STEP_HINT, /itemType/, "要提示填建议的条目类型");
+  });
+
+  it("结果文本里会显示「建议条目类型」", function () {
+    const text = formatCandidates([
+      { title: "X", doi: "10.1/x", itemType: "preprint" },
+    ]);
+    assert.match(text, /建议条目类型: preprint/);
   });
 });
 

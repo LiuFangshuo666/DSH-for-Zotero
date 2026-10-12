@@ -131,6 +131,8 @@ export {
   doiUrl,
   formatCandidates,
   isPlausiblePdfUrl,
+  itemTypeFromDataCite,
+  parseDataCite,
   looksLikeDoi,
   looksPaywalled,
   normalizeDoi,

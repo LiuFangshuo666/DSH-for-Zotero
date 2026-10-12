@@ -33,8 +33,11 @@
 import { appendPanelLog } from "./runLog";
 import {
   buildCrossrefSearch,
+  DATACITE_API,
+  itemTypeFromDataCite,
   looksLikeDoi,
   normalizeDoi,
+  parseDataCite,
   pickOpenAccessPdf,
   type PaperCandidate,
   type PaperQuery,
@@ -128,12 +131,36 @@ export async function searchPapers(
   return parseCrossrefItems(payload);
 }
 
-/** 按 DOI 取单条元数据（Crossref `/works/{doi}`） */
+/**
+ * 按 DOI 取单条元数据：**先 Crossref，查不到再 DataCite**。
+ *
+ * ## ⚠️ 为什么必须两个源都试（真机教训）
+ *
+ * 用户实测查 arXiv 的经典 DOI `10.48550/arXiv.1706.03762` 时**查不到** ——
+ * 因为 arXiv 的 DOI 注册在 **DataCite**，不在 Crossref。
+ *
+ * 而"查不到"的后果比看起来严重：模型不会就此停下，它会**从命中的近似结果里
+ * 挑一条**继续（真机上挑了一条 2025 年由某机构重复登记的同一篇论文），
+ * 于是条目里的 **DOI 与年份都是错的**，而标题作者看起来完全正常。
+ * 错元数据一旦进库，用户很难发现。
+ *
+ * Crossref 优先的理由：期刊论文的**正式版**记录在那里，质量更高。
+ */
 export async function fetchByDoi(
   doi: string,
 ): Promise<PaperCandidate | undefined> {
+  const fromCrossref = await fetchDoiFromCrossref(doi);
+  if (fromCrossref) return fromCrossref;
+  appendPanelLog("session", `Crossref 没有这个 DOI，改试 DataCite：${doi}`);
+  return fetchDoiFromDataCite(doi);
+}
+
+/** Crossref 的 `/works/{doi}` */
+async function fetchDoiFromCrossref(
+  doi: string,
+): Promise<PaperCandidate | undefined> {
   const url = `${CROSSREF_API}/${encodeURIComponent(doi)}`;
-  appendPanelLog("session", `按 DOI 取元数据：${url}`);
+  appendPanelLog("session", `按 DOI 取元数据（Crossref）：${url}`);
   try {
     const text = await getText(url);
     const parsed = parseCrossrefItems({
@@ -145,7 +172,37 @@ export async function fetchByDoi(
   } catch (error) {
     appendPanelLog(
       "session",
-      `按 DOI 取元数据失败（${doi}）：${
+      `Crossref 取元数据失败（${doi}）：${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return undefined;
+  }
+}
+
+/**
+ * DataCite 的 `/dois/{doi}`（arXiv / Zenodo / 机构库的 DOI 在这里）。
+ *
+ * 顺便把 DataCite 的**资源类型**映射成 Zotero 条目类型一并带回 ——
+ * 它明确给了 `resourceTypeGeneral`，我们不必猜，也就能把 arXiv 预印本
+ * 正确建成 `preprint` 而不是默认的 `journalArticle`。
+ */
+async function fetchDoiFromDataCite(
+  doi: string,
+): Promise<PaperCandidate | undefined> {
+  const url = `${DATACITE_API}${encodeURIComponent(doi)}`;
+  appendPanelLog("session", `按 DOI 取元数据（DataCite）：${url}`);
+  try {
+    const text = await getText(url);
+    const payload: unknown = JSON.parse(text);
+    const candidate = parseDataCite(payload);
+    if (!candidate) return undefined;
+    const itemType = itemTypeFromDataCite(payload);
+    return itemType ? { ...candidate, itemType } : candidate;
+  } catch (error) {
+    appendPanelLog(
+      "session",
+      `DataCite 取元数据失败（${doi}）：${
         error instanceof Error ? error.message : String(error)
       }`,
     );

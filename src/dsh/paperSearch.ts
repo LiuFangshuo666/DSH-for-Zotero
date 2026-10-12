@@ -188,6 +188,14 @@ export interface PaperCandidate {
   pdfUrl?: string;
   /** 来源标记，便于模型判断可信度 */
   source?: string;
+  /**
+   * 建议的 Zotero 条目类型（由数据源给出，不是猜的）。
+   *
+   * DataCite 明确提供 `resourceTypeGeneral`，据此可以把 arXiv 预印本
+   * 建成 `preprint` 而不是默认的 `journalArticle` —— 两者的字段表不同，
+   * 类型不对会连带字段校验失败（真机上正是这样撞出 institution 那个错）。
+   */
+  itemType?: string;
 }
 
 /** Crossref 单条记录里我们会用到的字段（其余忽略） */
@@ -311,6 +319,162 @@ export function parseCrossrefItems(
     });
   }
   return out;
+}
+
+// ── DataCite（arXiv、Zenodo、机构库…的 DOI 都在这里）──────────────
+
+/**
+ * ## ⚠️ 为什么必须有 DataCite —— 真机教训
+ *
+ * 用户实测：查 arXiv 的经典 DOI `10.48550/arXiv.1706.03762`
+ * （Attention Is All You Need）**查不到**。原因不是网络，是**注册机构不同**：
+ *
+ * | 注册机构 | 覆盖 | 接口 |
+ * | --- | --- | --- |
+ * | Crossref | 绝大多数期刊/会议论文 | `api.crossref.org` |
+ * | **DataCite** | **arXiv、Zenodo、机构库、数据集** | `api.datacite.org` |
+ *
+ * 只查 Crossref 的后果很严重，而且**安静**：查不到目标论文时，
+ * 模型不会说"找不到"，而是**从命中的近似结果里挑一条**继续 ——
+ * 真机上它就挑了一条 2025 年由某机构重复登记的同一篇论文，
+ * 于是条目里的 DOI 与年份**都是错的**，而标题作者看起来完全正常。
+ * 这比"检索为空"糟得多：错元数据会留在用户库里。
+ *
+ * 所以 DOI 查询**两个源都试**：Crossref 优先（期刊论文的正式版在那里），
+ * 查不到再试 DataCite。
+ */
+export const DATACITE_API = "https://api.datacite.org/dois/";
+
+/**
+ * DataCite 的 `types.resourceTypeGeneral` → Zotero 条目类型。
+ *
+ * 这个映射值得做，因为 DataCite 明确给了资源类型，我们**不必猜**：
+ * 不映射的话，arXiv 预印本会被建成 `journalArticle`（默认值），
+ * 而 Zotero 里 `preprint` 与 `journalArticle` 的字段表不同 ——
+ * 用户会拿到一个类型不对的条目（真机上正是 `preprint` 才撞出
+ * "institution 不是 preprint 的字段"那个错）。
+ *
+ * 取不到或对不上时返回 undefined，由调用方回退到默认类型。
+ */
+export function itemTypeFromDataCite(payload: unknown): string | undefined {
+  const general = (
+    payload as {
+      data?: { attributes?: { types?: { resourceTypeGeneral?: unknown } } };
+    }
+  )?.data?.attributes?.types?.resourceTypeGeneral;
+  if (typeof general !== "string") return undefined;
+  const map: Record<string, string> = {
+    Preprint: "preprint",
+    JournalArticle: "journalArticle",
+    ConferencePaper: "conferencePaper",
+    Book: "book",
+    BookChapter: "bookSection",
+    Report: "report",
+    Thesis: "thesis",
+    Dissertation: "thesis",
+    Dataset: "document",
+    Text: "document",
+    Software: "document",
+    Audiovisual: "document",
+    Image: "document",
+    Collection: "document",
+    Event: "document",
+    Model: "document",
+    PhysicalObject: "document",
+    Workflow: "document",
+    Other: "document",
+  };
+  return map[general];
+}
+
+/**
+ * 解析 DataCite 的 `/dois/{doi}` 响应。
+ *
+ * ## 与 Crossref 的三处结构差异（对不上就解析失败）
+ *
+ * 1. 作者在 `creators[]`，姓名分成 `givenName` / `familyName`
+ *    （Crossref 是 `author[]` 的 `given` / `family`）；
+ * 2. 摘要在 `descriptions[]` 里，要**按 `descriptionType` 过滤** ——
+ *    第一个 description 未必是摘要（arXiv 的记录里还有
+ *    "15 pages, 5 figures" 这种 `Other`）；
+ * 3. 没有 `container-title`，期刊/会议信息在 `container.title`，而预印本通常为空 ——
+ *    空的时候用 `publisher`（arXiv 的记录里它是 `"arXiv"`），否则界面上会缺一块。
+ */
+export function parseDataCite(payload: unknown): PaperCandidate | undefined {
+  const attrs = (
+    payload as {
+      data?: {
+        attributes?: {
+          doi?: unknown;
+          titles?: unknown;
+          creators?: unknown;
+          publicationYear?: unknown;
+          publisher?: unknown;
+          container?: { title?: unknown };
+          url?: unknown;
+          descriptions?: unknown;
+        };
+      };
+    }
+  )?.data?.attributes;
+  if (!attrs) return undefined;
+
+  const title = firstString(
+    Array.isArray(attrs.titles)
+      ? (attrs.titles as Array<{ title?: unknown }>).map((t) => t?.title)
+      : attrs.titles,
+  );
+  if (!title) return undefined;
+
+  const authors: string[] = [];
+  if (Array.isArray(attrs.creators)) {
+    for (const raw of attrs.creators as Array<{
+      name?: unknown;
+      givenName?: unknown;
+      familyName?: unknown;
+    }>) {
+      const family =
+        typeof raw?.familyName === "string" ? raw.familyName.trim() : "";
+      const given =
+        typeof raw?.givenName === "string" ? raw.givenName.trim() : "";
+      const full =
+        [given, family].filter(Boolean).join(" ") ||
+        (typeof raw?.name === "string" ? raw.name.trim() : "");
+      if (full) authors.push(full);
+    }
+  }
+
+  // ⚠️ 必须按类型过滤：DataCite 的第一个 description 可能不是摘要
+  let abstract: string | undefined;
+  if (Array.isArray(attrs.descriptions)) {
+    const hit = (
+      attrs.descriptions as Array<{
+        description?: unknown;
+        descriptionType?: unknown;
+      }>
+    ).find(
+      (d) => String(d?.descriptionType ?? "").toLowerCase() === "abstract",
+    );
+    abstract = stripJats(
+      typeof hit?.description === "string" ? hit.description : undefined,
+    );
+  }
+
+  const year = Number(attrs.publicationYear);
+  const container = firstString(attrs.container?.title);
+  const publisher = firstString(attrs.publisher);
+
+  return {
+    title,
+    ...(authors.length ? { authors } : {}),
+    ...(Number.isInteger(year) && year > 1000 ? { year } : {}),
+    // 预印本没有 container，用 publisher（arXiv）顶上，否则界面缺一块
+    ...((container ?? publisher) ? { venue: container ?? publisher } : {}),
+    doi: normalizeDoi(firstString(attrs.doi)),
+    url: firstString(attrs.url),
+    ...(abstract ? { abstract } : {}),
+    source: "datacite",
+  };
 }
 
 // ── 开放获取 PDF ───────────────────────────────────────────────
@@ -517,6 +681,11 @@ export function formatCandidates(
     lines.push(`   ${bits.join(" · ")}`);
     if (c.doi) lines.push(`   DOI: ${c.doi}`);
     if (c.url) lines.push(`   URL: ${c.url}`);
+    if (c.itemType) {
+      // 明确给出来源建议的类型：Agent 据此填 itemType，
+      // 避免把 arXiv 预印本建成 journalArticle（两者字段表不同）
+      lines.push(`   建议条目类型: ${c.itemType}`);
+    }
     if (c.pdfUrl) {
       lines.push(
         `   开放获取 PDF: ${c.pdfUrl}` +
@@ -544,6 +713,10 @@ export function formatCandidates(
  * 那正是我们要它别做的事。
  */
 export const PAPER_NEXT_STEP_HINT =
-  "下一步：把你要的那条的 DOI（或 pdfUrl）传给 `createItem` 的 `pdfUrl` 参数，" +
-  "插件会**用你本机的网络与机构登录**去取全文并作为附件挂到新条目上。" +
+  "下一步：把你要的那条的 DOI 填进 `createItem` 的 `fields.DOI`，" +
+  "并把它的 PDF 直链（若有）传给 `pdfUrl` —— 插件会**用你本机的网络与机构登录**" +
+  "去取全文并作为附件挂到新条目上。" +
+  "结果里给了「建议条目类型」时，把它填进 `createItem` 的 `itemType`。" +
+  "⚠️ 一份论文可能有多个 DOI 登记，**不要仅因为某条排在前面或只有它带 PDF 就选它** ——" +
+  "优先选年份与作者都吻合的那条，否则会把错的 DOI 与年份写进库里。" +
   "不要用 web search 去找 PDF —— 它拿不到你机构的订阅。";
