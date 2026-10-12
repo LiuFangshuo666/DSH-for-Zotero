@@ -5,8 +5,6 @@
  * M0 阶段只注册"DSH 自检"入口；阅读器面板在 M1 加入。
  */
 
-import { writeBootstrapSelfCheck } from "./index";
-import { appendDiagnostic } from "./dsh/runLog";
 import { SelfCheck } from "./modules/selfCheck";
 import { ReaderPanel } from "./modules/readerPanel";
 import { SelectionToolbar } from "./modules/selectionToolbar";
@@ -194,25 +192,6 @@ async function onStartup() {
     Zotero.unlockPromise,
     Zotero.uiReadyPromise,
   ]);
-
-  // ⚠️ 引导自检**必须放在这里**，不能放在模块加载期。
-  //
-  // 真机教训：它原先写在 `index.ts` 的模块体里，而那一刻
-  // `Zotero.DataDirectory._dir` **尚未初始化** —— `?.dir` 返回 undefined，
-  // 于是诊断**什么都没写**。我为了排查"按键没反应"而加的诊断，
-  // 自己先"没反应"了，白绕一圈才发现。
-  //
-  // 数据目录要等上面这几个 promise 完成才可用，所以调用点在这里。
-  try {
-    writeBootstrapSelfCheck();
-  } catch (error) {
-    appendPanelLog(
-      "runtime",
-      `引导自检失败（不影响功能）：${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
 
   safeRegister("本地化初始化", () => initLocale());
   safeRegister("注册 FTL 资源", () => registerLocaleResources());
@@ -495,41 +474,25 @@ async function onPrefsEvent(type: string, data: { [key: string]: any }) {
     }
   };
 
-  // ⚠️ 每个事件都记一条诊断（含结果）。
-  //
-  // 真机反馈"按键点了没反应"，而我手上只有一句"没反应" —— 既不知道
-  // 用户点的是哪个键，也不知道处理函数跑没跑、结果是什么。
-  // 这条记录把"点击 → 结果"固定下来：用户点一遍，文件里就有完整轨迹。
-  // （`load` 不记：它每次开面板都触发，会把有用的记录淹掉。）
-  const started = Date.now();
   try {
     await dispatchPrefsEvent(type, data, win, setStatusText);
     if (type !== "load" && type !== "showing") {
-      appendDiagnostic("设置页事件", [
-        `事件 = ${type}`,
-        `结果 = 处理完成（${Date.now() - started} ms）`,
-      ]);
-      // 状态行可能不在可视区域内，所以**再弹一条**（见 notifyPrefs 的说明）
+      // 状态行可能不在可视区域内（面板会滚动），所以**再弹一条** ——
+      // 见 notifyPrefs 的说明。这是用户唯一一定会看到的反馈。
       notifyPrefs(`已处理：${type}`, "default");
     }
   } catch (error) {
     // ⚠️ 这个兜底是**必需的**，不是防御性编程。
     //
-    // 真机反馈"按键点了没反应"：`oncommand` 调用的是一个 async 函数，
-    // 而它内部的任何抛出都会变成一个**无人处理的 Promise 拒绝** ——
-    // 界面既不报错、也不显示任何东西，用户只能看到"点了没反应"。
-    // 这个项目里已经出现过多次同类问题（异常被静默吞掉）。
+    // `oncommand` 调用的是一个 async 函数，而它内部的任何抛出都会变成一个
+    // **无人处理的 Promise 拒绝** —— 界面既不报错、也不显示任何东西，
+    // 用户看到的只是"点了没反应"。这个项目里反复踩过同类问题。
     //
-    // 所以：把错误**显示到设置页上**（用户当前正看着的界面），
-    // 同时写进诊断日志，让"没反应"变成"有一句话告诉你为什么"。
+    // 所以：把错误**显示到设置页上**（用户当前正看着的界面）并弹一条通知，
+    // 让"没反应"变成"有一句话告诉你为什么"。
     const message = error instanceof Error ? error.message : String(error);
     appendPanelLog("runtime", `设置页事件「${type}」失败：${message}`);
     if (type !== "load" && type !== "showing") {
-      appendDiagnostic("设置页事件", [
-        `事件 = ${type}`,
-        `结果 = **失败**（${Date.now() - started} ms）`,
-        `错误 = ${message}`,
-      ]);
       notifyPrefs(`${type} 失败：${message}`, "fail");
     }
     writePrefsError(win, type, message);
@@ -561,93 +524,6 @@ function writePrefsError(
   }
 }
 
-/** 设置页里应当存在的控件 id（用于诊断"界面上到底有什么"） */
-const EXPECTED_PREFS_IDS = [
-  "runtime-status",
-  "selfcheck-report",
-  "model-api-key",
-  "model-base-url",
-  "model-id",
-  "model-effort",
-  "model-status",
-  "model-save-key",
-  "model-refresh",
-  "custom-providers",
-  "providers-save",
-  "providers-example",
-  "providers-status",
-] as const;
-
-/**
- * 把设置页窗口的实际情况落盘（诊断"按键点了没反应"）。
- *
- * ## 记录什么、为什么
- *
- * 按键失效的可能原因按发生顺序有这些，每一条都会留下不同痕迹：
- *
- * | 环节 | 文件里会显示 |
- * | --- | --- |
- * | `Zotero.DSHForZotero` 取不到 | `Zotero[instance] = **缺失**` |
- * | `hooks.onPrefsEvent` 取不到 | `hooks.onPrefsEvent = **缺失**` |
- * | 窗口取不到（onload 没触发） | `window = **缺失**` |
- * | XHTML 没更新（装的还是旧版） | 新控件 id 显示 `**缺失**` |
- *
- * 用户只需把这个文件的内容贴出来，就能直接定位。
- * 插件跑在沙箱里，`ztoolkit.log` 要开浏览器工具箱才看得到 —— 那对用户不现实。
- */
-async function dumpPrefsDiagnostics(win: Window | undefined): Promise<void> {
-  const ref = addon.data.config.addonRef;
-  const lines: string[] = ["", "---- 设置页诊断 ----"];
-  try {
-    const instance = (Zotero as unknown as Record<string, unknown>)[
-      addon.data.config.addonInstance
-    ] as { hooks?: Record<string, unknown> } | undefined;
-    lines.push(
-      `Zotero[instance]   = ${instance ? "OK" : "**缺失**（oncommand 会全部失败）"}`,
-    );
-    lines.push(
-      `hooks.onPrefsEvent = ${
-        typeof instance?.hooks?.onPrefsEvent === "function"
-          ? "OK"
-          : "**缺失**（oncommand 取不到它）"
-      }`,
-    );
-    lines.push(
-      `window             = ${win ? "OK" : "**缺失**（onload 未触发？）"}`,
-    );
-    lines.push(`document           = ${win?.document ? "OK" : "**缺失**"}`);
-
-    const missing: string[] = [];
-    const present: string[] = [];
-    for (const id of EXPECTED_PREFS_IDS) {
-      const full = `${ref}-${id}`;
-      if (win?.document?.getElementById(full)) present.push(id);
-      else missing.push(id);
-    }
-    lines.push(`控件存在（${present.length}）：${present.join(", ")}`);
-    lines.push(
-      `控件缺失（${missing.length}）：${missing.join(", ") || "（无）"}`,
-    );
-    if (missing.length > 0) {
-      lines.push(
-        "  → 缺失说明界面文件与这份代码**不是同一版**：" +
-          "preferences.xhtml 只在 Zotero 启动时加载，请完全退出并重启 Zotero。",
-      );
-    }
-    lines.push(`时间               = ${new Date().toISOString()}`);
-  } catch (error) {
-    lines.push(
-      `诊断本身抛错：${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-
-  // 统一写到插件数据目录下的 diagnostics.txt（与启动自检同一个文件）——
-  // 这样用户只需提供一个路径。
-  // 刻意不用 `Zotero.DataDirectory.dir`：它是 getter，
-  // 数据目录未初始化时会抛异常。
-  appendDiagnostic("设置页诊断", lines);
-}
-
 /** 真正的分发逻辑（由 `onPrefsEvent` 包裹在 try/catch 里调用） */
 async function dispatchPrefsEvent(
   type: string,
@@ -664,12 +540,6 @@ async function dispatchPrefsEvent(
     // `value` 就变成空串。这里与 `load` 走同一条初始化路径。
     case "load":
     case "showing": {
-      // ⚠️ 第一件事：记下"这个面板窗口里到底能看到什么"。
-      // 真机反馈"模型一节的按键都看不出效果"，而按键失效的原因可能在这
-      // **之前**就发生了（元素没渲染出来、id 不匹配、窗口取不到）。
-      // 把它落盘，就能从文件读出断在哪一环，而不是靠猜。
-      // （只在 `load` 记一次：`showing` 会反复触发。）
-      if (type === "load") void dumpPrefsDiagnostics(win);
       // 载入时把当前状态显示出来，用户才知道现在是什么情况
       const manager = runtimeManager();
       setStatusText(describeRuntime(manager.getStatus()));

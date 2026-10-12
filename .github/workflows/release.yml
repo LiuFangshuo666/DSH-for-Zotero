@@ -1,16 +1,18 @@
 name: Release
 
-# ⚠️ 这份工作流同样是**给 GitHub 用的**，在 Gitee 上不会运行
-# （原因见 ci.yml 顶部说明）。
+# 推一个 `v*` tag 时，在 **GitHub Releases** 上自动建 Release 并附上构建好的 xpi。
 #
-# 它调用 `zotero-plugin-dev` 的发布工作流，把构建好的 xpi 传到 **GitHub Releases**。
-# 如果本仓库只在 Gitee 上发布，请改用 Gitee 的「附件 / Release」功能手动上传
-# `.scaffold/build/dsh-for-zotero.xpi` —— 那是构建产物，不需要额外打包。
+# ⚠️ 它**只作用于 GitHub**（Gitee 不执行 `.github/workflows/`）。
+# 所以发版是两步：
 #
-# 手动发布的步骤：
-#   1. npm run verify          # 确认构建 + 测试 + 产物核验都过
-#   2. npm run build           # 生成 .scaffold/build/dsh-for-zotero.xpi
-#   3. 在 Gitee 上新建 tag（例如 v0.1.0）与 Release，上传上面那个 xpi
+#   1. 推 tag 到 GitHub → 这里自动构建并发布 Release（市场收录与手动下载用）
+#   2. 在 Gitee 上手动建 Release 并上传同一个 xpi（自动更新清单指向它）
+#
+# 顺序不能反：`update.json` 的 `update_link` 指向 Gitee 的
+# `releases/download/v{版本}/dsh-for-zotero.xpi`；Gitee 上没有那个 Release 时，
+# 用户更新会 404。
+#
+# 本地发版步骤见 README 的「版本号规则」与「发布渠道与双仓库同步」。
 
 on:
   push:

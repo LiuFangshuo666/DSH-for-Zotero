@@ -1,27 +1,37 @@
 /**
- * 设置页的事件接线 —— 专治"按键点了没反应"。
+ * 设置页的接线与元素 —— 专治「按键点了没反应」。
  *
  * ## 为什么单独立一个文件
  *
  * 真机反馈的原话就是"按键点了没反应"。这类故障有一条共同特征：
- * **任何构建、类型、lint 检查都不会失败**。设置页的 `oncommand` 是一个字符串，
- * 它调用哪个事件、代码里有没有人接，两边都只是文本：
+ * **任何构建、类型、lint 检查都不会失败** —— 界面与代码两边都只是文本：
  *
  * ```xml
- * <html:button oncommand="…onPrefsEvent('providers-save', { window })" />
+ * <button oncommand="…onPrefsEvent('providers-save', { window })" />
  * ```
  *
  * ```ts
  * switch (type) { case "providers-save": … }
  * ```
  *
- * 漏了 `case` 的后果不是报错，而是**什么都不发生**。若要用户去猜，
- * 他只能描述成"点了没反应" —— 这正是最难定位的一种反馈。
+ * 漏了 `case`、把按钮写成 HTML 元素、把 `onsyncfrompreference` 的 JS 改坏、
+ * 状态行没有 `id` —— 后果都不是报错，而是**什么都不发生**。
+ * 而用户唯一能给的描述就是"点了没反应"，那是最难定位的一种反馈。
  *
- * 所以这里做两件事：
- *  1. 把设置页发的每个事件与代码里的分发表**逐一比对**；
- *  2. 守住那个**必需的兜底 catch** —— 没有它，处理函数里的任何异常
- *     都会变成无人处理的 Promise 拒绝，界面同样毫无反应。
+ * ## 这里守的是什么（每一条都对应一次真实故障）
+ *
+ * | 测试块 | 真实故障 |
+ * | --- | --- |
+ * | 设置页事件的分发表 | `oncommand` 发的事件没有 `case` |
+ * | 控件与偏好的绑定 | 偏好写成短名，Zotero 7+ 只发警告、不绑定 |
+ * | hooks 导出对象 | 导出名不对 → 所有按钮静默失效 |
+ * | 兜底错误处理 | async 处理函数无 catch → 异常变成静默拒绝 |
+ * | XUL 元素 | `html:button` 不发 `command` → 整节按钮全死 |
+ * | 看得见的回执 | 状态行在可视区域之外，用户看不到反馈 |
+ * | 状态行必须有 id | 没有 id → `getElementById` 永远取不到 |
+ * | onsyncfrompreference | 批量改偏好时把 JS 改坏 → 下拉框重进后变空 |
+ * | 面板重进时初始化 | 面板被缓存，`load` 不再触发 |
+ * | 取不到元素不静默返回 | `if (!el) return` 让失败无声无息 |
  */
 
 import assert from "node:assert/strict";
@@ -225,60 +235,6 @@ describe("设置页事件的兜底错误处理", function () {
       defaultBody,
       /appendPanelLog\(/,
       "default 分支必须记一条 —— 静默 return 会让「点了没反应」完全无从排查",
-    );
-  });
-});
-
-describe("诊断的调用时机（真机上诊断自己「没反应」过）", function () {
-  const index = read("src/index.ts");
-
-  it("引导自检**不在模块体里调用**（那时数据目录还没初始化）", function () {
-    // 真机教训：诊断原先写在 index.ts 的模块体里，而那一刻
-    // Zotero.DataDirectory._dir 还没初始化 —— 结果什么都没写出来。
-    // 为了排查"没反应"而加的诊断，自己先"没反应"了。
-    const bodyAfterDefs = index.slice(
-      index.indexOf("if (!basicTool.getGlobal"),
-    );
-    assert.ok(
-      !/^\s*writeBootstrapSelfCheck\(\);/m.test(bodyAfterDefs),
-      "不要在模块体里调用它 —— 数据目录那时不可用，写了也没有",
-    );
-    assert.match(
-      index,
-      /export function writeBootstrapSelfCheck\(/,
-      "它应当被导出，由 onStartup 在初始化完成后调用",
-    );
-  });
-
-  it("onStartup 在等完初始化 promise 之后才写诊断", function () {
-    const at = hooks.indexOf("async function onStartup");
-    assert.ok(at > 0, "找不到 onStartup");
-    const end = hooks.indexOf('safeRegister("本地化初始化"', at);
-    const body = hooks.slice(at, end > at ? end : at + 3000);
-    const awaitAt = body.indexOf("Zotero.initializationPromise");
-    const diagAt = body.indexOf("writeBootstrapSelfCheck()");
-    assert.ok(awaitAt > 0, "onStartup 应等待 Zotero.initializationPromise");
-    assert.ok(diagAt > 0, "onStartup 应调用 writeBootstrapSelfCheck");
-    assert.ok(
-      diagAt > awaitAt,
-      "写诊断必须在等完初始化之后 —— 否则数据目录还没就绪，等于没写",
-    );
-  });
-
-  it("写诊断不设「取不到目录就静默返回」的路径", function () {
-    const runLog = read("src/dsh/runLog.ts");
-    const at = runLog.indexOf("export function appendDiagnostic");
-    assert.ok(at > 0, "找不到 appendDiagnostic");
-    const body = runLog.slice(at, at + 1600);
-    assert.match(
-      body,
-      /DataDirectory\?\.dir[\s\S]{0,240}logError/,
-      "取不到数据目录时要退到 Zotero.logError，不能什么都不留",
-    );
-    assert.match(
-      body,
-      /enqueueWrite\(/,
-      "必须走串行追加，不要读全文再整体写回",
     );
   });
 });
@@ -510,11 +466,6 @@ describe("面板重进时也要初始化（load 只在首次插入时触发）",
       body,
       /case "showing":/,
       "showing 应与 load 共用分支（否则两侧初始化逻辑会分叉）",
-    );
-    assert.match(
-      hooks.slice(at, at + 900),
-      /if \(type === "load"\) void dumpPrefsDiagnostics/,
-      "诊断应只在 load 记录，避免 showing 反复触发把文件刷满",
     );
   });
 

@@ -6,8 +6,15 @@
 
 - 目标宿主：**Zotero 10.x**（`strict_min_version: 10.0`，只支持 10）
 - Agent 引擎：**[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)**（由插件自己拉起的**隔离实例**：独立 `DSH_HOME`、独立端口、独立凭据）
-- 模型与凭据：**由 dsh 管理** —— 插件里没有 API Key 设置项
+- 模型与凭据：**可在插件设置页里直接填**（API Key、API 地址、推理等级、以及任意第三方 provider）—— 没填则沿用你桌面版 dsh 的配置
 - **数据不出本机**：插件只与本机 `127.0.0.1` 上的 dsh 通信
+
+| 仓库                      | 地址                                               | 说明                         |
+| ------------------------- | -------------------------------------------------- | ---------------------------- |
+| GitHub（主仓库 / 上架用） | <https://github.com/LiuFangshuo666/DSH-for-Zotero> | 插件市场收录要求 GitHub 仓库 |
+| Gitee（国内镜像）         | <https://gitee.com/laofashi666/dsh-for-zotero>     | 自动更新的清单默认指向这里   |
+
+> 两边内容一致，任选其一。国内访问 GitHub 不稳定时用 Gitee。
 
 许可证 **MIT**（第三方声明见 [LICENSE](LICENSE)）。
 
@@ -107,17 +114,76 @@ Agent 提交新建/删除后，**会话页顶部会出现黄色角标**：
 
 ## 设置项
 
-设置页四节：
+设置页五节：
 
-| 节                 | 内容                                                                                        |
-| ------------------ | ------------------------------------------------------------------------------------------- |
-| **隔离运行时**     | 隔离端口、Harness 安装目录、运行时状态                                                      |
-| **自检**           | 一键检查运行时/认证/模型调用；结果也写入 `dsh-for-zotero-selfcheck.txt`；含「新手引导」按钮 |
-| **阅读器侧栏面板** | 分块大小、首次发送确认、流式显示、回答语言、高亮颜色、自定义指令（**会话页不读取这些**）    |
-| **高级**           | 请求超时、安装伴读 skill、写入常驻指令                                                      |
+| 节                      | 内容                                                                                        |
+| ----------------------- | ------------------------------------------------------------------------------------------- |
+| **隔离运行时**          | 隔离端口、Harness 安装目录、运行时状态（准备 / 启动 / 停止）                                |
+| **自检**                | 一键检查运行时/认证/模型调用；结果也写入 `dsh-for-zotero-selfcheck.txt`；含「新手引导」按钮 |
+| **模型**                | **API Key、API 地址、会话使用的模型、推理等级** —— 见下节                                   |
+| **自定义模型 provider** | 接 GLM / Moonshot / Qwen / 自建端点等第三方模型 —— 见下节                                   |
+| **阅读器侧栏面板**      | 分块大小、首次发送确认、流式显示、回答语言、高亮颜色、自定义指令（**会话页不读取这些**）    |
+| **高级**                | 请求超时、安装伴读 skill、写入常驻指令                                                      |
 
 > **两个"dsh 侧"开关默认关闭**。打开后需在「自检」里跑一次自检才会写入
 > `<DSH_HOME>/skills/` 与 `<DSH_HOME>/AGENTS.md`；之后每次启动会自动保持最新。
+
+### 配置模型（「模型」一节）
+
+隔离实例第一次启动时会从你桌面版 Harness **复制一份模型凭据**。所以：
+
+- **装过桌面版 dsh 且配好了** → 插件开箱可用，**这一节什么都不用改**
+- **没装过桌面版，或装了没登录/没配 Key** → 在这里直接填
+
+| 项                   | 说明                                                                                       |
+| -------------------- | ------------------------------------------------------------------------------------------ |
+| **DeepSeek API Key** | 点「保存并写入」写入隔离实例的 `.credentials.yaml`。**填了就优先用你的**，留空则沿用桌面版 |
+| **API 地址（可选）** | 换端点（中转站 / 私有部署 / 企业网关）。留空用 DeepSeek 官方                               |
+| **会话使用的模型**   | 点「刷新列表」从宿主读取**当前可用的模型**，选一个即可                                     |
+| **推理等级**         | 随所选模型**动态变化**（等级由模型自己声明）。「（模型默认）」表示不干预                   |
+
+> ⚠️ **「API 地址」换的是发往哪里，不是换协议。** 它对应 DeepSeek 适配器，
+> 说的是 **Anthropic Messages** 协议。要接 **OpenAI 兼容**端点（如 GLM 的
+> `/api/v1`），请看下一节。
+
+### 接第三方模型（「自定义模型 provider」一节）
+
+这一节会额外挂载 dsh 的 **`llm-pi-ai`** 适配器，支持三种协议：
+
+| 协议取值             | 适用                                                      |
+| -------------------- | --------------------------------------------------------- |
+| `openai-completions` | 绝大多数第三方与自建端点（**GLM 的 `/api/v1` 属于这种**） |
+| `anthropic-messages` | Anthropic 协议端点（GLM 的 `/api/anthropic`、部分中转站） |
+| `openai-responses`   | OpenAI Responses 协议                                     |
+
+填一个 **JSON 数组**（点「填入示例」可直接得到一份再改）：
+
+```json
+[
+  {
+    "route": "glm",
+    "api": "openai-completions",
+    "baseURL": "https://open.bigmodel.cn/api/v1",
+    "apiKey": "你的 key",
+    "displayName": "智谱 GLM",
+    "models": [{ "id": "glm-4.7", "name": "GLM-4.7" }]
+  }
+]
+```
+
+| 字段          | 必填 | 说明                                                                 |
+| ------------- | ---- | -------------------------------------------------------------------- |
+| `route`       | ✅   | 路由名，小写字母/数字/连字符。它同时是模型选择器里显示的 provider 名 |
+| `api`         | ✅   | 上表三种协议之一                                                     |
+| `baseURL`     | ✅   | API 根地址（http/https，不能带查询参数或 `#`）                       |
+| `apiKey`      | —    | 该端点的 Key；写入 `.credentials.yaml` 的 `refs.<自动派生名>`        |
+| `displayName` | —    | 界面显示名                                                           |
+| `models`      | ✅   | 至少一个；`id` 必填，`name` / `contextWindow` / `maxTokens` 可选     |
+
+保存后：provider 配置写进隔离实例的 `cordis.patch.yml`，Key 写进 `.credentials.yaml`。
+
+> ⚠️ **改动 provider 列表需要重启隔离运行时**（profile 的组合发生在宿主启动时）。
+> 设置页会对比磁盘与实际定义，直接告诉你「是否需要重启」。
 
 ## 工作原理
 
@@ -283,8 +349,41 @@ Zotero 用的是 Firefox 的扩展更新机制，两个地址配合：
 
 预发布版本（`0.3.0-beta.1` 这种）走 `update-beta.json`，正式用户不会被推上 beta。
 
-> ### ⚠️ `addonID` 一旦有用户就不能再改
->
+### 发布渠道与双仓库同步
+
+两个仓库内容一致，各自承担不同用途：
+
+| 仓库       | 用途                        | 说明                                                                          |
+| ---------- | --------------------------- | ----------------------------------------------------------------------------- |
+| **GitHub** | 插件市场收录 + CI + Release | `zotero-chinese/zotero-plugins` 的收集器要求 `repo` 是 GitHub 的 `owner/name` |
+| **Gitee**  | 国内下载 + 自动更新清单     | 国内访问稳定；`update.json` 默认指向这里                                      |
+
+一次改动推送两边：
+
+```bash
+git remote -v
+#   github  https://github.com/LiuFangshuo666/DSH-for-Zotero.git
+#   gitee   https://gitee.com/laofashi666/dsh-for-zotero.git
+
+git push gitee main && git push gitee v0.6.8     # 先推国内
+git push github main && git push github v0.6.8   # 再推 GitHub
+```
+
+**GitHub Actions 会在推 tag 时自动构建并创建 Release**（见 `.github/workflows/release.yml`）。
+Gitee **不跑** GitHub Actions，所以 Gitee 侧的 Release 需要手动建：
+
+```text
+Gitee → 发行版 → 新建，tag 填 v0.6.8，
+上传 .scaffold/build/dsh-for-zotero.xpi（文件名必须是 dsh-for-zotero.xpi）
+```
+
+> **为什么 `update_link` 指向 Gitee 而不是 GitHub**：实测本机访问
+> `raw.githubusercontent.com` 不稳定，而自动更新是**每次启动都会做**的事，
+> 不能依赖一个时常连不上的源。GitHub 侧的 Release 仍然要发 —— 市场收录与
+> 用户手动下载都靠它。
+
+### ⚠️ `addonID` 一旦有用户就不能再改
+
 > 自动更新是按 **`addonID`** 匹配的（现在是 `dsh-for-zotero@zotero.cn`）。
 > 改了它，Zotero 会当成**另一个插件**：已有用户收不到更新，且必须重装一次。
 >
@@ -328,6 +427,8 @@ src/
 │  ├─ isolatedRuntime.ts   隔离运行时的准备/启动/健康检查（约 900 行，最复杂的一块）
 │  ├─ isolatedPaths.ts     运行时目录布局
 │  ├─ credentialMerge.ts   把模型凭据合进隔离实例（**不**复制浏览器会话密钥）
+│  ├─ modelConfig.ts       设置页的模型配置：API Key、端点地址、模型与推理等级
+│  ├─ providers.ts         自定义 provider：写 profile 组合层与凭据（GLM/Qwen/自建…）
 │  ├─ auth.ts              cookie 自签 + 投递通道
 │  ├─ rpc.ts               POST /api/<ns>/<method> 信封客户端
 │  ├─ stream.ts            session/follow 流式（ChromeWorker WebSocket）
@@ -367,37 +468,61 @@ docs/                      设计与决策文档（**含历史记录，注意查
 
 这些不是风格建议，是**会让功能静默失效**的东西：
 
-1. **中文检索不要用 PowerShell**。bundle 里的中文是 `\uXXXX` 转义，`Select-String` 搜中文会**静默返回 0 结果** —— 据此判断"代码没进产物"会导致错误结论。用 `node` 脚本或 `tools/verify-bundle.mjs`。
+1. **设置页的 `oncommand` 只能挂在 XUL 元素上**。`<html:button oncommand="…">` **永远不会触发** —— HTML 按钮发的是 `click`，不是 `command`。不报错、不警告，只是按下去什么都不发生。所以按钮一律写成 `<button data-l10n-id="…" oncommand="…" />`（与 Zotero 自己的设置面板一致）。
 
-2. **界面 JS 的异常是静默的**。`addon/content/*.js` 里的错误不会出现在任何地方 —— 表现为"点了没反应"。诊断要靠 `console.error` + 会话页的日志。
+2. **XUL 按钮的文案取自 Fluent 的 `.label`**。写 `pref-x = 保存` 会让按钮**显示为空**，必须写 `pref-x =\n    .label = 保存`。
 
-3. **`IOUtils.move` 在本项目环境下会失败**（真机实测 `NotFoundError`）。所以代码里凡是"写临时文件再改名"的地方都改成了**直接写**，归档也带 read-write-remove 回退。
+3. **`preference` 属性必须是完整偏好键**（Zotero 7+）。写成短名（`preference="modelId"`）时 Zotero 只发一条警告然后**不绑定任何偏好** —— 改了存不进去、`onsyncfrompreference` 也不触发。源文件用 `__prefsPrefix__.<键>`，构建时替换为真实前缀。
 
-4. **不要用正则/行号脚本改结构化代码**。本项目因此弄坏过文件（切掉整个方法体、误改 5 处调用）。要么用编辑工具，要么从 git 取原文做精确替换。
+4. **批量改属性要当心 `onsyncfrompreference`**。它含 `preference="` 这个子串，用 `/preference="([^"]+)"/` 批量补前缀会把 JS 代码也改坏（得到 `onsyncfrompreference="extensions.zotero.…Zotero.…"`），表现为**下拉框重进后变空**。
 
-5. **改写给 Agent 的文案后，要 bump `MATERIALS_VERSION`**（`sessionPane.ts`），否则老会话的工作区说明不会自动刷新 —— 而 Agent 会拿着旧说明工作。
+5. **状态行元素必须有 `id`**。只写 `<label data-l10n-id="…">` 时 `getElementById` 永远取不到，`setStatus` 静默什么都不做 —— 用户点了按钮一个字都看不到。
 
-6. **新增 dsh 侧能力后，老会话的工作区说明不会自动更新**。插件在启动时刷新（见 `maintain()`），但**只更新已存在的文件**。
+6. **面板重进不会再次触发 `load`**。Zotero 把面板内容缓存在 DOM 里，切走只是隐藏。要在 `onshowing` 里重新初始化，否则"退出重进后下拉框变空"。
+
+7. **中文检索不要用 PowerShell**。bundle 里的中文是 `\uXXXX` 转义，`Select-String` 搜中文会**静默返回 0 结果** —— 据此判断"代码没进产物"会导致错误结论。用 `node` 脚本或 `tools/verify-bundle.mjs`。
+
+8. **Gecko 路径不能用模板串拼**。`${dir}/package.json` 得到反斜杠与正斜杠混用，`IOUtils` 直接抛 `NS_ERROR_FILE_UNRECOGNIZED_PATH`。一律用 `PathUtils.join`。
+
+9. **`tools/*.ps1` 必须是「UTF-8 带 BOM」**。Windows PowerShell 5.1 读无 BOM 的 UTF-8 会按 ANSI 解码，中文注释变乱码后**足以破坏脚本语法** —— 真机上因此把 xpi 部署成了 `.xpi` 却打印 `deployed` 并返回 0。
+
+10. **`IOUtils.move` 在本项目环境下会失败**（真机实测 `NotFoundError`）。所以代码里凡是"写临时文件再改名"的地方都改成了**直接写**，归档也带 read-write-remove 回退。
+
+11. **不要用正则/行号脚本改结构化代码**。本项目因此弄坏过文件（切掉整个方法体、误改 5 处调用、把 `import` 插进块注释）。要么用编辑工具，要么从 git 取原文做精确替换。
+
+12. **改写给 Agent 的文案后，要 bump `MATERIALS_VERSION`**（`sessionPane.ts`），否则老会话的工作区说明不会自动刷新 —— 而 Agent 会拿着旧说明工作。
 
 ## 排障
 
-| 现象                 | 先看哪里                                                                        |
-| -------------------- | ------------------------------------------------------------------------------- |
-| 插件像没安装         | `<数据目录>/dsh-for-zotero-panel.txt` 是否存在、修改时间是否刚更新              |
-| "运行时未就绪"       | 设置 → 隔离运行时 的状态；首次提取需要 10–30 秒                                 |
-| 回答不出 / 一直"…"   | 同上的自检：它会逐项报告 配置 → 凭据 → 签名 → cookie → RPC → 流式               |
-| 右键菜单没有图标     | 复盘见 `sessionPane.ts` 的 `menuIconHint` 注释（需要 `menuitem-iconic` 类）     |
-| 流式不生效           | **预期行为**：WebSocket 握手要 cookie，而沙箱写不进 cookie 罐（详见设置页说明） |
-| 想确认"跑的是哪一版" | 日志里的 `插件启动于 <时间>（v<版本>）` 与 xpi 的修改时间对照                   |
+**先做这两件事**，能排掉大半"没反应"：
+
+1. **完全退出 Zotero 再启动**。插件代码与设置页界面**只在启动时加载**；部署新版本后不重启，跑的仍是旧代码与旧界面。
+2. **等隔离运行时就绪**。首次启动要提取约 330 MB（10–30 秒）。设置页会显示「正在准备/启动」，就绪后模型列表会**自动加载**。
+
+| 现象                     | 先看哪里                                                                                                              |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| 插件像没安装             | `<数据目录>/dsh-for-zotero-panel.txt` 是否存在、修改时间是否刚更新                                                    |
+| "运行时未就绪"           | 设置 → 隔离运行时 的状态；首次提取需要 10–30 秒                                                                       |
+| **点按键完全没反应**     | 处理每个事件都会弹一条通知。**弹窗没出现**说明 `oncommand` 没触发（多半是元素类型，见坑 1）；**弹窗出现**说明功能正常 |
+| 设置页某一行没有文字     | 状态行在可视区域之外；点一下会弹通知，不必滚动查找                                                                    |
+| 回答不出 / 一直"…"       | 设置 → 自检：它会逐项报告 配置 → 凭据 → 签名 → cookie → RPC → 流式                                                    |
+| 填了 Key 仍报 no API key | 设置 → 模型：点「保存并写入」看状态行结果；再点「刷新列表」                                                           |
+| 第三方端点取不到模型     | 确认协议对不对（GLM 的 `/api/v1` 要用**自定义 provider**，不是「API 地址」）；provider 改动后**需重启运行时**         |
+| 右键菜单没有图标         | 复盘见 `sessionPane.ts` 的 `diagnoseMenuIcon` 注释（需要 `menuitem-iconic` 类）                                       |
+| 流式不生效               | **预期行为**：WebSocket 握手要 cookie，而沙箱写不进 cookie 罐（详见设置页说明）                                       |
+| 想确认"跑的是哪一版"     | 日志里的 `插件启动于 <时间>（v<版本>）` 与 xpi 的修改时间对照                                                         |
 
 **有用的路径**（`<数据目录>` 通常是 `C:\Users\<你>\Zotero`）：
 
 ```
 <数据目录>/dsh-for-zotero-panel.txt              诊断日志（追加写）
-<数据目录>/dsh-for-zotero-selfcheck.txt     最近一次自检报告
+<数据目录>/dsh-for-zotero-selfcheck.txt          最近一次自检报告
 <数据目录>/dsh-for-zotero/                       插件数据（运行时、隔离 DSH_HOME、sessions.json）
 <数据目录>/dsh-for-zotero/home/dsh-for-zotero/   各会话的工作区
 ```
+
+> ⚠️ `<数据目录>/dsh-for-zotero/home/.credentials.yaml` 里**明文存着**模型凭据
+> （API Key、会话密钥）。这是 dsh 自己的设计，但**不要把这个文件发给任何人**。
 
 ## 项目文档
 

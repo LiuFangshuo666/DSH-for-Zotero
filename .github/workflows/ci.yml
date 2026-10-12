@@ -1,13 +1,10 @@
 name: CI
 
-# ⚠️ 这份工作流是**给 GitHub 用的**。
+# GitHub 是**主仓库**（插件市场收录要求 GitHub 仓库），Gitee 是国内镜像。
 #
-# 本仓库的主要托管在 Gitee，而 **Gitee 不执行 `.github/workflows/`** ——
-# 它用自己的「Gitee Go」，流水线配置格式也不同。所以这份文件在 Gitee 上
-# **不会运行**，它只在以下两种情况有意义：
-#
-#   1. 仓库同时镜像到 GitHub；
-#   2. 有人 fork 到 GitHub 后跑 CI。
+# ⚠️ 两边不自动同步：推送要**分别推**（见 README 的「发布渠道与双仓库同步」）。
+# Gitee **不执行** `.github/workflows/`（它用自己的 Gitee Go，格式也不同），
+# 所以这份工作流只在 GitHub 上跑。
 #
 # 无论有没有 CI，**提交前请在本地跑 `npm run verify`**
 # （构建 + 单元测试 + 产物核验），那才是本项目的验收基线。
