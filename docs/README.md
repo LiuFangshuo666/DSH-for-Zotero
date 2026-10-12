@@ -2,6 +2,12 @@
 
 本目录与代码同仓管理，随里程碑更新。
 
+> 🌐 **These documents are written in Chinese.** If you do not read Chinese, start with
+> [README.en.md](../README.en.md) - it is a complete English version of the project README,
+> including how to build, test and release. It deliberately does not duplicate the design
+> documents below; a contributor who wants to work on a specific area can translate the part
+> they need, and pull requests that do so are welcome.
+
 > ⚠️ **注意文档日期。** 早期几份写于架构变更之前，其中描述的部分方案
 > （共享模式、批量处理、会话挂载的多种形态、直连模型 API）**后来已被删除**。
 > 它们保留下来是为了留下"当时为什么这么定"的记录，**不构成现行规范** ——

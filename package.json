@@ -1,7 +1,7 @@
 {
   "name": "dsh-for-zotero",
   "type": "module",
-  "version": "0.6.11",
+  "version": "0.6.12",
   "description": "Read papers with the DeepSeek Harness agent inside Zotero",
   "config": {
     "addonName": "DSH-for-Zotero",
@@ -29,7 +29,7 @@
     "update:json": "node tools/make-update-json.mjs",
     "test": "zotero-plugin test",
     "test:unit": "esbuild test/unit/entry.ts --bundle --format=esm --platform=neutral --outfile=test/unit/.build/unit-entry.mjs && mocha \"test/unit/*.test.mjs\"",
-    "verify": "npm run build && npm run test:unit && npm run update:json && node tools/verify-bundle.mjs",
+    "verify": "npm run build && npm run update:json && npm run test:unit && node tools/verify-bundle.mjs",
     "update-deps": "npm update --save"
   },
   "dependencies": {
