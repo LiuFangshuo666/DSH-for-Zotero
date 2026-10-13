@@ -6,8 +6,25 @@ name: CI
 # Gitee **不执行** `.github/workflows/`（它用自己的 Gitee Go，格式也不同），
 # 所以这份工作流只在 GitHub 上跑。
 #
-# 无论有没有 CI，**提交前请在本地跑 `npm run verify`**
-# （构建 + 单元测试 + 产物核验），那才是本项目的验收基线。
+# ## ⚠️ 为什么这里要跑 `npm run update:json`（真机 CI 失败）
+#
+# `.scaffold/` 是**构建产物、不在仓库里**，所以 CI 检出后**没有它** ——
+# 而 `npm run build` 每次都生成**字节不同**的 xpi（构建时间戳内嵌在产物里）。
+#
+# 于是：
+#
+# ```text
+#   仓库里的 update.json  →  记录的是**上一次提交时**那份产物的 sha512
+#   CI 刚构建出的 xpi     →  哈希必然不同
+#   verify-bundle 的核对  →  必然失败
+# ```
+#
+# 这不是"偶尔失败"，是**每次必失败**：本工作流第一次跑就红在这里。
+# `npm run verify` 之所以在本地能过，是因为它的顺序里有 `update:json`
+# 把清单同步到刚构建的产物上（见 package.json 的 verify 脚本）。
+#
+# 所以 CI 必须走**同一条链**：build → update:json → test:unit → verify-bundle。
+# 漏掉中间那步，就退化成"一个永远红的检查"，而永远红的检查等于没有检查。
 #
 # 另外注意：`npm run test`（集成测试）需要**真实 Zotero + 图形环境**，
 # 在 CI 容器里**必然失败**，因此这里只跑单元测试。
@@ -24,13 +41,21 @@ on:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    # ⚠️ 固定版本而不是 `ubuntu-latest`：GitHub 已公告 latest 将于 2026-10-19
+    # 迁移到 Ubuntu 26，那会让构建环境在**我们没改任何东西**的情况下变化。
+    # 固定版本让升级成为一个**有意识的动作**（真出问题时也更容易复现）。
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        # ⚠️ 版本号是**查过 GitHub Releases 才写的**，不是猜的：
+        # checkout 当前 v7、setup-node 当前 v7、upload-artifact 当前 v7。
+        # 原先写的 v4 系列目标 Node 20，而 GitHub 已废弃它
+        # （CI 输出里那条 “Node.js 20 is deprecated” 就是它）。
+        # 写一个不存在的版本会让工作流**整体报错**，比原先的症状更糟。
+        uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -44,6 +69,11 @@ jobs:
       - name: Build
         run: npm run build
 
+      # ⚠️ 不能省：把清单同步到**刚构建**的产物上，
+      # 否则下一步的哈希核对必然失败（原因见文件头）。
+      - name: Sync update manifest
+        run: npm run update:json
+
       - name: Unit tests
         run: npm run test:unit
 
@@ -51,7 +81,7 @@ jobs:
         run: node tools/verify-bundle.mjs
 
       - name: Upload xpi
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dsh-for-zotero-xpi
           path: .scaffold/build/*.xpi

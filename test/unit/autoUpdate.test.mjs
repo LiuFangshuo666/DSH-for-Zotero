@@ -209,3 +209,109 @@ describe("更新地址生效值", function () {
     );
   });
 });
+
+/**
+ * ## CI 工作流必须与本地 `verify` 链**逐步一致**
+ *
+ * ### 真机失败（CI 第一次跑就红）
+ *
+ * `.scaffold/` 是构建产物、**不在仓库里**，所以 CI 检出后没有它；
+ * 而 `npm run build` 每次都生成**字节不同**的 xpi（构建时间戳内嵌在产物里）。
+ * 于是：
+ *
+ * ```text
+ *   仓库里的 update.json  →  记录上一次提交时那份产物的 sha512
+ *   CI 刚构建出的 xpi     →  哈希必然不同
+ *   verify-bundle 的核对  →  **每次必失败**
+ * ```
+ *
+ * 本地能过是因为 `npm run verify` 的顺序里有 `update:json` 把清单同步到
+ * 刚构建的产物上。CI 漏了中间那步 → 一个**永远红**的检查。
+ *
+ * ⚠️ 永远红的检查比没有检查更糟：它训练所有人忽略 CI。
+ * 而这类缺陷**不会让任何测试失败** —— 所以必须专门钉住。
+ */
+describe("CI 工作流与 verify 链同步", function () {
+  const ci = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+  const scripts = readJson("package.json").scripts;
+  /** 取 `run:` 后面真正执行的命令，按出现顺序 */
+  const runSteps = [...ci.matchAll(/^\s+run:\s*(.+)$/gm)].map((m) =>
+    m[1].trim(),
+  );
+
+  it("CI 必须依次跑 build → update:json → test:unit → 产物核验", function () {
+    // 顺序**就是**语义：update:json 必须在 build 之后、核验之前。
+    // 缺了它，核验里的哈希比对永远失败（见上面文件头的推导）。
+    const want = [
+      "npm run build",
+      "npm run update:json",
+      "npm run test:unit",
+      "node tools/verify-bundle.mjs",
+    ];
+    const missing = want.filter((cmd) => !runSteps.includes(cmd));
+    assert.deepEqual(
+      missing,
+      [],
+      `CI 缺少这些步骤：${missing.join("、")}\n` +
+        `  它们必须与 package.json 的 verify 链一致，否则 CI 会红在\n` +
+        `  「检出时没有 .scaffold/ → 构建出的 xpi 与仓库清单哈希必然不同」上。`,
+    );
+
+    const idx = want.map((cmd) => runSteps.indexOf(cmd));
+    assert.deepEqual(
+      idx,
+      [...idx].sort((a, b) => a - b),
+      "CI 里这四步的**顺序**不对 —— update:json 必须在 build 之后、核验之前",
+    );
+  });
+
+  it("CI 必须与 package.json 的 verify 链保持一致（不能各写一套）", function () {
+    // 用 verify 脚本本身作为"正确答案"，而不是再抄一份清单 ——
+    // 抄一份就等于又多了一处会分叉的地方。
+    const verify = scripts.verify;
+    assert.ok(verify, "package.json 里应当有 verify 脚本");
+    const chain = verify
+      .split("&&")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (const cmd of chain) {
+      assert.ok(
+        runSteps.includes(cmd),
+        `verify 链里有 \`${cmd}\`，而 CI 没跑它 —— 两边必须一致`,
+      );
+    }
+  });
+
+  it("GitHub Actions 的版本号必须写具体数字（不能猜、不能用 latest）", function () {
+    // 真机教训：我为了消掉 "Node.js 20 is deprecated" 提示，
+    // 顺手把 v4 改成了 **v5** —— 而当时 checkout 已经是 v7、
+    // setup-node 也是 v7。写一个**不存在的版本**会让工作流整体报错，
+    // 症状比原先那条提示严重得多。
+    // 所以：版本号要写，且必须是对着 GitHub Releases 查过的。
+    const uses = [...ci.matchAll(/uses:\s*(actions\/[\w-]+)@([\w.]+)/g)];
+    assert.ok(uses.length >= 2, "CI 里应当有 actions/* 的调用");
+    for (const [, name, version] of uses) {
+      assert.match(
+        version,
+        /^v\d+$/,
+        `${name} 的版本应写成 \`vN\`（如 v7），实际是 "${version}" —— ` +
+          `改动版本号前请先查 GitHub Releases 确认它存在`,
+      );
+    }
+  });
+
+  it("runner 固定版本，不跟随 ubuntu-latest", function () {
+    // GitHub 已公告 latest 将于 2026-10-19 迁移到 Ubuntu 26，
+    // 那会让构建环境在**我们没改任何东西**的情况下变化。
+    // 固定版本让升级成为有意识的动作。
+    assert.match(
+      ci,
+      /runs-on:\s*ubuntu-\d+\.\d+/,
+      "CI 应固定 `ubuntu-24.04` 这样的具体版本，而不是 `ubuntu-latest`",
+    );
+    assert.ok(
+      !/runs-on:\s*ubuntu-latest/.test(ci),
+      "不要用 ubuntu-latest —— 它会在未通知的情况下换基础镜像",
+    );
+  });
+});
