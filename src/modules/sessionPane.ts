@@ -773,7 +773,7 @@ export function buildWorkspaceReadme(input: {
     `| 类别 | 操作 | 说明 |`,
     `| --- | --- | --- |`,
     `| 读 | \`search\` \`getItem\` \`listItems\` \`listCollections\` \`getNotes\` | 搜索、元数据、条目清单、分类树、笔记 |`,
-    `| **读正文** | \`getFullText\` | **读某条目的论文原文**（长文用 \`offset\` 分段读） |`,
+    `| **读正文** | \`getFullText\` | **读论文原文**（用 \`offset\` 分段）；返回值里的 \`有全文\` 直接告诉你这条有没有全文 |`,
     `| **找论文** | \`findPaper\` | **在外部数据库检索**（Crossref），拿回标题/作者/年份/期刊/**DOI** |`,
     `| 写 | \`setTags\` \`addNote\` \`addToCollection\` | 改标签、加笔记、加入分类 |`,
     `| **需用户确认** | \`createItem\` \`attachPdf\` \`deleteItems\` \`deleteNote\` | 新建条目、**补全文**与删除**不会立即执行**，会登记为待确认 |`,
@@ -1144,7 +1144,7 @@ const STALE_DIR = "_stale";
  * | 9 | 新增 `attachPdf`（给已存在条目补全文）；不得绕过插件用本地 API 写库 |
  * | **10** | **一键确认改为逐条驱动（防二次操作，并显示每条结果）** |
  */
-const MATERIALS_VERSION = 10;
+const MATERIALS_VERSION = 11;
 
 /** 材料版本标记的写法（写在 README 首行，便于解析与人工辨认） */
 function materialsStamp(version: number): string {
@@ -2800,17 +2800,45 @@ export class SessionPane {
     if (!resolved) throw new Error(`找不到条目 key=${key}`);
 
     const attachment = findPdfAttachment(resolved);
+    /**
+     * ## ⚠️ "没有全文"**不是错误**，是一种状态（真机反馈后改的）
+     *
+     * 原先这里 `throw`。后果在真机上很具体：
+     *
+     * ```text
+     *   用户："该分类下有哪些条目没有全文？为没有附件的论文添加正文。"
+     *   Agent 只能【逐条】调 getFullText 去试探有没有 PDF
+     *   → 255 条里约 150 条抛错
+     *   → 日志被 150 行"工具调用失败"刷满，任务慢且噪声大
+     * ```
+     *
+     * 一段"失败"读起来像**调用方用错了**，而"这条没有全文"是**正常事实** ——
+     * 分类里本来就有一半是新闻/博客，没有 PDF。
+     * 把它当错误，等于让每次正常探测都走一次异常路径，
+     * 还会误导 Agent 以为自己调错了参数。
+     *
+     * 所以改成**返回状态**：`有全文: false` + 原因 + 下一步建议。
+     * 调用方用 `有全文` 判断，不必靠 catch。
+     */
     if (!attachment) {
-      throw new Error(
-        `条目 ${key} 没有 PDF 附件（可能只有元数据）。可用 getItem 看它的元数据与摘要。`,
-      );
+      return {
+        key,
+        标题: String(resolved.getField?.("title") ?? ""),
+        有全文: false,
+        原因: "该条目没有 PDF 附件（可能只有元数据）",
+        下一步:
+          "可用 `attachPdf` 请用户确认后取全文；或用 `getItem` 看元数据与摘要。",
+      };
     }
     const fulltext = await readFulltext(attachment);
     if (!fulltext) {
-      throw new Error(
-        `条目 ${key} 的 PDF 没有可提取的文字层（可能是扫描件，需先做 OCR）。` +
-          `可退回用 getItem 的摘要。`,
-      );
+      return {
+        key,
+        标题: String(resolved.getField?.("title") ?? ""),
+        有全文: false,
+        原因: "该 PDF 没有可提取的文字层（可能是扫描件，需先做 OCR）",
+        下一步: "可退回用 `getItem` 的摘要。",
+      };
     }
 
     const offset = Math.max(0, argInt(args, "offset") ?? 0);
@@ -2823,6 +2851,7 @@ export class SessionPane {
     return {
       key,
       标题: String(resolved.getField?.("title") ?? ""),
+      有全文: true,
       全文总字数: fulltext.text.length,
       本次范围: `${offset}–${offset + slice.length}`,
       还有更多: hasMore,

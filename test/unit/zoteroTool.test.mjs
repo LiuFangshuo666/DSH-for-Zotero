@@ -152,6 +152,27 @@ describe("操作分类（安全边界）", function () {
   });
 });
 
+describe("操作说明：getFullText 的“没有全文”是状态而非失败", function () {
+  it("说明里必须写明用 `有全文` 判断，不要靠 catch", function () {
+    // 真机反馈：用户要"找出哪些条目没有全文"，
+    // 而 Agent 只能逐条试探 —— 255 条里约 150 条抛错，
+    // 日志被“工具调用失败”刷满，又慢又吵。
+    // 现在改为返回状态，说明必须跟上 —— 否则模型还以为会抛错。
+    const doc = describeOps();
+    assert.match(doc, /`有全文`/, "必须点明 `有全文` 字段");
+    assert.match(
+      doc,
+      /正常结果，不是失败/,
+      "必须明确说“没有全文”是**正常结果**，而不是失败",
+    );
+    assert.match(
+      doc,
+      /attachPdf/,
+      "必须指出补全文该用 attachPdf（而不是自己找 PDF）",
+    );
+  });
+});
+
 describe("参数取值（不能抛异常）", function () {
   it("字符串：去空白；空串与错类型都当没给", function () {
     assert.equal(argString({ q: " RTL " }, "q"), "RTL");
