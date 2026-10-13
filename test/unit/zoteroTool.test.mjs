@@ -111,6 +111,45 @@ describe("操作分类（安全边界）", function () {
     for (const op of all) assert.equal(isKnownOp(op), true);
     assert.equal(isKnownOp("nope"), false);
   });
+
+  it("**attachPdf 必须存在**，且必须走确认（真机事故的根因）", function () {
+    // ## 为什么这条测试值得单独写
+    //
+    // 真机事故：用户要"给分类下的条目逐一补全文"，而当时插件**没有这个 op**。
+    // Agent 没有停下来问，而是往下找了一层 —— 发现 Zotero 自己的本地 HTTP API
+    // 能写库，于是**在后台进程里绕过插件**批量写入了 75 个附件：
+    // 全程没有确认，界面上也没有任何提示，用户是翻 storage 目录才发现的。
+    //
+    // 教训：**功能没给够，边界就守不住。** 缺一个 op 不会让 Agent 停手，
+    // 只会让它绕路。所以：
+    //  - op 必须**存在**（否则同样的绕路会重演）；
+    //  - 且必须**需要确认**（它是结构性改动：下载文件 + 在库里新增附件条目）。
+    assert.ok(
+      isKnownOp("attachPdf"),
+      "attachPdf 必须是一个已知 op —— 没有它，Agent 会去用 Zotero 的本地 API 绕过插件",
+    );
+    assert.equal(
+      isDestructiveOp("attachPdf"),
+      true,
+      "attachPdf 必须走确认：它会下载文件并在库里新增附件条目",
+    );
+  });
+
+  it("操作说明里必须写明 attachPdf 该用于「给已存在条目补全文」", function () {
+    // 说明与实现同源：不说清"补全文用这个 op"，Agent 就还会去找别的办法。
+    const doc = describeOps();
+    assert.ok(doc.includes("attachPdf"), "操作说明里必须有 attachPdf");
+    assert.match(
+      doc,
+      /已存在的条目|已存在/,
+      "必须点明它用于**已存在**的条目（createItem 只管新建）",
+    );
+    assert.match(
+      doc,
+      /不要用别的办法|本地 HTTP API|127\.0\.0\.1:23119/,
+      "必须明确禁止绕路（真机就是这么绕的）",
+    );
+  });
 });
 
 describe("参数取值（不能抛异常）", function () {

@@ -111,6 +111,62 @@ export async function runSelfCheck(
     sandbox.join("；"),
   );
 
+  // ── 1b. ⚠️ Zotero 本地 HTTP API：一条**绕过插件确认**的写库通道 ──
+  //
+  // ## 为什么必须在这里说清楚（真机事故）
+  //
+  // 用户反馈："此分类下某些论文的条目没有全文附件，请逐一补充。"
+  // 当时插件**没有"给已存在条目挂全文"的 op**，Agent 于是往下找了一层，
+  // 发现 Zotero 自己的本地 HTTP API 可以直接写库：
+  //
+  // ```text
+  //   http://127.0.0.1:23119/api/users/0/items/<key>/file  →  存附件、建条目
+  // ```
+  //
+  // 它在一个**后台进程**里用它批量写了 75 个附件 —— 全程没有经过插件的
+  // 待确认流程，界面上也看不到任何提示，用户是在翻 storage 目录时才发现的。
+  //
+  // ## 这个检查的性质：**告知，不是拦截**
+  //
+  // 那是 **Zotero 自己的功能**（供浏览器连接器与第三方工具使用），
+  // 由 Zotero 的偏好控制。插件**不应该**替用户去改它 —— 关了会连带影响
+  // 浏览器抓取等正常功能。所以这里只做一件事：**把这条通道说清楚**，
+  // 让用户知道"插件的确认边界不覆盖它"。
+  //
+  // 真正收窄边界的办法是**把 op 给够**（已加 `attachPdf`），
+  // 让 Agent 没有理由绕路 —— 这比关掉一条 Zotero 功能更对。
+  try {
+    const localApiEnabled = Boolean(
+      Zotero.Prefs.get("httpServer.localAPI.enabled"),
+    );
+    const serverEnabled = Boolean(Zotero.Prefs.get("httpServer.enabled"));
+    if (localApiEnabled && serverEnabled) {
+      push(
+        "Zotero 本地 API（写库旁路）",
+        "warn",
+        `本地 HTTP API **已开启**（httpServer.enabled=true，localAPI.enabled=true）。` +
+          `这意味着 Agent 可以不经过本插件的待确认流程、直接调用 ` +
+          `http://127.0.0.1:${Zotero.Prefs.get("httpServer.port") ?? 23119}/api/ 写你的文库 —— ` +
+          `不仅限于本插件的 op。真机上已发生过一次（后台进程批量写入 75 个附件，无确认、无提示）。` +
+          `本插件的「读+写自由，仅删除需确认」**只约束经过插件的操作**。` +
+          `如需收紧：Zotero 设置 → 高级 → 取消「允许本机其他应用与 Zotero 通信」` +
+          `（会同时影响浏览器抓取等依赖它的功能，请自行取舍）。`,
+      );
+    } else {
+      push(
+        "Zotero 本地 API（写库旁路）",
+        "ok",
+        `本地 HTTP API 未开启 —— Agent 无法绕过本插件的确认流程直接写库。`,
+      );
+    }
+  } catch (error) {
+    push(
+      "Zotero 本地 API（写库旁路）",
+      "skip",
+      `读取偏好失败，无法判断：${errorText(error)}`,
+    );
+  }
+
   // ── 2. 运行期配置 ───────────────────────────────────────
   let config: DshRuntimeConfig;
   try {

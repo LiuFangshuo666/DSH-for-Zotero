@@ -765,7 +765,16 @@ export function buildWorkspaceReadme(input: {
     `| **读正文** | \`getFullText\` | **读某条目的论文原文**（长文用 \`offset\` 分段读） |`,
     `| **找论文** | \`findPaper\` | **在外部数据库检索**（Crossref），拿回标题/作者/年份/期刊/**DOI** |`,
     `| 写 | \`setTags\` \`addNote\` \`addToCollection\` | 改标签、加笔记、加入分类 |`,
-    `| **需用户确认** | \`createItem\` \`deleteItems\` \`deleteNote\` | 新建条目与删除**不会立即执行**，会登记为待确认 |`,
+    `| **需用户确认** | \`createItem\` \`attachPdf\` \`deleteItems\` \`deleteNote\` | 新建条目、**补全文**与删除**不会立即执行**，会登记为待确认 |`,
+    ``,
+    // ⚠️ 真机事故：用户要"给分类下的条目逐一补全文"，而当时**没有** attachPdf，
+    // Agent 于是去调 Zotero 自己的本地 HTTP API，在后台进程里绕过插件
+    // 批量写了 75 个附件（无确认、无提示）。所以这里必须写清楚：
+    // **补全文就用 attachPdf**，不要绕。
+    `⚠️ **给已存在的条目补全文（PDF）用 \`attachPdf\`，不要用别的办法** —— ` +
+      `它会逐条登记待确认，用户点确认后才下载并挂附件。` +
+      `**绝不要**去调用 Zotero 的本地 HTTP API（\`http://127.0.0.1:…/api/\`）写库：` +
+      `那条路绕过用户的确认流程，真机上已经因此在你不知情时写进 75 个附件。`,
     ``,
     // ⚠️ 这一条必须写在**能力索引**里，不能只留在 `zotero/README.md`：
     // 模型对"找论文"的第一反应是 web search，而论文这件事上
@@ -1120,9 +1129,10 @@ const STALE_DIR = "_stale";
  * | 5 | 工作区 README 的能力索引（Agent 曾声称只会联网、不知道能读写文献库） |
  * | 6 | 新增 `findPaper`（论文检索）与 `createItem` 的取全文说明 |
  * | 7 | `createItem`：默认加入会话所属分类；字段按类型校验的说明 |
- * | **8** | **与 web search 的分工说明（不再禁止用它）** |
+ * | 8 | 与 web search 的分工说明（不再禁止用它） |
+ * | **9** | **新增 `attachPdf`（给已存在条目补全文）；不得绕过插件用本地 API 写库** |
  */
-const MATERIALS_VERSION = 8;
+const MATERIALS_VERSION = 9;
 
 /** 材料版本标记的写法（写在 README 首行，便于解析与人工辨认） */
 function materialsStamp(version: number): string {
@@ -2393,6 +2403,89 @@ export class SessionPane {
             },
           };
         }
+        // ── attachPdf：给**已存在**的条目补全文 ────────────────────
+        //
+        // ⚠️ 必须排在下面那个"删除类"兜底分支**之前** —— 它也读 args.keys，
+        // 顺序反了会被当成待删除处理（真会删用户的东西，后果严重）。
+        if (op === "attachPdf") {
+          const requested = (
+            argStringArray(args, "keys") ?? [argString(args, "key") ?? ""]
+          ).filter(Boolean);
+          if (requested.length === 0) {
+            return {
+              id,
+              ok: false,
+              error:
+                "attachPdf 需要 args.key（单个）或 args.keys（数组）—— " +
+                "要补全文的条目 key。",
+            };
+          }
+          // 写操作**严格限定在会话范围内**（与 setTags / addNote 同一条纪律）
+          const scope = this.scopeItems(record);
+          const inScope: string[] = [];
+          const rejected: string[] = [];
+          for (const key of requested) {
+            if (scope.has(key)) inScope.push(key);
+            else rejected.push(key);
+          }
+          if (inScope.length === 0) {
+            return {
+              id,
+              ok: false,
+              error:
+                `这些 key 都不在本会话范围内（${record.scopeTitle}）：${rejected.join("、")}。` +
+                `写操作只允许作用于本会话范围内的条目 —— 先用 listItems 取正确的 key。`,
+            };
+          }
+          const pdfUrl = argString(args, "pdfUrl");
+          // **每个 key 登记一条待确认项** —— 用户要的「逐一补充」就是这个粒度。
+          // 合并成一条会让 60 篇变成一个"确认"按钮，那是批量授权，不是逐一。
+          for (const key of inScope) {
+            const item = scope.get(key);
+            const title = String(
+              (
+                item as unknown as { getField?: (f: string) => unknown }
+              )?.getField?.("title") ?? "",
+            ).slice(0, 60);
+            const already = findPdfAttachment(item as Zotero.Item);
+            this.pendingDeletions.push({
+              sessionId: record.sessionId,
+              op,
+              keys: [key],
+              requestedAt: new Date().toISOString(),
+              payload: pdfUrl ? { pdfUrl } : {},
+              summary:
+                `为「${title || key}」获取全文 PDF 并挂为附件` +
+                (already ? "（**该条目已有 PDF** —— 确认也不会重复挂）" : "") +
+                (pdfUrl ? "（使用指定直链）" : ""),
+            });
+          }
+          appendPanelLog(
+            "session",
+            `补全文待确认：${inScope.length} 条（${inScope.join(", ")}）` +
+              (rejected.length ? `；超出范围被拒 ${rejected.join(", ")}` : ""),
+          );
+          return {
+            id,
+            ok: true,
+            pending: true,
+            data: {
+              说明:
+                "已登记为待确认：取全文会**下载文件并在库里新增附件条目**，" +
+                "属于结构性改动，需要用户在插件界面逐条确认后才会执行。",
+              确认位置:
+                "会话页**顶部黄色角标**「有 N 项改动等你确认」——点它跳到确认区，逐条确认或忽略。",
+              待确认数: this.pendingDeletions.length,
+              已登记: inScope,
+              ...(rejected.length ? { 超出本会话范围未登记: rejected } : {}),
+              提示:
+                "**不要为同一件事反复提交**。另外：不是每篇都拿得到全文" +
+                "（没有开放获取版 / 机构未订阅 / 需要先登录），拿不到时结果里会说明原因，" +
+                "而条目不会有任何变化。",
+            },
+          };
+        }
+
         const keys = argStringArray(args, "keys") ?? [
           argString(args, "key") ?? "",
         ];
@@ -3255,6 +3348,82 @@ export class SessionPane {
       );
       appendPanelLog("session", `已确认新建条目：${outcome.detail}`);
       return outcome.detail;
+    }
+
+    /**
+     * `attachPdf`：给**已存在**的条目取全文并挂附件。
+     *
+     * ## 为什么它必须有（真机事故）
+     *
+     * 用户反馈："此分类下某些论文的条目没有全文附件，请逐一补充。"
+     * 而当时插件没有这个 op —— Agent 于是去调 Zotero 自己的本地 HTTP API，
+     * 在后台进程里**绕过插件**批量写了 75 个附件，全程没有确认。
+     *
+     * 所以这条分支不只是功能，它是**把写操作收回插件边界**的那一步：
+     * 有它，Agent 就没有理由绕路。
+     *
+     * ## 三件必须做对的事
+     *
+     *  1. **已有 PDF 就跳过** —— 重复挂会在条目下堆出一串同名附件，
+     *     用户要逐条删（比"没挂上"难收拾得多）；
+     *  2. **拿不到不算失败** —— 没有 OA 版 / 机构未订阅都是常态，
+     *     说清原因即可，条目不能因此有任何变化；
+     *  3. 失败原因要**写回工作区**（`writeDeletionOutcome`），
+     *     让 Agent 下一轮看得到，而不是靠用户转述。
+     */
+    if (request.op === "attachPdf") {
+      const key = request.keys[0] ?? "";
+      const record = this.sessionCache.get(request.sessionId);
+      const libraryID =
+        record?.scopeLibraryID ?? Zotero.Libraries.userLibraryID;
+      const item = Zotero.Items.getByLibraryAndKey(libraryID, key);
+      if (!item) {
+        this.pendingDeletions.splice(index, 1);
+        const detail = `${key}：找不到条目（可能已被删除）`;
+        await this.writeDeletionOutcome(request, [], [detail]);
+        return detail;
+      }
+      const title = String(
+        (item as unknown as { getField?: (f: string) => unknown }).getField?.(
+          "title",
+        ) ?? "",
+      ).slice(0, 50);
+
+      // ① 已有 PDF 就跳过：重复挂只会让用户多出一串要清理的附件
+      if (findPdfAttachment(item as Zotero.Item)) {
+        this.pendingDeletions.splice(index, 1);
+        const detail = `「${title || key}」已有 PDF 附件，**跳过**（未重复挂载）`;
+        await this.writeDeletionOutcome(request, [detail], []);
+        appendPanelLog("session", `补全文跳过：${detail}`);
+        return detail;
+      }
+
+      const payload = (request.payload ?? {}) as { pdfUrl?: unknown };
+      const pdfUrl =
+        typeof payload.pdfUrl === "string" && payload.pdfUrl.trim()
+          ? payload.pdfUrl.trim()
+          : undefined;
+      const doiField = String(item.getField?.("DOI") ?? "").trim();
+      appendPanelLog(
+        "session",
+        `开始为已有条目取全文（key=${key}，DOI=${doiField || "（无）"}` +
+          `${pdfUrl ? "，有直链" : ""}）…`,
+      );
+      const outcome = await attachBestPdf(item, {
+        doi: doiField || undefined,
+        pdfUrl,
+      });
+      this.pendingDeletions.splice(index, 1);
+      const detail = outcome.ok
+        ? `「${title || key}」：${outcome.detail}`
+        : `「${title || key}」：⚠️ ${outcome.detail}`;
+      await this.writeDeletionOutcome(
+        request,
+        outcome.ok ? [detail] : [],
+        outcome.ok ? [] : [detail],
+      );
+      appendPanelLog("session", `补全文结果：${detail}`);
+      return detail;
     }
 
     const done: string[] = [];
