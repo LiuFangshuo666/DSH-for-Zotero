@@ -2383,6 +2383,7 @@ export class SessionPane {
             effectiveCollectionKey(record, args),
           );
           this.pendingDeletions.push({
+            uid: this.nextPendingUid(),
             sessionId: record.sessionId,
             op,
             keys: [],
@@ -2453,6 +2454,7 @@ export class SessionPane {
             ).slice(0, 60);
             const already = findPdfAttachment(item as Zotero.Item);
             this.pendingDeletions.push({
+              uid: this.nextPendingUid(),
               sessionId: record.sessionId,
               op,
               keys: [key],
@@ -2502,6 +2504,7 @@ export class SessionPane {
           };
         }
         this.pendingDeletions.push({
+          uid: this.nextPendingUid(),
           sessionId: record.sessionId,
           op,
           keys: target,
@@ -3217,6 +3220,28 @@ export class SessionPane {
    * 所以与删除同等对待 —— 登记、由用户确认后执行。
    */
   pendingDeletions: Array<{
+    /**
+     * **永不变的身份**。
+     *
+     * ## ⚠️ 为什么必须有它（真机缺陷：待确认的新建条目一条都不会执行）
+     *
+     * `createItem` 没有 key（`keys` 是空数组），所以"按 key 定位"对它就失效了。
+     * 我先前用 `op + 下标` 造了一个合成标识 —— 而**下标会变**
+     * （每确认一条就 splice 掉一项，后面全部前移），于是：
+     *
+     * ```text
+     *   插件 beginBatchConfirm() 给：  "createItem:0"
+     *   页面按当前列表算出：            "createItem:"
+     *   → pendingIndexOf 返回 -1 → **每一项都被跳过**
+     * ```
+     *
+     * 用户实测（问"agent 向确认列表里新写条目会出 bug 吗"）追问出的这一条：
+     * 界面会把所有待确认的新建条目**静默跳过**，一条都不建。
+     *
+     * 修法：登记时分配一个**单调递增、与列表位置无关**的 uid，
+     * 界面与插件都用它定位。下标与合成标识都不再参与身份判断。
+     */
+    uid: string;
     sessionId: string;
     op: string;
     keys: string[];
@@ -3226,6 +3251,13 @@ export class SessionPane {
     /** 给用户看的一句话描述 */
     summary?: string;
   }> = [];
+
+  /** `uid` 的发号器（单调递增，进程内唯一即可 —— 它只在本次运行里用于定位） */
+  private pendingUidSeq = 0;
+  private nextPendingUid(): string {
+    this.pendingUidSeq += 1;
+    return `p${this.pendingUidSeq}`;
+  }
 
   private toolPollers = new Map<string, number>();
   /**
@@ -3309,6 +3341,8 @@ export class SessionPane {
 
   /** 待用户确认的删除请求（跨会话汇总，供界面展示） */
   listPendingDeletions(): Array<{
+    /** 永不变的身份（界面用它定位，而不是用会变的下标） */
+    uid: string;
     sessionId: string;
     op: string;
     keys: string[];
@@ -3317,6 +3351,7 @@ export class SessionPane {
     summary?: string;
   }> {
     return this.pendingDeletions.map((p) => ({
+      uid: p.uid,
       sessionId: p.sessionId,
       op: p.op,
       keys: p.keys,
@@ -3356,26 +3391,27 @@ export class SessionPane {
    */
   async confirmPendingDeletion(
     index: number,
-    expectKey?: string,
+    expectUid?: string,
   ): Promise<string> {
     const request = this.pendingDeletions[index];
     if (!request) return "该待确认项已不存在。";
-    if (expectKey) {
-      const actualKey =
-        request.op === "createItem"
-          ? `createItem:${index}`
-          : (request.keys[0] ?? "");
-      const wantedKey =
-        expectKey.startsWith("createItem:") && request.op === "createItem"
-          ? `createItem:${index}`
-          : expectKey;
-      if (actualKey !== wantedKey) {
-        const message =
-          `跳过：第 ${index} 项已不是「${expectKey}」（列表在确认过程中被改动过）。` +
-          `请重新查看待确认列表再操作。`;
-        appendPanelLog("session", message);
-        return message;
-      }
+    /**
+     * ⚠️ 按 **uid** 校验，而不是按 key。
+     *
+     * `createItem` 没有 key，所以"按 key 校验"对新建条目完全失效 ——
+     * 而批量循环每轮都会重新取列表、下标随时在变。
+     * uid 是登记时分配的、与位置无关的身份，只有它能可靠回答
+     * "这个下标上还是不是我要处理的那一项"。
+     */
+    if (expectUid && request.uid !== expectUid) {
+      const message =
+        `跳过：第 ${index} 项已不是原来那一项（列表在确认过程中被改动过）。` +
+        `请重新查看待确认列表再操作。`;
+      appendPanelLog(
+        "session",
+        `${message}（期望 ${expectUid}，实际 ${request.uid}）`,
+      );
+      return message;
     }
 
     // 新建条目走另一条路：它不删任何东西，而是创建
@@ -3539,11 +3575,12 @@ export class SessionPane {
   } {
     const items = this.pendingDeletions.map((request, index) => ({
       index,
-      // `createItem` 没有 key；用一个稳定的合成标识，供界面回传校验
-      key:
-        request.op === "createItem"
-          ? `createItem:${index}`
-          : (request.keys[0] ?? ""),
+      // ⚠️ 交出的是 **uid**，不是 `op + 下标` 造出来的合成标识。
+      //
+      // 合成标识用了**会变的下标**，而页面按当前列表算出来的又是另一个值 ——
+      // 两者永远不相等，于是**每一条待确认的新建条目都会被静默跳过**（一条都不建）。
+      // 详见 `pendingDeletions` 里 `uid` 的说明。
+      key: request.uid,
       summary:
         request.summary ??
         `${request.op}：${request.keys.join(", ") || "（无 key）"}`,

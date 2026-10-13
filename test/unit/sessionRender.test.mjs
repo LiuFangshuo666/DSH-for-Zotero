@@ -240,6 +240,100 @@ describe("会话页 Markdown 渲染", function () {
  * （断言能匹配两处中的任意一处，改坏其中一处时测试依然绿）——
  * 能真正执行并断言行为的测试才靠得住。
  */
+/**
+ * ## 批量确认期间 **agent 又往列表里写入**（用户追问的场景）
+ *
+ * 用户问："逐条条目确认时，agent 向确认列表里新写条目修改会出 bug 吗？"
+ *
+ * 这一问直接命中我的设计 —— 批量循环用的是**开工时的快照**。
+ * 查下来发现**两个真缺陷**，其中一个严重到"一条都不会执行"：
+ *
+ *  1. `createItem` 没有 key（`keys` 是空数组），而我的合成标识用了
+ *     `op + 下标` —— **下标会变**。插件发 `"createItem:0"`，
+ *     页面按当前列表算出 `"createItem:"` → 永远不相等 →
+ *     **每一条待确认的新建条目都被静默跳过**。
+ *  2. 中途新增的条目**不在快照里**，所以不会被本次批量处理。
+ *     行为上可接受（它们仍在列表里、可单独确认），但界面必须说明，
+ *     否则用户会以为"全部确认"漏了东西。
+ *
+ * 修法：登记时分配**与位置无关的 uid**，两边都用它；界面标出中途新增的条目。
+ */
+describe("批量确认期间 agent 新增条目", function () {
+  const h = loadRenderer();
+  const mk = (uid, op, key) => ({ uid, op, keys: key ? [key] : [] });
+
+  it("**createItem 也能被定位**（修复前它一条都执行不了）", function () {
+    // 修复前：pendingItemKey 对 createItem 恒为 "createItem:"，
+    // 而插件发的是另一个值 → pendingIndexOf 恒为 -1 → 全部跳过。
+    const live = [
+      mk("p1", "createItem", ""),
+      mk("p2", "deleteItems", "AAA"),
+      mk("p3", "createItem", ""),
+    ];
+    assert.equal(
+      h.pendingIndexOf(live, "p1"),
+      0,
+      "待确认的新建条目必须能被定位 —— 否则一键确认一条都不会执行",
+    );
+    assert.equal(h.pendingIndexOf(live, "p3"), 2);
+    assert.equal(h.pendingIndexOf(live, "p2"), 1, "删除类仍然正常");
+  });
+
+  it("**两条 createItem 不再算出同一个标识**（它们本该互相独立）", function () {
+    const a = mk("p1", "createItem", "");
+    const b = mk("p2", "createItem", "");
+    assert.notEqual(
+      h.pendingItemKey(a),
+      h.pendingItemKey(b),
+      "两个不同的新建请求必须有不同的身份，否则会互相顶替",
+    );
+  });
+
+  it("列表中间插入新条目后，原有条目的身份**不变**", function () {
+    // agent 在批量过程中又推了一条 —— 它插在列表里，后面所有下标前移。
+    // before 只用来说明"原本在哪"，断言只靠 afterInsert。
+    const afterInsert = [
+      mk("p1", "createItem", ""),
+      mk("p9", "createItem", ""),
+      mk("p2", "deleteItems", "B"),
+    ];
+    assert.equal(
+      h.pendingIndexOf(afterInsert, "p2"),
+      2,
+      "p2 被挤到下标 2 —— 按 uid 仍能找到，按下标就会点到新来的 p9",
+    );
+  });
+
+  it("中途新增的条目**不在开工快照里**，必须能被识别出来", function () {
+    // 快照（开工时）
+    const snapshot = ["p1", "p2"];
+    // 中途 agent 又写入了 p9
+    const liveNow = [
+      mk("p1", "createItem", ""),
+      mk("p9", "createItem", ""),
+      mk("p2", "deleteItem", "B"),
+    ];
+    const added = liveNow.filter(function (it) {
+      return snapshot.indexOf(h.pendingItemKey(it)) < 0;
+    });
+    assert.equal(
+      added.length,
+      1,
+      "界面必须能算出'这些是批量开工后才出现的'，才能明确告诉用户它们没被本次处理",
+    );
+    assert.equal(h.pendingItemKey(added[0]), "p9");
+  });
+
+  it("旧插件（返回值里没有 uid）仍能退回旧算法，不会彻底不能用", function () {
+    const legacy = { op: "deleteItems", keys: ["ZZZ"] };
+    assert.equal(
+      h.pendingItemKey(legacy),
+      "deleteItems:ZZZ",
+      "没有 uid 时应退回 op + key 的老算法（兼容旧插件）",
+    );
+  });
+});
+
 describe("待确认列表：批量确认期间的定位与互斥", function () {
   const helpers = loadRenderer();
 

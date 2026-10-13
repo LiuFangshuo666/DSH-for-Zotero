@@ -272,6 +272,16 @@
   /** 取某条待确认项的**稳定标识**（op + key），供批量循环定位 */
   function pendingItemKey(it) {
     if (!it) return "";
+    // ⚠️ **优先用插件给的 uid**。
+    //
+    // 先前这里只算 `op + 第一个 key`，而 `createItem` 没有 key
+    // （keys 是空数组）→ 每一条新建都算出同一个
+    // `"createItem:"`，而插件发的是另一个值（且它随下标变）。
+    // 两边永远不相等 → 批量循环把**每一条新建都跳过**，一条都不建。
+    //
+    // uid 是登记时分配的、与列表位置无关的身份，两边都用它才能对上。
+    // 留着旧算法作为**兼容旧插件**的回退（那时签名里没有 uid）。
+    if (typeof it.uid === "string" && it.uid) return it.uid;
     var k = (it.keys && it.keys[0]) || "";
     return (it.op || "") + ":" + k;
   }
@@ -558,6 +568,15 @@
      */
     function renderBatchProgress(target) {
       if (!batchConfirm) return null;
+      // 算出哪些是批量开工后才出现的（不在 snapshot 里）。
+      // 只在**已结束**时算：运行中直接显示进度就够了，
+      // 每条都去拉一次列表只会白增 RPC。
+      var extraCount = -1;
+      if (!batchConfirm.running && batchConfirm.snapshot) {
+        extraCount = (batchConfirm.lastLive || []).filter(function (it) {
+          return batchConfirm.snapshot.indexOf(pendingItemKey(it)) < 0;
+        }).length;
+      }
       var box = document.createElement("div");
       box.style.cssText =
         "margin:6px 0;padding:6px 8px;background:" +
@@ -593,6 +612,19 @@
         hint.textContent =
           "每条完成后立即出现在这里；未完成前按钮不会恢复可点。";
         box.appendChild(hint);
+      } else if (extraCount > 0) {
+        // ⚠️ 批量开工**之后**才出现的条目不在本次范围内。
+        // 必须明说，否则用户会以为"全部确认"漏了它们；
+        // 而界面不在这里擅自把它们也确认掉——
+        // 用户点的是"全部确认（N 项）"，N 就该是实际处理的数量。
+        var extra = document.createElement("div");
+        extra.style.cssText = "margin-top:4px;color:#92400e";
+        extra.textContent =
+          "注意：确认过程中列表里又新出现了 " +
+          extraCount +
+          " 项（agent 又提交了改动）。" +
+          "它们**不在本次范围内**，需单独确认。";
+        box.appendChild(extra);
       }
       if (target) target.appendChild(box);
       return box;
@@ -620,6 +652,11 @@
         running: true,
         results: [],
         startedAt: Date.now(),
+        // 开工时的快照：界面用它算出"哪些是批量开工后**才出现**的"。
+        // agent 在确认过程中可以继续往列表里写入，
+        // 而那些**不在本次范围内** —— 不标出来，
+        // 用户会以为"全部确认"漏了东西。
+        snapshot: wanted.slice(),
       };
       renderPendingDeletions();
 
@@ -637,10 +674,9 @@
                 batchConfirm.results.push("跳过（已不在列表）：" + want);
                 return "";
               }
-              return capability.confirmDeletionAt(
-                idx,
-                want.split(":").slice(1).join(":"),
-              );
+              // 传的是 **uid**（不是从 key 里拆出来的东西）——
+              // 旧插件不认它时会忽略，行为与修复前一致。
+              return capability.confirmDeletionAt(idx, want);
             })
             .then(function (report) {
               batchConfirm.done += 1;
@@ -660,8 +696,20 @@
 
       chain.then(function () {
         batchConfirm.running = false;
-        renderPendingDeletions();
-        renderPendingInto(pendingEl);
+        // 收尾前再取一次当前列表：用它算出"批量开工后**才出现**的条目"，
+        // 好在结果里明确告诉用户它们不在本次范围内（否则看起来像漏做了）。
+        Promise.resolve()
+          .then(function () {
+            return capability.listPendingDeletions();
+          })
+          .catch(function () {
+            return [];
+          })
+          .then(function (live) {
+            batchConfirm.lastLive = live || [];
+            renderPendingDeletions();
+            renderPendingInto(pendingEl);
+          });
       });
     }
     /** 输入区容器：用于把"Agent 在等你"提示固定在输入框上方 */
