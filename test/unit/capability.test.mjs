@@ -274,11 +274,30 @@ describe("saveReplyAsNote 的参数约定", function () {
  * 这条断言防的是"以后有人觉得按 sessionId 更直观、又改回去"。
  */
 describe("工具轮询器的去重键", function () {
-  it("按工作区目录去重（不是 sessionId）", function () {
+  /**
+   * ⚠️ **不要用固定长度的切片窗口**。
+   *
+   * 这里原来是 `slice(start, start + 2600)`，而 `toolPollers.set(dir` 在函数**末尾**。
+   * 我给函数加了一段防重跑的守卫后，它被推到 **+3765** —— 这条测试立刻误报
+   * "注册时也必须用 dir 当键"。而它的注释里**早就写着**"窗口要够大：
+   * `toolPollers.set` 在函数末尾，900 字符截不到（第一版就是这么误报的）"。
+   *
+   * **同一个坑踩了两次。** 所以改成取到**下一个方法定义**为止 ——
+   * 函数再长也不会误报。
+   */
+  const toolPollerBody = () => {
     const start = paneSource.indexOf("private startToolPoller(");
     assert.ok(start > 0, "找不到 startToolPoller");
-    // 窗口要够大：`toolPollers.set` 在函数末尾，900 字符截不到（第一版就是这么误报的）
-    const body = paneSource.slice(start, start + 2600);
+    // 到下一个 `private ` / `async ` 方法定义或类结束为止
+    const rest = paneSource.slice(start);
+    const next = rest
+      .slice(1)
+      .search(/\n {2}(private|public|protected|async) /);
+    return next > 0 ? rest.slice(0, next + 1) : rest;
+  };
+
+  it("按工作区目录去重（不是 sessionId）", function () {
+    const body = toolPollerBody();
     assert.match(
       body,
       /toolPollers\.has\(dir\)/,
@@ -289,6 +308,34 @@ describe("工具轮询器的去重键", function () {
       "不得按 sessionId（key）去重",
     );
     assert.match(body, /toolPollers\.set\(dir/, "注册时也必须用 dir 当键");
+  });
+
+  it("**重启后不得重跑已回过结果的调用**（真机：确认过的 10 条又被要求确认一次）", function () {
+    // 用户实测："我在你修 bug 的时候已经一键确认了这 10 个条目（附件都加上了），
+    // 怎么我重启打开了还要我确认？"
+    //
+    // 日志铁证：
+    //   15:34:01  补全文待确认：10 条（55DESKT6, …）      ← 提交
+    //   15:40:40  补全文结果：…已挂为附件 ×10              ← 用户确认，全成功
+    //   16:22:50  插件启动于 v0.11.1
+    //   16:22:51  补全文待确认：10 条（55DESKT6, …）      ← 启动后 1.1 秒，同一批又来了
+    //
+    // 根因两条缺一不可：
+    //  ① 去重只靠 `lastId`，而它是**局部变量** —— 重启即丢，
+    //     于是磁盘上那个旧 `call.json` 被当成新请求**再执行一次**；
+    //  ② **待确认队列只在内存里** —— 重启即空，
+    //     于是"再执行"把它**重新登记为新的一项待确认**（它其实早就成功过了）。
+    const body = toolPollerBody();
+    assert.match(
+      body,
+      /TOOL_RESULT_FILE/,
+      "轮询必须读 result.json 判重 —— 只靠内存里的 lastId，重启后会把旧调用重跑一遍",
+    );
+    assert.match(
+      body,
+      /prev\.id === parsed\.call\.id/,
+      "必须按 id 比对：id 相同即表示这次调用已经回过结果，应跳过",
+    );
   });
 
   it("写工具结果**不用**临时文件 + move（那个 move 在真机上抛 NotFoundError）", function () {

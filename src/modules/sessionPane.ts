@@ -2228,6 +2228,53 @@ export class SessionPane {
             return;
           }
           if (parsed.call.id === lastId) return; // 已经执行过
+          /**
+           * ## ⚠️ 重启后**不能**把磁盘上那个旧调用当成新请求（真机反馈）
+           *
+           * 用户："我在你修 bug 的时候已经一键确认了这 10 个条目（附件都加上了），
+           * 怎么我重启打开了还要我确认？"
+           *
+           * 日志给了铁证：
+           *
+           * ```text
+           *   15:34:01  补全文待确认：10 条（55DESKT6, …）   ← 提交
+           *   15:40:40  补全文结果：…已从直链取得 PDF 并挂为附件   ×10   ← 用户确认，全成功
+           *   16:22:50  插件启动于 v0.11.1
+           *   16:22:51  补全文待确认：10 条（55DESKT6, …）   ← 启动后 1.1 秒，同一批又来了
+           * ```
+           *
+           * 根因有两条，缺一不可：
+           *  1. **去重只靠 `lastId`，而它是局部变量** —— 重启即丢，
+           *     于是磁盘上的 `call.json` 被当成新请求**再执行一次**；
+           *  2. **待确认队列只在内存里** —— 重启即空，
+           *     于是"再执行"的结果是把它**重新登记为新的一项待确认**，
+           *     而它其实早就被确认并成功执行过了。
+           *
+           * 修法：执行前先看 `result.json` —— **id 相同就说明这次调用已经回过结果**，
+           * 直接跳过。这比"持久化 lastId"更准确：它根据的是"这个 id 有没有结果"，
+           * 而不管中间重启过几次。
+           *
+           * 为什么不是"启动后第一轮不处理"：那样会丢掉**真正尚未处理**的调用
+           * （插件在写结果之前崩掉的场景），而按 id 比对两种情形都能正确处理。
+           */
+          const resultPath = PathUtils.join(dir, TOOL_RESULT_FILE);
+          if (await IOUtils.exists(resultPath)) {
+            try {
+              const prev = JSON.parse(await IOUtils.readUTF8(resultPath)) as {
+                id?: unknown;
+              };
+              if (typeof prev?.id === "string" && prev.id === parsed.call.id) {
+                lastId = parsed.call.id;
+                appendPanelLog(
+                  "session",
+                  `跳过已回过结果的调用 ${parsed.call.id}（重启后不重复执行 ${parsed.call.op}）`,
+                );
+                return;
+              }
+            } catch {
+              // 结果文件损坏/半写：按"没回过结果"处理，宁可再执行一次也不吞掉请求
+            }
+          }
           lastId = parsed.call.id;
           const result = await this.executeToolCall(record, parsed.call);
           await this.writeToolResult(dir, result);
