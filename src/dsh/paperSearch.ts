@@ -1,9 +1,13 @@
 /**
- * 论文检索与全文获取（**不走 dsh 的 web search**）。
+ * 论文检索与全文获取。
  *
- * # 为什么要自建，而不是用 dsh 的 `web_search`
+ * # 为什么论文要单独做一套，而不是交给 dsh 的 `web_search`
  *
- * dsh 的 `web_search` 走的是**模型服务端的联网能力**：
+ * ⚠️ 先说清边界：**`web_search` 没有被关掉，也不该关**。
+ * 它在搜集各类线上资讯时有用（会议信息、作者主页、项目页、新闻、政策原文…）。
+ * 下面说的只是"**论文**这件事为什么需要另一个工具"。
+ *
+ * dsh 的 `web_search` 走的是**模型服务端的联网能力**，因此在论文场景上有三个硬限制：
  *
  *  - 它看不见用户所在机构（大学图书馆）的订阅 —— 那是**基于来源 IP 或机构代理**
  *    的授权，服务端的检索请求不带这些身份；
@@ -14,13 +18,16 @@
  *
  * | 需求 | 走谁 |
  * | --- | --- |
- * | 检索元数据（DOI / 标题 / 作者） | Zotero 的**检索型翻译器**（Crossref REST）或 DOI Content Negotiation |
+ * | 检索元数据（DOI / 标题 / 作者） | Crossref + DataCite（arXiv 在后者） |
  * | 走机构订阅 | `Zotero.Proxies.properToProxy()` —— 用**用户自己配的图书馆代理** |
  * | 下载 PDF | `Zotero.HTTP.request`（带用户的 cookie 罐，机构登录态就在里面） |
  * | 挂到条目 | `Zotero.Attachments.addAvailableFile()` |
  *
  * 所以这一层的定位是：**让 Agent 用上用户已经有的访问权限**，
- * 而不是替它去公网抓网页。
+ * 并且把结果直接接进"建条目 + 挂全文"这条链。
+ *
+ * 两者是**分工**，不是替代：论文走这里，其它线上信息走 `web_search`。
+ * 给 Agent 的判据见本文件末尾的 `TOOL_CHOICE_HINT`。
  *
  * # 文件分工
  *
@@ -661,10 +668,13 @@ export function formatCandidates(
 ): string {
   const max = options.max ?? 10;
   if (candidates.length === 0) {
+    // ⚠️ **零结果时更要带上分工说明** —— 这正是模型最可能"换个工具再试"的时刻，
+    // 而它该换的是**检索词**（或先在本地文库找），不是换成 web search。
     return (
       "没有检索到匹配的论文。\n" +
       "可以试着：换更完整的标题片段、只给作者姓、去掉年份限制，" +
-      "或者先只在**本机文库**里搜（工具 op `search`）看是否已经收录。"
+      "或者先只在**本机文库**里搜（工具 op `search`）看是否已经收录。\n\n" +
+      TOOL_CHOICE_HINT
     );
   }
   const lines: string[] = [];
@@ -702,15 +712,18 @@ export function formatCandidates(
     lines.push(`…另有 ${candidates.length - shown.length} 条未显示`);
   }
   if (options.note) lines.push("", options.note);
+  // 分工说明**总是**附上：它是用户要求的“靠文档划边界”的落点，
+  // 而不是某个调用点的选项。
+  lines.push("", TOOL_CHOICE_HINT);
   return lines.join("\n");
 }
 
 /**
  * 给 Agent 的**下一步指引**（附在检索结果后面）。
  *
- * 为什么必须写这段：检索与建条目是两个 op，中间要人工（或模型）把 DOI 传过去。
- * 不写清这一点，模型很可能拿检索到的**标题**去 web search 找全文 ——
- * 那正是我们要它别做的事。
+ * 为什么必须写这段：检索与建条目是两个 op，中间要把 DOI 传过去。
+ * 不写清这一点，模型拿到标题后可能去 web search 找全文 ——
+ * 而那条路拿不到机构订阅。注意措辞是**说明做法**，不是禁止用别的工具。
  */
 export const PAPER_NEXT_STEP_HINT =
   "下一步：把你要的那条的 DOI 填进 `createItem` 的 `fields.DOI`，" +
@@ -718,5 +731,27 @@ export const PAPER_NEXT_STEP_HINT =
   "去取全文并作为附件挂到新条目上。" +
   "结果里给了「建议条目类型」时，把它填进 `createItem` 的 `itemType`。" +
   "⚠️ 一份论文可能有多个 DOI 登记，**不要仅因为某条排在前面或只有它带 PDF 就选它** ——" +
-  "优先选年份与作者都吻合的那条，否则会把错的 DOI 与年份写进库里。" +
-  "不要用 web search 去找 PDF —— 它拿不到你机构的订阅。";
+  "优先选年份与作者都吻合的那条，否则会把错的 DOI 与年份写进库里。";
+
+/**
+ * 两个检索工具的分工说明（写给 Agent，附在检索结果里）。
+ *
+ * ## ⚠️ 这里刻意**不**写成"不要用 web search"
+ *
+ * 我最初的做法是**把 `web_search` 关掉**，理由是它走模型服务端、
+ * 看不见用户机构的订阅。用户指出那样过度了：**搜集线上资讯时它有用**
+ * （会议信息、作者主页、项目页、新闻、政策原文…），不该为一个场景移除整个工具。
+ *
+ * 所以两者都留着，靠这段说明**划清边界**：
+ *
+ * | 要找什么 | 用哪个 |
+ * | --- | --- |
+ * | 论文本身（元数据、DOI、全文 PDF） | `findPaper` |
+ * | 其它线上信息 | `web_search` |
+ *
+ * 关键在**给出判据**而不是下禁令 —— 模型只要知道"论文走 findPaper 更快更准、
+ * 还能直接建条目挂全文"，就没有理由绕路。
+ */
+export const TOOL_CHOICE_HINT =
+  "📌 **两个检索工具的分工**：找**论文**用 `findPaper`（能拿 DOI、能建条目、能用你的机构订阅取全文）；" +
+  "查**其它线上信息**（会议、作者主页、项目页、新闻、文档）用 web search —— 两者都可用，按内容选。";

@@ -768,11 +768,14 @@ export function buildWorkspaceReadme(input: {
     `| **需用户确认** | \`createItem\` \`deleteItems\` \`deleteNote\` | 新建条目与删除**不会立即执行**，会登记为待确认 |`,
     ``,
     // ⚠️ 这一条必须写在**能力索引**里，不能只留在 `zotero/README.md`：
-    // 模型对"找论文"的第一反应是它训练里熟悉的 web search，而那条路
-    // 走模型服务端、**看不见用户机构的订阅**。不在这里点明，它就会绕过机构访问。
-    `⚠️ **找论文用 \`findPaper\`，不要用 web search**：` +
-      `本插件的检索走**用户本机的网络与机构订阅**（大学图书馆的代理与登录态），` +
-      `而 web search 走模型服务端，拿不到那些授权，也够不到 Zotero。`,
+    // 模型对"找论文"的第一反应是 web search，而论文这件事上
+    // findPaper 更快更准、还能直接建条目挂全文。
+    //
+    // ⚠️ 措辞是**划边界**，不是禁止用 web search —— 用户在搜集线上资讯时
+    // 需要它（会议、主页、项目页、新闻），我先前直接把它关掉是过度反应。
+    `📌 **找论文用 \`findPaper\`**（能拿 DOI、能建条目、能用你的机构订阅取全文）；` +
+      `查**其它线上信息**（会议、作者主页、项目页、新闻、文档）**用 web search** —— ` +
+      `两者都可用，按要找的内容选。`,
     ``,
     // ⚠️ 真机缺陷（用户回报）："条目新建成功，附件挂载成功，
     // 但是条目没有进这个会话所在的分类。" —— 因为分类只从 `args.collectionKey` 取，
@@ -1116,9 +1119,10 @@ const STALE_DIR = "_stale";
  * | --- | --- |
  * | 5 | 工作区 README 的能力索引（Agent 曾声称只会联网、不知道能读写文献库） |
  * | 6 | 新增 `findPaper`（论文检索）与 `createItem` 的取全文说明 |
- * | **7** | **`createItem`：默认加入会话所属分类；字段按类型校验的说明** |
+ * | 7 | `createItem`：默认加入会话所属分类；字段按类型校验的说明 |
+ * | **8** | **与 web search 的分工说明（不再禁止用它）** |
  */
-const MATERIALS_VERSION = 7;
+const MATERIALS_VERSION = 8;
 
 /** 材料版本标记的写法（写在 README 首行，便于解析与人工辨认） */
 function materialsStamp(version: number): string {

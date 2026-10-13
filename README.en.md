@@ -80,6 +80,49 @@ In implementation:
 - **Structural changes** (create / delete): **not executed immediately**; you confirm them
   in the interface
 
+### Finding papers and fetching their full text (`findPaper`)
+
+Papers are handled by `findPaper`. **`web_search` is still available** and still useful for
+other online material - conference pages, author homepages, project pages, news. The two are
+a division of labour:
+
+|                            | dsh's web_search                                 | this plugin's findPaper                                              |
+| -------------------------- | ------------------------------------------------ | -------------------------------------------------------------------- |
+| For                        | general online material                          | **papers** (metadata and full text)                                  |
+| Network                    | the model provider's side                        | **your machine** (`Zotero.HTTP`, with your cookies and proxy)        |
+| Institutional subscription | not visible - it depends on source IP or a proxy | used                                                                 |
+| Returns                    | prose summaries                                  | **structured metadata** (title, authors, year, venue, DOI, abstract) |
+| Can create items           | no, it cannot reach `Zotero.Items`               | yes, and it attaches the full text                                   |
+| Can fetch full text        | no                                               | yes, see below                                                       |
+
+The flow (you just describe what you want; the agent takes these two steps):
+
+```text
+1. findPaper   searches Crossref / DataCite -> candidates with DOIs
+2. createItem  creates the item from that DOI (waits for your confirmation)
+        |
+   on confirmation the plugin fetches the PDF through your network and attaches it
+```
+
+> **Why two data sources**: most journal and conference DOIs are registered with
+> **Crossref**, while **arXiv, Zenodo and institutional repositories** register with
+> **DataCite**. Querying only one misses an entire class of papers - on a real machine
+> arXiv's `10.48550/arXiv.1706.03762` could not be found, and an agent does not stop there:
+> it picks the nearest hit, which writes a **wrong DOI and wrong year** into the library.
+
+Order of attempts for the full text, from best-informed to last resort:
+
+1. `Zotero.Attachments.addAvailableFile()` - **Zotero's own resolver chain**: follows the
+   DOI to the publisher, your custom resolvers, open access. This is where your
+   institutional access gets used;
+2. an open-access direct link (OpenAlex) - covers "no subscription, but an OA version exists";
+3. a direct download, only when an explicit `pdfUrl` was supplied.
+
+> ⚠️ **Fetching can take tens of seconds** (following the DOI, institutional proxy
+> authentication), and **failing to fetch does not fail the item** - the item is created and
+> the confirmation result explains that no full text was obtained. You can retry manually
+> with right-click -> "Find Available PDF" in Zotero.
+
 ## Install
 
 **Prerequisite**: **DeepSeek Harness desktop** must be installed locally. The plugin

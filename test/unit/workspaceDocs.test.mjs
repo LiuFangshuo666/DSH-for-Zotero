@@ -55,23 +55,27 @@ describe("操作文档必须覆盖**全部**已实现的 op（改 op 时的强�
     );
   });
 
-  it("读能力里必须有 findPaper，且明确否掉 web search", function () {
-    // 这条单独钉住：findPaper 的意义就是**替代 web search**，
-    // 若说明里不提「不要用 web search」，模型会退回它熟悉的那个
-    // —— 而那条路看不见用户的机构订阅。
+  it("操作说明里必须有 findPaper，并讲清它与 web search 的分工", function () {
+    // ⚠️ 断言的是**分工**，不是禁令。
+    // 用户指出：web_search 在搜集线上资讯时有用（会议、主页、项目页、新闻），
+    // 我先前直接把它关掉是过度反应 —— 正确做法是靠文档划清边界。
     const doc = describeOps();
     assert.ok(doc.includes("findPaper"), "操作说明里必须有 findPaper");
     assert.match(
       doc,
-      /不要用 web search/,
-      "必须明确告诉 Agent「找论文不要用 web search」并说明原因",
+      /web search/,
+      "必须说明 web search 该用在什么场景（论文以外的线上信息）",
+    );
+    assert.ok(
+      !/不要用 web search/.test(doc),
+      "不得写成『不要用 web search』—— 它本身有用，我们只是划清论文的场景",
     );
   });
 
   it("**工作区 README 的能力索引**里也要有 findPaper（不能只埋在子目录）", function () {
     // 与"getFullText 被漏掉"是同一类缺陷：工具清单只存在于 `zotero/README.md`，
     // 而 Agent 未必去读它。真机上因此说过「我读不了正文」。
-    // findPaper 更危险 —— 模型对"找论文"的第一反应就是 web search。
+    // findPaper 同样容易漏 —— 模型对"找论文"的第一反应是 web search。
     for (const kind of ["collection", "item"]) {
       const readme = buildWorkspaceReadme({ kind, scopeTitle: "测试" });
       assert.ok(
@@ -80,8 +84,12 @@ describe("操作文档必须覆盖**全部**已实现的 op（改 op 时的强�
       );
       assert.match(
         readme,
-        /不要用 web search/,
-        `${kind} 会话的 README 必须点明「找论文不要用 web search」，否则模型会绕过机构订阅`,
+        /web search/,
+        `${kind} 会话的 README 应讲清与 web search 的分工`,
+      );
+      assert.ok(
+        !/不要用 web search/.test(readme),
+        `${kind} 会话的 README 不得写成禁令 —— web search 本身有用`,
       );
     }
   });
@@ -98,8 +106,8 @@ describe("操作文档必须覆盖**全部**已实现的 op（改 op 时的强�
     const m = readme.match(/dsh-materials-version:\s*(\d+)/);
     assert.ok(m, "工作区 README 首行必须有材料版本标记（老会话靠它自动刷新）");
     assert.ok(
-      Number(m[1]) >= 7,
-      "材料版本应 >= 7（第 6 版加 findPaper；第 7 版加自动归类与会话分类的说明）",
+      Number(m[1]) >= 8,
+      "材料版本应 >= 8（第 6 版 findPaper；第 7 版自动归类；第 8 版 web search 分工）",
     );
   });
 

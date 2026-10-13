@@ -285,13 +285,20 @@ function yamlScalar(value: string): string {
  * `.credentials.yaml`（dsh 自己的做法），配置里只留引用名。
  * 这样配置文件可以安全地被复制/贴出来排查。
  *
- * ## 返回值里**总会**包含一条关闭 web_search 的条目
+ * ## ⚠️ 这里**曾经**顺手关掉 dsh 的 `web_search`，已撤回（用户判断）
  *
- * 与 provider 数量无关：那是这个区块存在的另一个理由（见下面的说明）。
- * 所以"没有 provider"时不再返回空串 —— 调用方区分"要不要写 pi-ai 条目"
- * 由函数内部处理。
+ * 我当时的理由：`web_search` 走模型服务端，看不见用户机构的订阅，
+ * 所以在"找论文"这件事上是错的工具。**那个判断对，但结论错了** ——
+ * 用户指出：**web_search 在搜集线上资讯时有用**，不该为了一个场景把它整个关掉。
  *
- * ## ⚠️ 关于"空的 providers"
+ * 正确的分工是**靠文档划清边界**，而不是拆掉工具：
+ * 找论文用 `findPaper`，其它线上信息用 `web_search`。
+ * 两者都留着，由 Agent 按场景选（说明写在 `zoteroTool.ts` 的 `describeOps()`
+ * 与工作区 README 的能力索引里）。
+ *
+ * 教训：为了防一种**误用**而移除一个**有用**的能力，是把工具问题当成了配置问题。
+ *
+ * ## 关于"空的 providers"
  *
  * 这里原有一句注释说"空 `providers: {}` 会让宿主加载一个没有任何路由的适配器"。
  * 核对 dsh 源码后确认那句话**是错的**：
@@ -302,50 +309,19 @@ function yamlScalar(value: string): string {
  *                                empty, dormant route set.
  * ```
  *
- * 空 dict 等于**休眠**，是安全的。不过在没有 provider 时**不写这个条目**
- * 仍是更好的选择 —— 补丁越小越好读，也少一层"这条为什么在这"的疑问。
+ * 空 dict 等于**休眠**，是安全的。所以没有 provider 时干脆**不写这个条目** ——
+ * 补丁越小越好读，也少一层"这条为什么在这"的疑问。
  */
 export function buildProviderPatch(defs: ProviderDefinition[]): string {
+  // 没有自定义 provider 就什么都不写。
+  //
+  // ⚠️ 这里原本**无条件**输出一条关闭 `web_search` 的 `tool-web` 条目，
+  // 于是"没有 provider"也会返回一段非空内容。撤回那个行为之后，
+  // 空输入重新对应空输出 —— 保持"这个函数只为 provider 服务"的单一职责。
+  if (defs.length === 0) return "";
+
   const lines: string[] = [];
-
-  // ── 关掉 web_search，保留 web_fetch ─────────────────────────────
-  //
-  // ## 为什么必须关掉它
-  //
-  // dsh 的 `web_search` 走**模型服务端**的联网能力，因此：
-  //
-  //  - **看不见用户机构的订阅** —— 那是基于来源 IP 或机构代理的授权，
-  //    服务端的检索请求不带这些身份。用户装了大学图书馆的访问权限，
-  //    它一点也用不上；
-  //  - 返回的是网页摘要，不是结构化元数据，拿去建条目要再解析；
-  //  - 无论如何够不到 `Zotero.Items`，建不了条目、挂不了全文。
-  //
-  // 所以我们用 `findPaper`（走用户本机网络与代理）替代它。
-  // **留着它反而有害**：模型会在"找一篇论文"时优先用熟悉的 web_search，
-  // 于是绕过机构访问，拿到一堆抓不到全文的网页结果。
-  //
-  // ## 为什么只关 search、**保留 fetch**
-  //
-  // `web_fetch` 是在**用户本机**发请求的（匿名 HTTP 客户端），
-  // 换来的能力是"把某个已知 URL 的内容取回来"—— 抓 PDF 直链、
-  // 读文档页面都用得上，且不受上面那些限制。
-  // 而 `tool-web` 的 config 里 `search` 与 `fetch` 是**两个独立开关**
-  // （见 `packages/web/tool-web/src/index.ts`：`search`/`fetch` 各有 default(true)），
-  // 所以可以精确地只关一个。
   lines.push(
-    `# 关掉 web_search（它走模型服务端，用不上用户的机构订阅）；保留 web_fetch。`,
-    `- id: tool-web`,
-    `  name: "@deepseek-ai/dsh-tool-web"`,
-    `  config:`,
-    `    search: false`,
-    `    fetch: true`,
-  );
-
-  // 没有自定义 provider 时到此为止：不要再写一个休眠的 llm-pi-ai 条目
-  if (defs.length === 0) return lines.join("\n") + "\n";
-
-  lines.push(
-    ``,
     `- id: llm-pi-ai`,
     `  name: "${PI_AI_PACKAGE}"`,
     `  config:`,

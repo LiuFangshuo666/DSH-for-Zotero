@@ -40,6 +40,7 @@ const {
   rankCandidates,
   formatCandidates,
   PAPER_NEXT_STEP_HINT,
+  TOOL_CHOICE_HINT,
   isPdfBytes,
   itemTypeFromDataCite,
   parseDataCite,
@@ -346,6 +347,39 @@ describe("同一论文的多个 DOI 登记（真机上选错了一条）", funct
     ]);
     assert.match(text, /建议条目类型: preprint/);
   });
+
+  it("分工说明**同时**讲清论文与其它资讯分别用哪个工具", function () {
+    // ⚠️ 语气是**划边界**，不是禁止：用户指出 web_search 在搜集线上资讯时有用，
+    // 我先前直接把它关掉是过度反应。所以断言"两个工具都被提到"，
+    // 而不是断言"不许用 web search"。
+    assert.match(TOOL_CHOICE_HINT, /findPaper/, "要指向论文工具");
+    assert.match(
+      TOOL_CHOICE_HINT,
+      /web search/,
+      "也要说明 web search 该用在什么场景",
+    );
+    assert.match(
+      TOOL_CHOICE_HINT,
+      /两者都可用|按.*选/,
+      "要明确两者都可用、按内容选 —— 不要写成禁令",
+    );
+    assert.ok(
+      !/不要用 web search/.test(TOOL_CHOICE_HINT),
+      "不得写成『不要用 web search』：它本身有用，我们只是划清论文的场景",
+    );
+  });
+
+  it("检索结果里**总是**附上分工说明", function () {
+    // 它是"靠文档划边界"的落点，不该只在某个调用点出现
+    for (const list of [[], [{ title: "X", doi: "10.1/x" }]]) {
+      const text = formatCandidates(list);
+      assert.match(
+        text,
+        /findPaper/,
+        "每条检索结果都要带上分工说明，模型才会按场景选工具",
+      );
+    }
+  });
 });
 
 describe("PDF URL 判定（保守：宁可漏，也不要把网页存成附件）", function () {
@@ -508,14 +542,30 @@ describe("结果的呈现（这是模型实际读到的东西）", function () {
     );
   });
 
-  it("下一步指引必须明确否掉 web search 并说明原因", function () {
+  it("下一步指引要给出**具体做法**（DOI 填哪、PDF 传哪、类型填哪）", function () {
     assert.match(PAPER_NEXT_STEP_HINT, /createItem/);
-    assert.match(PAPER_NEXT_STEP_HINT, /pdfUrl/);
     assert.match(
       PAPER_NEXT_STEP_HINT,
-      /不要用 web search/,
-      "不写清这一点，模型会退回它熟悉的 web search —— 那条路看不见机构订阅",
+      /fields\.DOI/,
+      "要说清 DOI 填进哪个字段",
     );
-    assert.match(PAPER_NEXT_STEP_HINT, /机构/, "要说明原因，否则模型不会照做");
+    assert.match(PAPER_NEXT_STEP_HINT, /pdfUrl/);
+    assert.match(PAPER_NEXT_STEP_HINT, /itemType/, "要提示填建议的条目类型");
+    // ⚠️ 这里**不**断言"必须否掉 web search" —— 那是先前的过度反应，
+    // 用户指出 web search 本身有用。分工说明由 TOOL_CHOICE_HINT 负责，
+    // 它会被**同样**附在每条结果后面（含零结果），见下面的断言。
+    assert.ok(
+      !/不要用 web search/.test(PAPER_NEXT_STEP_HINT),
+      "分工交给 TOOL_CHOICE_HINT 讲，这里不该出现禁令",
+    );
+  });
+
+  it("零结果时也带上分工说明（那正是最可能想换工具的时刻）", function () {
+    const text = formatCandidates([]);
+    assert.match(
+      text,
+      /findPaper/,
+      "零结果时更要讲清分工 —— 该换的是检索词或本地文库，不是换成 web search",
+    );
   });
 });

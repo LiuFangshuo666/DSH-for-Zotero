@@ -137,6 +137,7 @@ export {
   looksPaywalled,
   normalizeDoi,
   PAPER_NEXT_STEP_HINT,
+  TOOL_CHOICE_HINT,
   parseCrossrefItems,
   pickOpenAccessPdf,
   rankCandidates,
