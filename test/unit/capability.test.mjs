@@ -63,6 +63,13 @@ const OPTIONAL_METHODS = [
   "refreshWorkspace",
   // 取消正在进行的轮次（卡住时的出路）
   "cancelTurn",
+  // ⚠️ 该会话是否仍在运行（真机：退出再回来不显示工作状态）
+  //
+  // 会话页每次打开都是重新加载的，而 setBusy 先前只在
+  // "刚发消息 / 刚取消"时调过 —— 于是重新打开时界面是空闲的，
+  // 而 harness 还在干活。有了它才能在进来时恢复状态。
+  // 有守卫（旧插件没有它时不探测），所以归可选。
+  "isSessionRunning",
   // 回答 ask_user_question 的提问（选项在工具参数里，必须回传）
   "answerQuestions",
 ];

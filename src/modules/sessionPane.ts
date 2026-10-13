@@ -488,6 +488,17 @@ function registerGlobalApi(pane: SessionPane): void {
     ) => pane.answerQuestionsInRecord(sessionId, questions, answers),
     /** 取消正在进行的轮次（卡住时的出路） */
     cancelTurn: async (sessionId: string) => pane.cancelTurnInRecord(sessionId),
+    /**
+     * 该会话的 agent **现在还在跑吗**？
+     *
+     * 真机反馈："会话中途退出再回来（本轮仍未结束）不会显示工作状态。"
+     * 会话页每次打开都是重新加载的，先前只在"刚发消息/刚取消"时设过状态 ——
+     * 于是重新打开时界面是空闲的，而 harness 还在干活。
+     *
+     * 返回**三态**：问不到时是 `undefined`，调用方不能当作"停了"。
+     */
+    isSessionRunning: async (sessionId: string) =>
+      pane.isSessionRunning(sessionId),
     /** 用当前版本重写工作区材料（老会话里可能留着旧说明） */
     refreshWorkspace: async (sessionId: string) => {
       const record = await sessionStore().get(sessionId);
@@ -1991,6 +2002,7 @@ export class SessionPane {
         this.confirmPendingDeletion(index, key),
       refreshWorkspace: () => this.refreshWorkspace(record),
       cancelTurn: () => this.cancelTurnInRecord(record.sessionId),
+      isSessionRunning: () => this.isSessionRunning(record.sessionId),
       answerQuestions: (
         questions: AskUserQuestion[],
         answers: Record<string, { selected: string[]; custom?: string }>,
@@ -3686,6 +3698,46 @@ export class SessionPane {
    * 看不到会话中进行的选项"：没有它时，Agent 中途问"选 A 还是 B"那句话在轮次结束前
    * 一直不可见 —— 用户既看不到问题，也不知道它在等自己。
    */
+  /**
+   * 这个会话的 agent **现在还在跑吗**？
+   *
+   * ## ⚠️ 为什么会话页需要它（真机反馈）
+   *
+   * 用户："会话中途退出再回来（本轮仍未结束）不会显示工作状态。"
+   *
+   * 会话页 `session.xhtml` 是**每次打开都重新加载**的页面。它先前只在
+   * "用户刚发了消息"或"刚点了取消"时调 `setBusy` —— 于是退出再回来时，
+   * 页面是全新的、状态是空闲，而 harness 那边**还在干活**。
+   * 用户看到的是一个安静的界面，以为答完了。
+   *
+   * v0.8.0 我给 **reader 侧面板**加过同类探测（`findRunningSession`），
+   * 但会话页走的是**另一条路径**（`chrome://` 页面 + 全局 API），
+   * 那份修复到不了这里 —— 这正是这次漏掉的原因。
+   *
+   * ## 权威来源
+   *
+   * dsh 的 `session/list` 每项都带 `running`（宿主侧来自 `agent.status === "running"`），
+   * 与传输层 `harnessRunning` 用的是同一个字段 —— 比"文本有没有变"可靠得多。
+   *
+   * ⚠️ 返回**三态**：`true` / `false` / `undefined`（问不到）。
+   * 调用方**不能**把 `undefined` 当"停了" —— 那会在 RPC 抖动时谎报空闲。
+   */
+  async isSessionRunning(sessionId: string): Promise<boolean | undefined> {
+    try {
+      // 复用既有传输层的公开探测方法（v0.8.0 加的），不再另建一条 client 构造路径 ——
+      // 那会重复一遍 cookie 自签与地址解析，两处逻辑日后必然分叉。
+      return await this.ensureTransport().probeHarnessRunning(sessionId);
+    } catch (error) {
+      appendPanelLog(
+        "session",
+        `查询会话是否仍在运行失败（按"不确定"处理，不谎报空闲）：${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return undefined;
+    }
+  }
+
   async askInRecord(
     sessionId: string,
     text: string,

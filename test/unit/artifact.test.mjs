@@ -89,6 +89,94 @@ const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
  * 这类缺陷**不会让任何构建或测试失败**（页面里的 UI 状态机没有单测），
  * 所以按本项目的一贯做法，直接在**源码/产物**上钉住关键约束。
  */
+/**
+ * ## 会话页进来时必须**问一次 harness 是否还在跑**（真机反馈）
+ *
+ * 用户："会话中途退出再回来（本轮仍未结束）不会显示工作状态。"
+ *
+ * 会话页每次打开都是**重新加载**的，而 `setBusy` 先前只在
+ * "刚发消息 / 刚取消"时调过 —— 于是退出再回来时界面是全新的、状态是空闲，
+ * 而 harness 那边还在干活。用户看到安静的界面，以为答完了。
+ *
+ * v0.8.0 我给 **reader 侧面板**加过同类探测，但会话页走的是
+ * `chrome://` 页面 + 全局 API 这条**另一条路径**，那份修复到不了这里 ——
+ * 这正是它被漏掉的原因。**修一处不等于修了这个症状。**
+ *
+ * 这条守卫读页面源码：探测函数依赖 `start()` 里的 DOM 闭包，
+ * 很难在 vm 里独立跑，所以把"必须存在且在启动时被调用"钉在源码上。
+ */
+describe("会话页的工作状态恢复", function () {
+  const page = readFileSync(
+    join(here, "..", "..", "addon", "content", "sessionPage.js"),
+    "utf8",
+  );
+
+  it("必须有探测函数，且**在启动时被调用**", function () {
+    assert.match(
+      page,
+      /function probeSessionRunning\(\)/,
+      "必须有「问一次 harness 是否还在跑」的函数",
+    );
+    const calls = page.match(/^\s{4}probeSessionRunning\(\);/gm) || [];
+    assert.ok(
+      calls.length >= 1,
+      "启动时必须调用它 —— 否则退出再回来仍然显示空闲（这正是用户报的问题）",
+    );
+  });
+
+  it("必须用**三态**判断，问不到时不能谎报空闲", function () {
+    assert.match(
+      page,
+      /running === true/,
+      "要显式区分 true：只有确认在跑才恢复生成状态",
+    );
+    assert.match(
+      page,
+      /running === false/,
+      "也要显式区分 false：确认停了才收尾",
+    );
+    // 剩下的分支（undefined）必须落到"只提示、不改界面"
+    assert.match(
+      page,
+      /问不到运行状态/,
+      "问不到时必须给一句提示，而不是静默当成空闲或当成在跑",
+    );
+  });
+
+  it("必须先判能力是否存在（旧插件没有它时不能抛错）", function () {
+    assert.match(
+      page,
+      /typeof capability\.isSessionRunning !== "function"/,
+      "旧插件没有这个方法时要安全跳过，而不是抛 TypeError",
+    );
+  });
+
+  it("探测必须有上限，不能无限轮询", function () {
+    // `undefined`（问不到）也会排下一次探测 —— 宿主一直不答就会无限轮询。
+    // 界面装饰不该无限占资源。
+    assert.match(
+      page,
+      /RUNNING_PROBE_MAX_MISSES/,
+      "必须有连续问不到的次数上限，到点就停",
+    );
+    assert.match(page, /stopRunningProbe/, "要能在页面卸载与用户取消后停下");
+  });
+
+  it("插件侧两条路径都必须提供 isSessionRunning", function () {
+    const pane = readFileSync(
+      join(here, "..", "..", "src", "modules", "sessionPane.ts"),
+      "utf8",
+    );
+    const n = (pane.match(/isSessionRunning/g) || []).length;
+    assert.ok(
+      n >= 3,
+      "全局 API 与窗口路径都要提供它（少一条就会出现「某条路径问不到」），实际 " +
+        n +
+        " 处",
+    );
+  });
+});
+
 describe("一键确认的按钮状态与逐条结果", function () {
   const page = readFileSync(
     join(here, "..", "..", "addon", "content", "sessionPage.js"),

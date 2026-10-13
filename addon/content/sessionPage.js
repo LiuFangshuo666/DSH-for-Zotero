@@ -811,6 +811,8 @@
         .then(function () {
           // 无论取消成功与否，界面都恢复可用：卡住时最要紧的是"能继续操作"
           setBusy(false);
+          // 用户刚取消：这一轮已经结束，没必要再探
+          stopRunningProbe();
           setAwaitingInput(false);
           // 轮次结束：收起提问卡片。用户已经回答过（或在回答别的）时，
           // 一张旧卡片留在这里只会让人以为还要再答一遍。
@@ -1810,6 +1812,92 @@
       if (stopBtn) stopBtn.style.display = busy ? "" : "none";
     }
 
+    /**
+     * ⚠️ **进来时先问一次：这一轮是不是还在跑？**（真机反馈）
+     *
+     * 用户："会话中途退出再回来（本轮仍未结束）不会显示工作状态。"
+     *
+     * 本页每次打开都是**重新加载**的：`setBusy` 只在"刚发消息 / 刚取消"时调过，
+     * 所以退出再回来时界面是全新的、状态是空闲 —— 而 harness 那边**还在干活**。
+     * 用户看到一个安静的界面，以为答完了，于是去发下一句。
+     *
+     * v0.8.0 我给 **reader 侧面板**加过同类探测，但会话页走的是
+     * `chrome://` 页面 + 全局 API 这条**另一条路径**，那份修复到不了这里。
+     *
+     * ## 三态，不是两态
+     *
+     * `isSessionRunning` 返回 `true` / `false` / `undefined`（问不到）。
+     * 问不到时**只提示、不改界面**：既不能谎报"在跑"（那会让用户干等），
+     * 也不能谎报"空闲"（那会让他去发下一句）——
+     * 所以给一句"状态未知"，并把判断权交回用户。
+     */
+    function probeSessionRunning() {
+      if (!capability || typeof capability.isSessionRunning !== "function") {
+        return;
+      }
+      Promise.resolve()
+        .then(function () {
+          return capability.isSessionRunning();
+        })
+        .then(function (running) {
+          if (running === true) {
+            setBusy(true);
+            // 这一轮开始了：若用户中途离开再回来，探测会把状态恢复。
+            scheduleRunningProbe();
+            runningProbeMisses = 0;
+            scheduleRunningProbe();
+            notice(
+              "检测到 Agent **仍在工作**（你是中途离开的）—— 界面已恢复生成状态。",
+            );
+          } else if (running === false) {
+            stopRunningProbe();
+          } else {
+            // 问不到：只提示，不动界面
+            notice(
+              "暂时问不到运行状态（网络或宿主繁忙）—— 可稍后再看，或点「停止生成」试试。",
+            );
+            scheduleRunningProbe();
+          }
+        })
+        .catch(function () {
+          // 探测失败不打扰用户（这是增强，不是主流程）
+        });
+    }
+
+    /**
+     * 探测定时器与"连续问不到"计数。
+     *
+     * 为什么要计数：`undefined`（问不到）也排下一次探测，
+     * 若宿主一直不回答就会**无限轮询**。给一个上限，到点就停并说明。
+     * 这与 `askInSession` 里"宁可多等，也不要提前宣布结束"是两回事 ——
+     * 那是**取回答**，这是**界面装饰**：装饰不该无限占资源。
+     */
+    var runningProbeTimer = null;
+    var runningProbeMisses = 0;
+    var RUNNING_PROBE_MS = 5000;
+    var RUNNING_PROBE_MAX_MISSES = 24; // ≈2 分钟
+
+    function stopRunningProbe() {
+      if (runningProbeTimer) {
+        clearTimeout(runningProbeTimer);
+        runningProbeTimer = null;
+      }
+      runningProbeMisses = 0;
+    }
+
+    function scheduleRunningProbe() {
+      if (runningProbeTimer) return;
+      runningProbeTimer = setTimeout(function () {
+        runningProbeTimer = null;
+        runningProbeMisses += 1;
+        if (runningProbeMisses > RUNNING_PROBE_MAX_MISSES) {
+          stopRunningProbe();
+          return;
+        }
+        probeSessionRunning();
+      }, RUNNING_PROBE_MS);
+    }
+
     /** 载入历史 */
     function loadHistory() {
       var loading = notice("正在载入历史…");
@@ -1939,6 +2027,13 @@
     });
 
     loadHistory();
+    // ⚠️ 进来先问一次：上一次离开时那一轮可能**还在跑**。
+    // 没有这一步，界面会显示成空闲，用户以为答完了。
+    probeSessionRunning();
+    // 关页面时停探测：页面都没了还在问只是白耗 RPC。
+    if (window && typeof window.addEventListener === "function") {
+      window.addEventListener("unload", stopRunningProbe);
+    }
     input.focus();
   } // ← start() 结束
 })();
