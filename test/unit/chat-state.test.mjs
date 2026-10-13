@@ -24,6 +24,7 @@ const {
   canSend,
   isTurnActive,
   harnessUnknown,
+  decideTurnOutcome,
   __resetMessageSeq,
 } = chat;
 
@@ -394,5 +395,85 @@ describe("replay 等价于顺序 reduce", function () {
       initialState(),
     );
     assert.deepEqual(toView(replayed), toView(sequential));
+  });
+});
+
+/**
+ * ## 工具步的无正文 `turn/end` **不是失败**（真机：任务被打断在一半）
+ *
+ * 用户实测：界面弹「请求失败：本轮以空回答结束（模型没有产出正文）」，
+ * 而日志的块构成是 `tool-call:pwsh` / `tool-call:read` —— **Agent 在干活**。
+ * 于是同一句话被连发三次、又被取消。
+ *
+ * 把规则抽成纯函数就是为了能这样直接测：我先前把它写成集成测试，
+ * 结果反复失败在**与规则无关的环境问题**（沙箱里 XHR 不可用）上，
+ * 白折腾了好几轮才看清。
+ */
+describe("一轮读完之后该怎么走（多步执行的核心规则）", function () {
+  it("有正文 → 返回", function () {
+    const v = decideTurnOutcome({ ended: true, textLength: 12 });
+    assert.equal(v.action, "return");
+  });
+
+  it("**结束但没有正文 → 继续等**（这就是工具步的形态）", function () {
+    // 多步执行时每一步都带 turn/end，工具步没有 text 块。
+    // 一见"结束且无正文"就抛错，会把正在进行的任务判成失败。
+    assert.equal(
+      decideTurnOutcome({ ended: true, textLength: 0 }).action,
+      "continue",
+      "工具步的无正文结束必须继续等，不能判失败",
+    );
+  });
+
+  it("harness 明确说还在跑 → 继续等", function () {
+    assert.equal(
+      decideTurnOutcome({
+        ended: true,
+        textLength: 0,
+        harnessRunning: true,
+      }).action,
+      "continue",
+    );
+  });
+
+  it("**问不到 harness（undefined）也要继续等**，不能当「它停了」", function () {
+    // 三态里最容易被写错的一格：`undefined` 是"不确定"。
+    // 把它当 false 会在 RPC 抖动时宣布任务失败 —— 正是"提前结束"的同类错误。
+    assert.equal(
+      decideTurnOutcome({ ended: true, textLength: 0 }).action,
+      "continue",
+      "harnessRunning 缺省（问不到）时必须继续等",
+    );
+  });
+
+  it("harness 明确说停了且仍无正文 → 抛错说清楚", function () {
+    const v = decideTurnOutcome({
+      ended: true,
+      textLength: 0,
+      harnessRunning: false,
+    });
+    assert.equal(v.action, "throw");
+    assert.match(
+      v.message,
+      /工具|没有产出正文/,
+      "错误信息要说明可能是工具步，而不是含糊的失败",
+    );
+  });
+
+  it("有错误 → 立刻抛（没有模型凭据时不能空等到超时）", function () {
+    const v = decideTurnOutcome({
+      ended: true,
+      textLength: 0,
+      error: "llm-deepseek: no API key",
+    });
+    assert.equal(v.action, "throw");
+    assert.match(v.message, /no API key/);
+  });
+
+  it("还没结束 → 继续等（哪怕已经有正文）", function () {
+    assert.equal(
+      decideTurnOutcome({ ended: false, textLength: 99 }).action,
+      "continue",
+    );
   });
 });

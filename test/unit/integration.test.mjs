@@ -268,6 +268,21 @@ function installFakeDsh(options = {}) {
       },
     ],
   });
+  /**
+   * ⚠️ **多步执行：第一批 `turn/end` 是"只调工具、没有正文"的**
+   *
+   * 真机缺陷（用户实测，分类下补全文那一次）：界面弹
+   * 「请求失败：本轮以空回答结束（模型没有产出正文）」，
+   * 而日志里的块构成明明是 `tool-call:pwsh` / `tool-call:read` —— **它在干活**。
+   *
+   * 于是用户把同一句话连发三次、又取消，任务被打断在一半。
+   *
+   * 根因：多步执行时**每一步都会带一个 `turn/end`**，而工具步的
+   * `assistant/message` 里没有 text 块。旧代码一见"结束且无正文"就抛错。
+   *
+   * 这个开关让页面**先只返回那个无正文的工具步**（若干次读取），
+   * 之后才返回带正文的下一轮 —— 正是真机上的时序。
+   */
   const valueFor = (method) => {
     switch (method) {
       case "session/list":
@@ -345,50 +360,66 @@ function installFakeDsh(options = {}) {
   };
 
   // 真实 Zotero 里一定有 XHR；cookie 罐不可用时 RPC 会走它（显式 Cookie 头）
-  globalThis.XMLHttpRequest = class {
-    constructor() {
-      this.headers = {};
-    }
-    open(method, url) {
-      this.method = method;
-      this.url = url;
-    }
-    setRequestHeader(name, value) {
-      this.headers[name] = value;
-    }
-    send(body) {
-      this.body = body;
-      const method = String(this.url).split("/api/")[1];
-      // 记录 body：断言"重建沿用同一工作区"需要读 request.cwd
-      calls.push({
-        method,
-        via: "xhr",
-        body: body ? JSON.parse(body) : undefined,
-      });
-      const value = valueFor(method);
-      if (!value) {
-        this.status = 404;
-        this.responseText = "not found";
-      } else if (value.__error) {
-        // 业务失败仍是 HTTP 200，错误在 result.ok=false —— 与 dsh 真实行为一致。
-        // 插件在 cookie 罐不可用时走 XHR，所以这条分支是测试自愈逻辑的必经之路。
-        this.status = 200;
-        this.responseText = JSON.stringify({
-          type: "server-response",
-          rpcId: "r1",
-          result: { ok: false, error: value.__error },
-        });
-      } else {
-        this.status = 200;
-        this.responseText = JSON.stringify({
-          type: "server-response",
-          rpcId: "r1",
-          result: { ok: true, value },
-        });
+  const makeXhrClass = () =>
+    class {
+      constructor() {
+        this.headers = {};
       }
-      this.onload();
-    }
-  };
+      open(method, url) {
+        this.method = method;
+        this.url = url;
+      }
+      setRequestHeader(name, value) {
+        this.headers[name] = value;
+      }
+      send(body) {
+        this.body = body;
+        const method = String(this.url).split("/api/")[1];
+        // 记录 body：断言"重建沿用同一工作区"需要读 request.cwd
+        calls.push({
+          method,
+          via: "xhr",
+          body: body ? JSON.parse(body) : undefined,
+        });
+        const value = valueFor(method);
+        if (!value) {
+          this.status = 404;
+          this.responseText = "not found";
+        } else if (value.__error) {
+          // 业务失败仍是 HTTP 200，错误在 result.ok=false —— 与 dsh 真实行为一致。
+          // 插件在 cookie 罐不可用时走 XHR，所以这条分支是测试自愈逻辑的必经之路。
+          this.status = 200;
+          this.responseText = JSON.stringify({
+            type: "server-response",
+            rpcId: "r1",
+            result: { ok: false, error: value.__error },
+          });
+        } else {
+          this.status = 200;
+          this.responseText = JSON.stringify({
+            type: "server-response",
+            rpcId: "r1",
+            result: { ok: true, value },
+          });
+        }
+        this.onload();
+      }
+    };
+  globalThis.XMLHttpRequest = makeXhrClass();
+  /**
+   * ⚠️ 有些测试会 `delete globalThis.WebSocket / ChromeWorker` 来强制走轮询，
+   * 却**可能没有还原**，于是后续测试的环境与预期不符。
+   *
+   * 我的新测试就撞上了这个：`chooseDelivery()` 需要 XHR 存在，
+   * 而它当时是 `undefined` —— 报的是"既无法写入 cookie 罐、也没有 XHR"，
+   * 与我要测的"工具步无正文"毫无关系，白折腾了几轮。
+   *
+   * 所以这里**明确保证**：任何调用 `installSandbox` 的测试都拿到 XHR。
+   * 上面那句已经设了，这里再挂一个显式兜底，让"环境不干净"不再伪装成产品缺陷。
+   */
+  if (typeof globalThis.XMLHttpRequest !== "function") {
+    globalThis.XMLHttpRequest = makeXhrClass();
+  }
 
   return calls;
 }

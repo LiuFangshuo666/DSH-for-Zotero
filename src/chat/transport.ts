@@ -155,6 +155,58 @@ export async function askWithSelectionAny(
  * 没有可靠的结束事件可依赖，所以用**正文连续若干轮不再变化**来判定（`pollStableRounds`）。
  * 这是权衡的结果：宁可多等一两轮，也不要提前收尾把半截回答当成完整回答。
  */
+/**
+ * 一轮读完之后该怎么走 —— 抽成**纯函数**，便于单测。
+ *
+ * ## ⚠️ 这条规则的由来（真机缺陷，任务被打断在一半）
+ *
+ * 用户实测：界面弹「请求失败：本轮以空回答结束（模型没有产出正文）」，
+ * 而日志的块构成明明是 `tool-call:pwsh` / `tool-call:read` —— **Agent 在干活**。
+ * 于是同一句话被连发三次、又被取消。
+ *
+ * 根因：**多步执行时每一步都会带一个 `turn/end`**，而"工具步"的
+ * `assistant/message` 里没有 text 块。旧代码一见"结束且无正文"就抛错，
+ * 把正在进行的任务判成失败。
+ *
+ * 所以规则是：
+ *
+ * | 情况 | 处理 |
+ * | --- | --- |
+ * | 有错误 | `throw`（没有凭据等，必须立刻报出来） |
+ * | 有正文 | `return` |
+ * | 无正文，但 harness **明确说停了** | `throw`（确实什么都没产出，别让用户白等） |
+ * | 无正文，harness 还在跑或**问不到** | `wait`（它在干活，等下一轮的正文） |
+ *
+ * 抽出来的另一个原因：我原本把这条测试写成集成测试，却因为它需要
+ * XHR/沙箱而反复失败在**与规则无关的环境问题**上。纯函数可以直接测规则本身。
+ */
+export function decideTurnOutcome(input: {
+  ended: boolean;
+  error?: string;
+  textLength: number;
+  /**
+   * harness 是否仍在运行：`true` / `false` / `undefined`（问不到）。
+   * ⚠️ 只有**明确的 `false`** 才算"它停了" —— `undefined` 必须当作"不确定"。
+   */
+  harnessRunning?: boolean;
+}): { action: "continue" | "return" } | { action: "throw"; message: string } {
+  if (input.error) {
+    return { action: "throw", message: input.error };
+  }
+  if (!input.ended) return { action: "continue" };
+  if (input.textLength > 0) return { action: "return" };
+  // 结束但无正文：这正是"工具步"的形态
+  if (input.harnessRunning === false) {
+    return {
+      action: "throw",
+      message:
+        "本轮结束但没有产出正文（可能是模型只调用了工具、没有输出文字；" +
+        "也可能被取消或出错）。可查看会话页的「块构成」日志行确认它做了什么。",
+    };
+  }
+  return { action: "continue" };
+}
+
 export class ChatTransport {
   private readonly deps: ChatTransportDeps;
   private config?: DshRuntimeConfig;
@@ -941,11 +993,6 @@ export class ChatTransport {
     while (Date.now() < deadline) {
       const turn = await this.readTurn(client, sessionId);
       if (turn) {
-        // ⚠️ 先看错误：没有模型凭据时 turn/end 立刻到来但带 reason.kind === "error"，
-        // 若只等正文，界面会一直停在"…"直到 180 秒超时（真机实测）。
-        if (turn.error) {
-          throw new Error(turn.error);
-        }
         text = turn.text;
         // 增量回显：每次轮询发现正文变化就报一次（传全文，便于界面直接替换）
         if (text && text !== lastReported) {
@@ -977,11 +1024,63 @@ export class ChatTransport {
             // 同上
           }
         }
-        // 结束即返回：`turn/end` 表示本轮已定稿，正文可能为空（例如模型只回了一个
-        // 空块）。要求 text.length > 0 会让这种情况空转到超时。
-        if (turn.ended) {
-          if (text.length > 0) return text;
-          throw new Error("本轮以空回答结束（模型没有产出正文）");
+        /**
+         * ## ⚠️ `turn/end` **不等于**"这一问的回答完了"（真机缺陷，差点误判成别的问题）
+         *
+         * 这里原来是：
+         *
+         * ```js
+         *   if (turn.ended) {
+         *     if (text.length > 0) return text;
+         *     throw new Error("本轮以空回答结束（模型没有产出正文）");
+         *   }
+         * ```
+         *
+         * 用户实测（分类下补全文那一次）：**Agent 明明在干活**，界面却弹
+         * 「请求失败：本轮以空回答结束（模型没有产出正文）」，
+         * 于是一句话被连发三次、又被取消 —— 任务被打断在一半。
+         *
+         * 日志给出了铁证（块构成快照）：
+         *
+         * ```text
+         *   正文 0 字；已结束=true；start=2个@[4,236]；end@[233,277]；
+         *   块构成 = reasoning(...) ｜ tool-call:pwsh(...) ｜ tool-call:read(...)
+         * ```
+         *
+         * **轮次边界完全正常**（有新轮、有新结束），只是那一步的
+         * `assistant/message` 里**没有 text 块** —— 多步执行时 Agent 常常
+         * 只调工具、不写给人看的话。而这种"工具步"**每一步都会带一个 `turn/end`**。
+         *
+         * 所以空正文**不是失败**，是"它在干活，还没轮到我说话"。
+         * 正确做法是**继续等**下一轮的正文，而不是把整问判失败。
+         *
+         * ## 什么时候才算真的空
+         *
+         * 一直等到超时（下面的 `throw`）—— 那才是"确实什么都没产出"。
+         * 中途如果 harness **明确说它停了**且仍然没有正文，也不必再等，
+         * 直接说清"它结束了但没给正文"，比让它白等到超时更有用。
+         */
+        // 结束与否的判断交给纯函数（有单测）—— 规则本身就是一个真机缺陷的修正，
+        // 写在这里会被环境问题掩盖掉（我就因此白折腾了几轮）。
+        let stillRunning: boolean | undefined;
+        if (turn.ended && text.length === 0) {
+          stillRunning = await this.harnessRunning(client, sessionId);
+        }
+        const verdict = decideTurnOutcome({
+          ended: turn.ended,
+          ...(turn.error ? { error: turn.error } : {}),
+          textLength: text.length,
+          ...(stillRunning === undefined
+            ? {}
+            : { harnessRunning: stillRunning }),
+        });
+        if (verdict.action === "throw") throw new Error(verdict.message);
+        if (verdict.action === "return") return text;
+        if (turn.ended && text.length === 0) {
+          appendPanelLog(
+            "session",
+            `第 ${turn.endedTurn} 轮结束但无正文（Agent 可能只在调用工具），继续等待后续轮次`,
+          );
         }
       }
       await new Promise((r) => setTimeout(r, 700));
