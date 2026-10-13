@@ -149,4 +149,4 @@ export {
 // 只拿纯函数（attachBestPdf 会发网络请求，不在单测里跑）
 export { isPdfBytes } from "../../src/dsh/paperFetch";
 // 轮次结束的判断（工具步无正文不是失败 —— 真机细节）
-export { decideTurnOutcome } from "../../src/chat/transport";
+export { decideTurnOutcome, decideStreamEnd } from "../../src/chat/transport";

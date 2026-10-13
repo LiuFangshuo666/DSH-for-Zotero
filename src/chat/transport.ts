@@ -207,6 +207,38 @@ export function decideTurnOutcome(input: {
   return { action: "continue" };
 }
 
+/**
+ * 流式的 `end` 帧到达后该"接管"还是"收尾" —— 与 `decideTurnOutcome` 同理，抽成纯函数。
+ *
+ * ## ⚠️ 为什么必须问一次 harness 才能收尾（真机缺陷）
+ *
+ * 用户实测：界面在 14:20:22 显示「本轮结束」，而插件日志显示 Agent
+ * 在 14:21–14:22 **持续每秒一次**地调用 `getFullText` —— 它才刚开始干活。
+ * 流一断，界面就与 Agent **完全脱节**：之后它做的事全都看不到。
+ *
+ * 根因：`assistant-stream` 的 `end` 帧是"**一个 step 结束了**"，
+ * 与 `turn/end` 是同一个病的两条路 —— 多步执行时每步都会结束一次。
+ *
+ * ## 三态的处理在这里**刻意与 `decideTurnOutcome` 相反**
+ *
+ * | 值 | 决定 | 理由 |
+ * | --- | --- | --- |
+ * | `true` | 接管（轮询顶上） | 确认它还在跑，界面必须继续跟 |
+ * | `false` | 收尾 | 确实停了 |
+ * | `undefined` | **收尾** | 见下 |
+ *
+ * `undefined` 在这里选"收尾"，是因为触发它的是**流自己关闭** ——
+ * 通道已经没了，我们再也收不到后续增量。此时若宣布"还在跑"却不接上轮询，
+ * 界面会**永远停在"生成中"**，比提前显示结束更难受。
+ * 而"接管"这条路径本身只有在**确认**它在跑时才走，所以不会误伤正常收尾。
+ */
+export function decideStreamEnd(input: {
+  /** harness 是否仍在运行：`true` / `false` / `undefined`（问不到） */
+  stillRunning?: boolean;
+}): "takeover" | "finish" {
+  return input.stillRunning === true ? "takeover" : "finish";
+}
+
 export class ChatTransport {
   private readonly deps: ChatTransportDeps;
   private config?: DshRuntimeConfig;
@@ -1173,6 +1205,65 @@ export class ChatTransport {
     return true;
   }
 
+  /**
+   * 流式的 `end` 帧到达后：**先确认整轮是否真的结束**，再决定要不要收尾。
+   *
+   * 见 `onFollowFrame` 里那段的说明 —— 这个 `end` 只是"一个 step 结束了"。
+   *
+   * 三种结果：
+   *  - harness 仍在跑 → 转为轮询继续盯，并告知用户还在干活（**不发结束**）；
+   *  - harness 已停   → 正常收尾（发结束）；
+   *  - 问不到（RPC 抖动等）→ 采取**保守**的一侧：按"已停"收尾。
+   *
+   * ## 为什么 `undefined` 在这里选"收尾"而不是"继续等"
+   *
+   * 与 `decideTurnOutcome` 相反，这里刻意保守在**另一端**，理由是这个方法
+   * 由**流自己关闭**触发：流已经断了，我们**没有任何通道**再收到后续增量。
+   * 此时若强行宣布"还在跑"却又不把轮询接上，界面会永远停在"生成中"——
+   * 那是比"提前显示结束"更难受的卡死。
+   *
+   * 所以：**能确认它还在跑**就接管（轮询顶上）；确认不了就按常规收尾，
+   * 让用户至少能继续操作。真正的兜底是"轮询接管"这条路径本身。
+   */
+  private async endStreamStep(
+    sessionId: string,
+    kind: "committed" | "abandoned",
+  ): Promise<void> {
+    let stillRunning: boolean | undefined;
+    try {
+      const client = this.client;
+      if (client) stillRunning = await this.harnessRunning(client, sessionId);
+    } catch {
+      stillRunning = undefined;
+    }
+
+    if (
+      decideStreamEnd({
+        ...(stillRunning === undefined ? {} : { stillRunning }),
+      }) === "takeover"
+    ) {
+      appendPanelLog(
+        "session",
+        "流式的 end 帧到达，但 harness **仍在运行** —— 不宣布本轮结束，" +
+          "改用轮询继续盯着（多步执行时每一步都会结束一次）",
+      );
+      // 接管：轮询会负责后续的增量与最终结束
+      this.startPolling(sessionId);
+      try {
+        this.deps.emit({
+          kind: "assistant-note",
+          note: "Agent 仍在继续工作（多步执行）—— 界面已切换为持续跟踪，请稍候。",
+        });
+      } catch {
+        // 界面的问题不该影响传输
+      }
+      return;
+    }
+
+    this.deps.emit({ kind: "assistant-end", outcome: kind });
+    this.deps.emit({ kind: "status", generating: false });
+  }
+
   private stopStream(): void {
     try {
       this.activeStream?.close();
@@ -1221,8 +1312,30 @@ export class ChatTransport {
         case "end": {
           const kind =
             inner.outcome?.kind === "committed" ? "committed" : "abandoned";
-          this.deps.emit({ kind: "assistant-end", outcome: kind });
-          this.deps.emit({ kind: "status", generating: false });
+          /**
+           * ⚠️ **流式 `end` 帧是"一个 step 结束了"，不是"整轮结束了"**
+           * （真机缺陷：界面报「本轮结束」而 Agent 又干了 2 分多钟）
+           *
+           * 用户实测：界面在 14:20:22 显示「本轮结束」，而日志显示 Agent
+           * **在 14:21–14:22 持续每秒一次地调用 `getFullText`** —— 它才刚开始干活。
+           *
+           * 这里和上一轮修的 `turn/end` 是**同一个病的两条路**：
+           * 多步执行时，每一步都会结束一次（`turn/end` 一个、`assistant-stream`
+           * 的 `end` 一个），而它们都**不代表这一问答完了**。
+           *
+           * 后果比"显示不准"严重：流一断，**界面与 Agent 完全脱节** ——
+           * 之后 Agent 做的所有事（这里是一口气检查 255 条条目）
+           * 界面上再也看不到，用户以为任务结束了。
+           *
+           * 所以收到 `end` 时先**问一次 harness**：
+           *  - 它还在跑 → 不宣布结束，改由**轮询**继续盯着，
+           *    并发一条说明让用户知道"还在干活"；
+           *  - 它确实停了 → 才是真的结束（照旧发 `assistant-end`）。
+           *
+           * 与 `askInSession` 的 `decideTurnOutcome` 同一条原则：
+           * **`undefined`（问不到）不能当"停了"。**
+           */
+          void this.endStreamStep(sessionId, kind);
           break;
         }
         default:

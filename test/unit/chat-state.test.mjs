@@ -25,6 +25,7 @@ const {
   isTurnActive,
   harnessUnknown,
   decideTurnOutcome,
+  decideStreamEnd,
   __resetMessageSeq,
 } = chat;
 
@@ -474,6 +475,54 @@ describe("一轮读完之后该怎么走（多步执行的核心规则）", func
     assert.equal(
       decideTurnOutcome({ ended: false, textLength: 99 }).action,
       "continue",
+    );
+  });
+});
+
+/**
+ * ## 流式的 `end` 帧不是"整轮结束"（真机：界面报结束后 Agent 又干了 2 分钟）
+ *
+ * 用户实测：界面在 14:20:22 显示「本轮结束」，而日志显示 Agent
+ * 在 14:21–14:22 **持续每秒一次**地调用 `getFullText` —— 它才刚开始干活。
+ * 流一断，界面就与 Agent 完全脱节，之后做的事全都看不到。
+ *
+ * 与上一轮的 `turn/end` 是同一个病的两条路：多步执行时每步都会结束一次。
+ */
+describe("流式 end 帧的收尾规则", function () {
+  it("harness 明确还在跑 → 交给轮询接管，**不宣布结束**", function () {
+    assert.equal(
+      decideStreamEnd({ stillRunning: true }),
+      "takeover",
+      "确认它还在跑却不接管，界面就会与 Agent 脱节",
+    );
+  });
+
+  it("harness 确实停了 → 正常收尾", function () {
+    assert.equal(decideStreamEnd({ stillRunning: false }), "finish");
+  });
+
+  it("**问不到 → 收尾**（这里刻意与 decideTurnOutcome 相反）", function () {
+    // 触发它的是"流自己关闭"：通道已经没了，再也收不到增量。
+    // 此时宣布"还在跑"却不接上轮询，界面会永远停在"生成中" ——
+    // 比提前显示结束更难受。所以这一格选收尾。
+    assert.equal(
+      decideStreamEnd({}),
+      "finish",
+      "问不到时必须收尾，否则界面可能永远停在生成中",
+    );
+  });
+
+  it("两条规则的 undefined 处理方向**相反**，且都有理由", function () {
+    // 放在一起断言，是为了让后来者一眼看到这不是笔误。
+    assert.equal(
+      decideTurnOutcome({ ended: true, textLength: 0 }).action,
+      "continue",
+      "轮次判断里 undefined = 不确定 → 继续等（宁可多等）",
+    );
+    assert.equal(
+      decideStreamEnd({}),
+      "finish",
+      "流关闭时 undefined = 没有通道了 → 收尾（宁可让用户能继续操作）",
     );
   });
 });
