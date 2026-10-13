@@ -22,6 +22,8 @@ const {
   toView,
   statusLine,
   canSend,
+  isTurnActive,
+  harnessUnknown,
   __resetMessageSeq,
 } = chat;
 
@@ -253,6 +255,124 @@ describe("对话状态机：消息上限", function () {
     assert.equal(
       state.messages[state.messages.length - 1].blocks[0].text,
       "q259",
+    );
+  });
+});
+
+describe("harness 运行状态（退出界面再回来不能显示成空闲）", function () {
+  /**
+   * 真机反馈："对话容易因轮询读取超时或**中途退出会话界面**而被判断为
+   * 一轮对话的结束，缺乏对 harness 状态的监测表示。"
+   *
+   * 机制：`state.generating` 是**界面实例**的状态。退出会话页再回来是新实例，
+   * 它初始为 `false` —— 界面显示空闲，而 harness 那边上一轮**还在跑**。
+   * 用户以为答完了就追问一句，于是轮次错乱。
+   */
+  const ready = () =>
+    reduce(initialState(), {
+      kind: "ready",
+      sessionId: "s-1",
+      transport: "polling",
+      resumed: true,
+    });
+
+  it("harness 说还在跑时：状态行明确写出来，且**禁止发送**", function () {
+    const state = reduce(ready(), { kind: "harness", running: true });
+    assert.match(
+      statusLine(state, 19400),
+      /仍在运行/,
+      "必须显示「仍在运行」 —— 否则用户以为已经答完",
+    );
+    assert.ok(
+      !canSend(state),
+      "harness 还在跑时不能让用户再发一句（那正是轮次错乱的成因）",
+    );
+    assert.ok(isTurnActive(state), "isTurnActive 应为真");
+  });
+
+  it("**关键**：新实例（generating=false）也不会被当成空闲", function () {
+    // 这正是"退出界面再回来"的场景：面板是新实例，generating 是初始的 false，
+    // 唯一的状态来源就是问出来的 harnessRunning。
+    let state = ready();
+    assert.equal(state.generating, false, "前提：新实例不在生成");
+    state = reduce(state, { kind: "harness", running: true });
+    assert.ok(
+      isTurnActive(state),
+      "generating=false 但 harness 在跑 → 仍应算作「这一轮进行中」",
+    );
+    assert.match(statusLine(state, 19400), /仍在运行/);
+  });
+
+  it("harness 明确说没在跑 → 显示空闲、允许发送", function () {
+    const state = reduce(ready(), { kind: "harness", running: false });
+    assert.ok(!/仍在运行|状态未知/.test(statusLine(state, 19400)));
+    assert.ok(canSend(state), "确实停了就该能发送");
+    assert.ok(!harnessUnknown(state), "false 不是「未知」");
+  });
+
+  it("「问不到」（undefined）≠ 空闲：必须显示「状态未知」", function () {
+    // 把 undefined 当 false，就是"在 RPC 抖动时宣布这一轮结束了" ——
+    // 正是用户反馈的误判。宁可含糊也不能说谎。
+    const state = reduce(ready(), { kind: "harness", running: undefined });
+    assert.match(
+      statusLine(state, 19400),
+      /状态未知/,
+      "问不到时要明确说不知道，而不是显示成空闲",
+    );
+    assert.ok(harnessUnknown(state));
+  });
+
+  it("没问过 harness 时不显示任何多余字样", function () {
+    // 不能因为"还没问"就写"状态未知" —— 那是噪声，不是信息。
+    const state = ready();
+    const line = statusLine(state, 19400);
+    assert.ok(!/仍在运行|状态未知/.test(line), `实际：${line}`);
+    assert.ok(!harnessUnknown(state), "还没问过不算「未知」");
+  });
+
+  it("committed 结束后清成「确实停了」", function () {
+    let state = reduce(ready(), { kind: "harness", running: true });
+    state = reduce(state, { kind: "assistant-end", outcome: "committed" });
+    assert.equal(state.harnessRunning, false, "harness 明确报过 turn/end");
+    assert.ok(canSend(state));
+    assert.ok(!/仍在运行/.test(statusLine(state, 19400)));
+  });
+
+  it("**abandoned**（我们等够了）结束时应变成「未知」，而不是「空闲」", function () {
+    // ⚠️ 这条是本次反馈的核心：`abandoned` 的语义是**我们停止等待**，
+    // 不是"harness 干完了"（state.ts 里那条注释写得很清楚）。
+    // 结束就写 false，等于"把读取超时当成一轮对话的结束"。
+    let state = reduce(ready(), { kind: "harness", running: true });
+    state = reduce(state, { kind: "assistant-end", outcome: "abandoned" });
+    assert.equal(
+      state.harnessRunning,
+      undefined,
+      "abandoned 只能变成「未知」，不能变成 false（那会谎称它停了）",
+    );
+    assert.ok(harnessUnknown(state), "应当显示「运行状态未知」");
+  });
+
+  it("运行中的助手消息在**重开界面后**仍显示为进行中（光标不消失）", function () {
+    let state = reduce(ready(), { kind: "prompt-accepted", text: "问" });
+    state = reduce(state, { kind: "assistant-start" });
+    state = reduce(state, {
+      kind: "assistant-delta",
+      chunk: { type: "block-start", index: 0, blockType: "text" },
+    });
+    state = reduce(state, {
+      kind: "assistant-delta",
+      chunk: { type: "text-delta", index: 0, text: "半句" },
+    });
+    // 模拟"退出界面再回来"：generating 回到 false，只有 harness 的答案还在
+    state = { ...state, generating: false };
+    state = reduce(state, { kind: "harness", running: true });
+    const cells = toView(state);
+    const assistant = cells.find((c) => c.kind === "assistant");
+    assert.ok(assistant, "应有助手消息");
+    assert.equal(
+      assistant.streaming,
+      true,
+      "仍在跑时不能把消息标成已定稿 —— 否则界面看起来已经答完了",
     );
   });
 });

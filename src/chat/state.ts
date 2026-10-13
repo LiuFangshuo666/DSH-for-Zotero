@@ -54,7 +54,27 @@ export type ChatEvent =
   /** 生成状态变化（用于"正在生成…"与停止按钮） */
   | { kind: "status"; generating: boolean }
   /** 用户点了停止 */
-  | { kind: "cancel-requested" };
+  | { kind: "cancel-requested" }
+  /**
+   * harness 侧的真实运行状态（**跨界面重启**的唯一状态来源）。
+   *
+   * ## 为什么需要它（真机反馈）
+   *
+   * 用户："对话容易因轮询读取超时或**中途退出会话界面**而被判断为一轮对话的结束，
+   * 缺乏对 harness 状态的监测表示。"
+   *
+   * `status.generating` 是**界面实例**的状态：退出会话页再回来就是新实例，
+   * 它初始为 `false` —— 于是界面显示空闲，而 harness 那边上一轮**还在跑**。
+   * 用户以为结束了，追问一句，就得到轮次错乱。
+   *
+   * 与 `generating` 的分工：
+   *  - `generating`：**本界面**知道正在生成（我们自己发的提问）；
+   *  - `harnessRunning`：**问过 harness** 得到的答案，界面重启也有效。
+   *
+   * `running` 为 `undefined` 表示**问不到**（RPC 抖动），这时界面**不能**
+   * 宣布"已结束"，只能说"状态未知"。
+   */
+  | { kind: "harness"; running: boolean | undefined; at?: number };
 
 // ── 展示模型 ────────────────────────────────────────────────
 
@@ -87,6 +107,19 @@ export interface ChatState {
   lastFault?: { code: string; message: string };
   /** 取消是否已发出（避免重复点击） */
   cancelPending: boolean;
+  /**
+   * 问过 harness 的结果：这个会话的 agent 是否仍在跑。
+   *
+   * ⚠️ 与 `generating` **不是**一回事，两个都要看：
+   *  - `generating` 只说明**本界面实例**知道正在生成；
+   *  - 本字段在**退出界面再回来**之后仍然有效（面板挂载时会重新问一次）。
+   *
+   * `undefined` = 问不到（RPC 抖动）—— 界面必须显示"状态未知"，
+   * **不能**显示成"空闲"。
+   */
+  harnessRunning?: boolean;
+  /** 上一次问 harness 的时刻（用于显示"从 HH:MM 起仍在运行"） */
+  harnessCheckedAt?: number;
 }
 
 export function initialState(): ChatState {
@@ -97,6 +130,27 @@ export function initialState(): ChatState {
     messages: [],
     cancelPending: false,
   };
+}
+
+/**
+ * 这一轮是否**仍在进行**（界面据此禁用输入并显示进度）。
+ *
+ * 取两者的**并集**：`generating` 是本界面知道的，`harnessRunning` 是问出来的。
+ * 任一说"在跑"就当在跑 —— 宁可多显示一会儿"仍在生成"（用户会看到它结束），
+ * 也不要在它其实还在跑时显示空闲（那会诱导用户追问，导致轮次错乱）。
+ *
+ * ⚠️ `harnessRunning === undefined`（问不到）**不算**在跑，但也不等于空闲：
+ * 调用方应当用 `harnessUnknown()` 单独区分这两种情况。
+ */
+export function isTurnActive(state: ChatState): boolean {
+  return state.generating || state.harnessRunning === true;
+}
+
+/** 状态**未知**（问不到 harness）—— 与"确实空闲"必须分开处理 */
+export function harnessUnknown(state: ChatState): boolean {
+  return (
+    state.harnessCheckedAt !== undefined && state.harnessRunning === undefined
+  );
 }
 
 const MAX_MESSAGES = 200;
@@ -287,6 +341,16 @@ export function reduce(
       return { ...state, messages: trimmed(messages), lastFault: undefined };
     }
 
+    case "harness": {
+      // 记下**问到的时刻**：界面要能说"从 14:32 起仍在运行"，
+      // 而不是只给一个没有时间基准的"运行中"。
+      return {
+        ...state,
+        harnessRunning: event.running,
+        harnessCheckedAt: now,
+      };
+    }
+
     case "assistant-start": {
       const messages = pushAssistant(state.messages, now);
       return { ...state, messages, generating: true, cancelPending: false };
@@ -364,6 +428,17 @@ export function reduce(
         messages: trimmed(messages),
         generating: false,
         cancelPending: false,
+        // ⚠️ 结束**不等于**"harness 停了"，按结局区分（这正是用户反馈的那类误判）：
+        //
+        //  - `committed`：harness 明确报了 `turn/end` → 它确实停了 → `false`；
+        //  - `cancelled`：用户点了停止 → 会走 cancel 流程，同样按"已停"处理；
+        //  - `abandoned`：**我们等够了，不是它干完了**（见上面那条注释）。
+        //    这时**必须保持"未知"**（`undefined`）而不是写成 `false` ——
+        //    写成 `false` 就是"把读取超时当成一轮对话的结束"，
+        //    用户于是以为可以追问，而 harness 还在跑 → 轮次错乱。
+        ...(event.outcome === "abandoned"
+          ? { harnessRunning: undefined, harnessCheckedAt: now }
+          : { harnessRunning: false, harnessCheckedAt: now }),
       };
     }
 
@@ -425,10 +500,13 @@ export function toView(state: ChatState): ViewCell[] {
         parts.push(block.text);
       }
     }
+    // ⚠️ 用 `isTurnActive` 而不是只看 `generating`：退出界面再回来时
+    // `generating` 是新实例的初始值 `false`，而 harness 那边可能还在跑。
+    // 用并集判断，光标才会继续显示 —— 否则界面看起来已经答完了。
     const streaming =
       message.role === "assistant" &&
       message.blocks.some((b) => !b.done) &&
-      state.generating;
+      isTurnActive(state);
     return {
       kind:
         message.role === "user" ? ("user" as const) : ("assistant" as const),
@@ -445,12 +523,41 @@ export function statusLine(state: ChatState, port: number): string {
   const parts = [`已连接 dsh · ${port}`];
   if (state.sessionId) parts.push(`会话 ${state.sessionId.slice(0, 14)}…`);
   if (state.resumed) parts.push("已恢复");
-  if (state.generating)
+  if (state.generating) {
     parts.push(state.cancelPending ? "正在停止…" : "生成中…");
+  } else if (state.harnessRunning === true) {
+    // ⚠️ 这条分支专门服务"退出界面再回来"：本实例没有在生成，
+    // 但**问过 harness**，它说还在跑。不显示这句，用户就会以为已经答完。
+    parts.push(
+      state.harnessCheckedAt
+        ? `仍在运行（自 ${clockOf(state.harnessCheckedAt)} 起）`
+        : "仍在运行",
+    );
+  } else if (harnessUnknown(state)) {
+    // 问不到 ≠ 空闲。含糊其辞也比谎称"空闲"好 —— 后者会诱导用户追问。
+    parts.push("运行状态未知");
+  }
   return parts.join(" · ");
 }
 
-/** 输入区是否可用 */
+/** 把时间戳格式化成 `HH:MM`（状态行用，不带秒以免抖动） */
+function clockOf(at: number): string {
+  try {
+    return new Date(at).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 输入区是否可用。
+ *
+ * ⚠️ 用 `isTurnActive` 而不是只看 `generating`：harness 还在跑时**不能**让用户
+ * 再发一句 —— 那正是"追问一句得到轮次错乱"的成因。
+ */
 export function canSend(state: ChatState): boolean {
-  return state.connected && !state.generating && !state.cancelPending;
+  return state.connected && !isTurnActive(state) && !state.cancelPending;
 }

@@ -1163,6 +1163,71 @@ export class ChatTransport {
   }
 
   /**
+   * 该文献的工作区里，**是否有会话正在进行**？
+   *
+   * ## 为什么需要（真机反馈的缺口）
+   *
+   * 用户："对话容易因轮询读取超时或**中途退出会话界面**而被判断为一轮对话的结束，
+   * 缺乏对 harness 状态的监测表示。"
+   *
+   * `pollOnce` 那边已经做得很谨慎（超时先问 `running`，不确定就继续盯）——
+   * **但那份知识只活在传输层实例的内存里**。用户退出会话页，面板被销毁；
+   * 再回来是新实例，`state.generating` 是初始的 `false`，界面显示空闲，
+   * 而 harness 那边上一轮**还在跑**。用户于是追问一句 → 轮次错乱。
+   *
+   * 这个方法就是给"回来时"用的：**按工作区**问一次（而不是按某个已知 sessionId，
+   * 因为新实例未必知道当前该看哪个会话），把答案交给界面。
+   *
+   * 返回**在跑的那个**会话 id（便于界面直接接管），或 `undefined`（没人跑 / 问不到）。
+   * ⚠️ 调用方不能把 `undefined` 当成"确定空闲" —— 见 `probeHarnessRunning` 的说明。
+   */
+  async findRunningSession(itemKey: string): Promise<string | undefined> {
+    try {
+      const sessions = await this.listWorkspaceSessions(itemKey);
+      const running = sessions.find((s) => s.running === true);
+      return running?.sessionId;
+    } catch (error) {
+      this.log(`查询工作区运行状态失败：${this.describeError(error)}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * 问 harness：这个会话的 agent 现在**还在跑吗**？
+   *
+   * ## 为什么必须是公开方法（真机反馈的缺口）
+   *
+   * 用户反馈："对话容易因轮询读取超时或**中途退出会话界面**而被判断为一轮对话的结束，
+   * 缺乏对 harness 状态的监测表示。"
+   *
+   * 传输层这边其实已经处理得很谨慎（见 `pollOnce`：超时先问 `running`，
+   * 不确定就继续盯）。**但那份知识只活在传输层的内存里** ——
+   * 用户一旦退出会话页再回来，面板是**新实例**：
+   *
+   * ```text
+   *   新实例的 state.generating === false（初始值）
+   *   → 状态行显示"已连接 dsh"，看起来空闲
+   *   → 用户以为这一轮结束了，于是追问一句
+   *   → 而 harness 那边上一轮还在跑 → 轮次错乱
+   * ```
+   *
+   * 所以这里把"问一次 harness"开放给界面：**面板挂载时先问一次**，
+   * 若仍在跑就明确显示"仍在生成"，而不是显示成空闲。
+   *
+   * 返回三态，**调用方必须区分 `undefined` 与 `false`**：
+   *  - `true`  → 确实还在跑
+   *  - `false` → 确实停了
+   *  - `undefined` → **问不到**（RPC 失败 / 会话不在列表里）
+   *
+   * 把 `undefined` 当 `false` 会在 RPC 抖动时宣布"结束了"，正是误导用户的根源。
+   */
+  async probeHarnessRunning(sessionId: string): Promise<boolean | undefined> {
+    const client = this.client ?? (await this.connect());
+    if (!client) return undefined;
+    return this.harnessRunning(client, sessionId);
+  }
+
+  /**
    * 问 harness：这个会话的 agent 现在**还在跑吗**？
    *
    * `session/list` 的每一项都带 `running`（dsh 侧来自 `agent.status === "running"`，

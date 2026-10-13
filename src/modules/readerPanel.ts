@@ -33,6 +33,7 @@
 
 import {
   canSend,
+  isTurnActive,
   initialState,
   reduce,
   statusLine,
@@ -63,6 +64,15 @@ import {
   type PaperItemRef,
 } from "../papers/workspace";
 import { getPref } from "../utils/prefs";
+
+/**
+ * harness 说"还在跑"之后的复查间隔。
+ *
+ * 取 20 秒的理由：这只是给"回到面板"场景兜底，
+ * 正常轮询路径由传输层的 `pollOnce` 负责（它自己会问 `running`）。
+ * 间隔太短只会白抢 RPC，太长则让"仍在运行"多挂一会儿。
+ */
+const HARNESS_RECHECK_MS = 20_000;
 
 const PANE_ID = "dshforzotero-reader";
 
@@ -172,6 +182,18 @@ class PanelInstance {
   private readonly mappingReady: Promise<void>;
   /** 注销划词入口的注册 */
   private unregisterSelectionSink?: () => void;
+  /**
+   * 复查 harness 运行状态的定时器。
+   *
+   * ## 为什么需要"复查"而不只是"挂载时问一次"
+   *
+   * 挂载时问一次能解决"回来发现它还在跑"，但接下来**它跑完了界面不会知道** ——
+   * 那条"仍在运行"会一直挂着，直到用户再切一次界面。那是另一种形式的谎报。
+   *
+   * 所以：仍在跑时按 `HARNESS_RECHECK_MS` 复查一次，一旦 harness 说停了
+   * 就更新状态、**清掉**提示并恢复输入。
+   */
+  private harnessTimer?: number;
 
   constructor(body: HTMLElement, doc: Document) {
     this.body = body;
@@ -393,14 +415,16 @@ class PanelInstance {
     this.statusEl.textContent = statusLine(this.state, port);
     this.statusEl.title = this.state.lastFault?.message ?? "";
     this.sendButton.disabled = !canSend(this.state);
-    this.stopButton.disabled =
-      !this.state.generating || this.state.cancelPending;
+    // ⚠️ "这一轮是否还在进行"要看 `isTurnActive`（= generating 或**问出来的**
+    // harnessRunning），不能只看 `generating`：
+    // 退出会话页再回来时 generating 是初始的 false，而 harness 可能还在跑。
+    // 只看 generating 会让停止按钮变灰 —— 用户想停也停不了。
+    const turnActive = isTurnActive(this.state);
+    this.stopButton.disabled = !turnActive || this.state.cancelPending;
     this.inputEl.disabled = this.state.cancelPending;
 
     const busy =
-      this.state.generating ||
-      this.state.cancelPending ||
-      !this.state.connected;
+      turnActive || this.state.cancelPending || !this.state.connected;
     for (const button of this.commandButtons) button.disabled = busy;
     this.newSessionButton.disabled = busy;
     this.historySelect.disabled = busy;
@@ -597,6 +621,9 @@ class PanelInstance {
     // 取消上一个文献的划词入口
     this.unregisterSelectionSink?.();
     this.unregisterSelectionSink = undefined;
+    // ⚠️ 也要停掉上一个文献的 harness 复查定时器：它闭包捕获的是**旧的 itemKey**，
+    // 留着会继续按旧 key 查状态，既浪费 RPC 又可能把新文献的界面改错。
+    this.clearHarnessRecheck();
 
     this.item = item;
     this.itemKey = nextKey;
@@ -620,9 +647,79 @@ class PanelInstance {
       });
       // 回填历史对话：切走再切回来时不应像"记录丢了"（真机反馈）
       void this.loadHistory(nextKey);
+      // ⚠️ 必须**同时**问一次 harness 的运行状态（真机反馈的缺口）：
+      // 用户退出会话页再回来时，`state.generating` 是新实例的初始值 `false`，
+      // 界面会显示成空闲 —— 而 harness 那边上一轮可能**还在跑**。
+      // 用户以为答完了就追问一句，于是轮次错乱。
+      void this.probeRunning(nextKey);
     }
 
     void this.prepare();
+  }
+
+  /**
+   * 问一次 harness：这个文献的会话是否**仍在运行**，并把结果交给界面。
+   *
+   * 与 `loadHistory` 一样是"回到面板时"的补课动作。区别在于它回答的是
+   * **"现在还在跑吗"**，而不是"以前聊过什么"。
+   *
+   * ⚠️ 结果三态，界面必须区分：
+   *  - 找到在跑的会话 → `running: true`，状态行显示"仍在运行（自 HH:MM 起）"
+   *  - 明确没有在跑   → `running: false`，正常空闲
+   *  - 问不到         → `running: undefined`，显示"运行状态未知"
+   *    （**不能**显示成空闲 —— 那会诱导用户追问一个其实还在跑的会话）
+   */
+  private async probeRunning(itemKey: string): Promise<void> {
+    try {
+      await this.mappingReady;
+      if (this.itemKey !== itemKey) return; // 期间切走了
+      const runningSession = await this.transport.findRunningSession(itemKey);
+      if (this.itemKey !== itemKey) return;
+      this.applyEvent({
+        kind: "harness",
+        running: runningSession ? true : undefined,
+      });
+      if (runningSession) {
+        appendPanelLog(
+          "log",
+          `检测到该文献的会话仍在运行（${runningSession}）—— 界面已标注，` +
+            `避免被误判为"这一轮已结束"`,
+        );
+        this.scheduleHarnessRecheck(itemKey);
+      } else {
+        this.clearHarnessRecheck();
+      }
+    } catch (error) {
+      appendPanelLog(
+        "log",
+        `查询 harness 运行状态失败：${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  /**
+   * harness 说"还在跑"之后，隔一段时间**复查**一次。
+   *
+   * 没有这一步，"仍在运行"会一直挂到用户下次切界面 —— 而它可能早就跑完了，
+   * 那是另一种谎报。这里用**较长**的间隔（`HARNESS_RECHECK_MS`）：
+   * 这只是给"回到面板"场景兜底的，正常轮询路径由传输层的 `pollOnce` 负责，
+   * 不需要这里频繁问。
+   */
+  private scheduleHarnessRecheck(itemKey: string): void {
+    this.clearHarnessRecheck();
+    this.harnessTimer = setTimeout(() => {
+      this.harnessTimer = undefined;
+      void this.probeRunning(itemKey);
+    }, HARNESS_RECHECK_MS) as unknown as number;
+  }
+
+  private clearHarnessRecheck(): void {
+    if (this.harnessTimer !== undefined) {
+      clearTimeout(this.harnessTimer);
+      this.harnessTimer = undefined;
+    }
   }
 
   /**
@@ -872,6 +969,9 @@ class PanelInstance {
   dispose(): void {
     this.unregisterSelectionSink?.();
     this.unregisterSelectionSink = undefined;
+    // ⚠️ 必须停掉 harness 复查定时器：面板销毁后它还会触发，
+    // 那时既没有人要这个结果，回调里还会去碰已经拆掉的 DOM。
+    this.clearHarnessRecheck();
     this.transport.dispose();
     this.body.replaceChildren();
   }

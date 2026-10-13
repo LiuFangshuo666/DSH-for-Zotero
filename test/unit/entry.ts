@@ -27,7 +27,9 @@ export { defaultDshHome, resolveUserHome } from "../../src/dsh/config";
 export { DshClient, DshRpcError, newRpcId } from "../../src/dsh/rpc";
 export {
   canSend,
+  harnessUnknown,
   initialState,
+  isTurnActive,
   reduce,
   replay,
   statusLine,
