@@ -253,6 +253,64 @@
     return html.join("");
   }
 
+  // ── 待确认列表的**纯判断**（放在 DOM 分界点之前，便于单测）──────
+  //
+  // ⚠️ 这几条判断刻意放在文件头部：本文件用 `var` + 函数声明，
+  // 头部没有 DOM 依赖，所以测试能用 `vm` **真正执行**它们（见 sessionRender.test.mjs）。
+  // 我先前只有"读源码做字符串匹配"的守卫，而那种写法出过**假通过**
+  // （断言能匹配两处中的任意一处，改坏其中一处时测试依然是绿的）——
+  // 能真正执行并断言行为的测试才靠得住。
+
+  /**
+   * 一键确认的进行状态。
+   *
+   * 放在这里而不是 DOM 区：**重建 DOM 不能让它丢**，而重建本身也会读它。
+   * `{ total, done, running, results: [文本], startedAt }`，未开始时为 null。
+   */
+  var batchConfirm = null;
+
+  /** 取某条待确认项的**稳定标识**（op + key），供批量循环定位 */
+  function pendingItemKey(it) {
+    if (!it) return "";
+    var k = (it.keys && it.keys[0]) || "";
+    return (it.op || "") + ":" + k;
+  }
+
+  /**
+   * 在**当前**列表里按 key 找下标；找不到返回 -1。
+   *
+   * ## 为什么必须按 key 而不是按下标（真机缺陷）
+   *
+   * 每确认一条，插件那边就 `splice` 掉一项，**所有后续下标前移一位**。
+   * 批量循环若按旧下标推进，第二遍就会点到**别的条目**上 ——
+   * 对删除与新建来说，操作错条目远比不操作糟糕。
+   *
+   * 抽成纯函数是为了能测：它只依赖"一个数组 + 一个 key"。
+   */
+  function pendingIndexOf(list, key) {
+    var arr = list || [];
+    for (var i = 0; i < arr.length; i += 1) {
+      if (pendingItemKey(arr[i]) === key) return i;
+    }
+    return -1;
+  }
+
+  /**
+   * 批次进行中时，是否应当**拒绝**列表上的其它动作（忽略 / 单条确认）。
+   *
+   * ## ⚠️ 这是我自查时发现的竞态（用户问"列表新写会出 bug 吗"）
+   *
+   * 批量确认期间列表仍会重画，而"忽略"按钮是**按当时的下标**闭包捕获的
+   * （`capability.dismissDeletion(index)`）—— 下标在批次推进中会变，
+   * 于是用户点"忽略"很可能忽略掉**另一条**。
+   *
+   * 与"一键确认点两次"是同一个病：**用会变的下标去指代一项**。
+   * 所以批次进行时把这些动作一并挡住，并告诉用户原因，而不是静默做错事。
+   */
+  function batchBlocksAction() {
+    return !!(batchConfirm && batchConfirm.running);
+  }
+
   var messages = document.getElementById("messages");
   var titleEl = document.getElementById("title");
   var metaEl = document.getElementById("meta");
@@ -478,14 +536,7 @@
      * 同时把进度与每条结果也存在这里，
      * 所以重建不会把它们抹掉。
      */
-    var batchConfirm = null; // { total, done, running, results: [文本], startedAt }
-
-    /** 取某条待确认项的稳定标识（op + key），供批量循环定位 */
-    function pendingItemKey(it) {
-      if (!it) return "";
-      var k = (it.keys && it.keys[0]) || "";
-      return (it.op || "") + ":" + k;
-    }
+    // 状态与纯判断已移到文件头部（便于单测）。
 
     /**
      * 逐条驱动一键确认（而不是丢给插件一口气跑完）。
@@ -580,13 +631,7 @@
               return capability.listPendingDeletions();
             })
             .then(function (live) {
-              var idx = -1;
-              for (var i = 0; i < (live || []).length; i += 1) {
-                if (pendingItemKey(live[i]) === want) {
-                  idx = i;
-                  break;
-                }
-              }
+              var idx = pendingIndexOf(live, want);
               if (idx < 0) {
                 // 已不在列表里（别人已处理）—— 跳过，绝不猜一个下标
                 batchConfirm.results.push("跳过（已不在列表）：" + want);
@@ -1048,8 +1093,20 @@
             no.textContent = "忽略";
             no.style.marginLeft = "4px";
             no.addEventListener("click", function () {
+              // ⚠️ 批次进行中**拒绝**单条操作：这个按钮按**当时的下标**闭包，
+
+              // 而下标在批量推进中会变 —— 点下去很可能忽略掉**另一条**。
+
+              if (batchBlocksAction()) {
+                notice("正在逐条确认中，请等它跑完再单条操作。");
+
+                return;
+              }
+
               no.disabled = true;
+
               Promise.resolve()
+
                 .then(function () {
                   return capability.dismissDeletion(index);
                 })
@@ -1469,6 +1526,14 @@
             yes.textContent = isCreate ? "确认新建" : "确认删除";
             yes.style.marginRight = "4px";
             yes.addEventListener("click", function () {
+              // 同上：批次进行中单条确认也按会变的下标操作。
+
+              if (batchBlocksAction()) {
+                notice("正在逐条确认中，请等它跑完再单条操作。");
+
+                return;
+              }
+
               yes.disabled = true;
               Promise.resolve()
                 .then(function () {
@@ -1493,8 +1558,20 @@
             no.type = "button";
             no.textContent = "忽略";
             no.addEventListener("click", function () {
+              // ⚠️ 批次进行中**拒绝**单条操作：这个按钮按**当时的下标**闭包，
+
+              // 而下标在批量推进中会变 —— 点下去很可能忽略掉**另一条**。
+
+              if (batchBlocksAction()) {
+                notice("正在逐条确认中，请等它跑完再单条操作。");
+
+                return;
+              }
+
               no.disabled = true;
+
               Promise.resolve()
+
                 .then(function () {
                   return capability.dismissDeletion(index);
                 })

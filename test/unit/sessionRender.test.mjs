@@ -27,6 +27,14 @@ function loadRenderer() {
     exports.renderMarkdown = renderMarkdown;
     exports.renderInline = renderInline;
     exports.escapeHtml = escapeHtml;
+    exports.pendingItemKey = pendingItemKey;
+    exports.pendingIndexOf = pendingIndexOf;
+    exports.batchBlocksAction = batchBlocksAction;
+    // 仅供测试：把 batchConfirm 置成指定状态，以便断言"批次进行中"这一侧。
+    // 不放进生产代码：生产里不该为了测试多一个函数。
+    exports.__setBatchConfirm = function (v) {
+      batchConfirm = v;
+    };
   })();`;
   const sandbox = {
     exports: {},
@@ -218,5 +226,92 @@ describe("会话页 Markdown 渲染", function () {
   it("空输入不产生垃圾标签", function () {
     assert.equal(renderMarkdown("").trim(), "");
     assert.equal(renderMarkdown("\n\n").trim(), "");
+  });
+});
+
+/**
+ * ## 一键确认：列表重画时**不能**出错（用户问"列表新写会出 bug 吗"）
+ *
+ * 这个问题问得很准 —— 这次修的就是"重画把状态冲掉"的缺陷，所以必须回答
+ * "重画本身安全吗"，而不是"看起来对"。
+ *
+ * 做法：这些判断是**页面里真实执行的代码**，用 `vm` 跑起来直接断言行为。
+ * 我先前只有"读源码做字符串匹配"的守卫，而那种写法出过**假通过**
+ * （断言能匹配两处中的任意一处，改坏其中一处时测试依然绿）——
+ * 能真正执行并断言行为的测试才靠得住。
+ */
+describe("待确认列表：批量确认期间的定位与互斥", function () {
+  const helpers = loadRenderer();
+
+  const item = (op, key) => ({ op, keys: key ? [key] : [] });
+
+  it("按 key 定位，而不是按会变的下标", function () {
+    const list = [item("createItem", ""), item("deleteItems", "AAA")];
+    assert.equal(
+      helpers.pendingIndexOf(list, "deleteItems:AAA"),
+      1,
+      "应按 key 找到正确的下标",
+    );
+    assert.equal(
+      helpers.pendingIndexOf(list, "deleteItems:ZZZ"),
+      -1,
+      "找不到必须返回 -1（调用方据此跳过，绝不猜下标）",
+    );
+    assert.equal(helpers.pendingIndexOf(null, "x"), -1, "空列表也要安全");
+  });
+
+  it("**下标前移后仍能找到同一条**（这正是真机缺陷的形态）", function () {
+    // 每确认一条就 splice 掉一项 → 后面所有下标前移。
+    // 按下标推进就会点到别的条目；按 key 不会。
+    const before = [
+      item("deleteItems", "A"),
+      item("deleteItems", "B"),
+      item("deleteItems", "C"),
+    ];
+    const afterRemovingFirst = [
+      item("deleteItems", "B"),
+      item("deleteItems", "C"),
+    ];
+    const key = helpers.pendingItemKey(before[1]); // 目标是 B
+    assert.equal(key, "deleteItems:B");
+    assert.equal(helpers.pendingIndexOf(before, key), 1, "移除前 B 在下标 1");
+    assert.equal(
+      helpers.pendingIndexOf(afterRemovingFirst, key),
+      0,
+      "移除后 B 移到下标 0 —— 按 key 仍能找到它，按下标就会点到 C",
+    );
+  });
+
+  it("批次进行中必须**挡住**单条动作（忽略 / 单条确认按的是会变的下标）", function () {
+    // 这是我自查时发现的竞态：忽略按钮用 `capability.dismissDeletion(index)`
+    // 闭包捕获了**当时的下标**，而批次推进会让下标变 ——
+    // 用户点"忽略"很可能忽略掉**另一条**。
+    assert.equal(
+      helpers.batchBlocksAction(),
+      false,
+      "没有批次在跑时不该挡任何动作",
+    );
+    // ⚠️ 必须**两侧都断言**。
+    // 我先前只断言了 false 一侧 —— 那种写法在防护完全没生效时
+    // 依然是绿的（它只证明了"没批次时不挡"）。这正是本轮踩过的坑。
+    helpers.__setBatchConfirm({
+      running: true,
+      total: 3,
+      done: 1,
+      results: [],
+    });
+    assert.equal(
+      helpers.batchBlocksAction(),
+      true,
+      "批次进行中必须挡住单条动作 —— 否则用户点「忽略」会忽略掉**另一条**",
+    );
+    helpers.__setBatchConfirm({
+      running: false,
+      total: 3,
+      done: 3,
+      results: [],
+    });
+    assert.equal(helpers.batchBlocksAction(), false, "跑完后必须解除挡住");
+    helpers.__setBatchConfirm(null);
   });
 });
