@@ -51,6 +51,14 @@ const OPTIONAL_METHODS = [
   "dismissDeletion",
   // 一键确认全部待确认项（条目多时逐条点太麻烦，用户要求）
   "confirmAllDeletions",
+  // ⚠️ 逐条版的一键确认（真机缺陷：整批版让按钮提前恢复可点 → 条目被操作两次）
+  //
+  // 整批版一口气跑完才返回，界面既无法可靠禁用按钮（列表每 2 秒重建，
+  // 设在元素上的 disabled 被冲掉），也看不到每项结果。
+  // 现在由界面驱动循环，这两个是它需要的原语。
+  // 两者都做了**版本探测**（老插件没有时退回整批版），所以归在可选方法。
+  "confirmAllDeletionsBegin",
+  "confirmDeletionAt",
   // 刷新工作区材料：老会话里可能留着已被撤掉的旧说明
   "refreshWorkspace",
   // 取消正在进行的轮次（卡住时的出路）

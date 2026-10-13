@@ -106,8 +106,8 @@ describe("操作文档必须覆盖**全部**已实现的 op（改 op 时的强�
     const m = readme.match(/dsh-materials-version:\s*(\d+)/);
     assert.ok(m, "工作区 README 首行必须有材料版本标记（老会话靠它自动刷新）");
     assert.ok(
-      Number(m[1]) >= 9,
-      "材料版本应 >= 8（第 6 版 findPaper；第 7 版自动归类；第 8 版 web search 分工）",
+      Number(m[1]) >= 10,
+      "材料版本应 >= 10",
     );
   });
 

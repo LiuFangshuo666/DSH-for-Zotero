@@ -363,6 +363,29 @@
       confirmAllDeletions: function () {
         return api.confirmAllDeletions();
       },
+      /**
+       * ⚠️ **逐条确认**用的两个原语（真机缺陷：一键确认会把条目操作两次）
+       *
+       * 旧做法是调 `confirmAllDeletions()` 让插件一口气跑完，界面只能干等 ——
+       * 于是既**无法可靠禁用按钮**（列表每 2 秒重建，设在元素上的 disabled 被冲掉），
+       * 也**看不到每项的结果**。现在由界面驱动循环，每步都能更新进度与结果；
+       * 按钮的禁用由模块级 `batchConfirm.running` 决定，重建也保得住。
+       *
+       * `confirmDeletionAt` 多传一个 **key**：批量期间列表会变，
+       * 插件据此校验"这个下标是不是我要的那一项"，不符就拒绝执行
+       * （总比操作错条目好）。两者都做了**版本探测** —— 老插件没有它们时
+       * 自动退回整批版，不会因为版本不匹配而完全不能用。
+       */
+      confirmAllDeletionsBegin: function () {
+        return typeof api.confirmAllDeletionsBegin === "function"
+          ? api.confirmAllDeletionsBegin()
+          : null;
+      },
+      confirmDeletionAt: function (index, key) {
+        return typeof api.confirmDeletionAt === "function"
+          ? api.confirmDeletionAt(index, key)
+          : api.confirmDeletion(index);
+      },
       refreshWorkspace: function () {
         return api.refreshWorkspace(sessionId);
       },
@@ -440,6 +463,162 @@
     if (steerBtn) steerBtn.addEventListener("click", submitSteer);
     /** 待确认删除区（默认隐藏，有请求时才显示） */
     var pendingEl = document.getElementById("pending-deletions");
+
+    /**
+     * ⚠️ **一键确认的进行状态（真机缺陷：按钮提前恢复可点→条目被操作两次）**
+     *
+     * 用户反馈："一键确认时，因为执行需要时间，按钮会在先前条目
+     * 操作完成前恢复可点击；若用户再次点击会**二次操作**条目。"
+     *
+     * 根因：按钮的 `disabled` 设在**元素**上，而下面那个
+     * `setInterval(renderPendingDeletions, 2000)` **每 2 秒重建一次 DOM** ——
+     * 重建后是**新的按钮**，可点状态就回来了。
+     *
+     * 所以状态必须放在**模块级变量**里：重建后从它恢复。
+     * 同时把进度与每条结果也存在这里，
+     * 所以重建不会把它们抹掉。
+     */
+    var batchConfirm = null; // { total, done, running, results: [文本], startedAt }
+
+    /** 取某条待确认项的稳定标识（op + key），供批量循环定位 */
+    function pendingItemKey(it) {
+      if (!it) return "";
+      var k = (it.keys && it.keys[0]) || "";
+      return (it.op || "") + ":" + k;
+    }
+
+    /**
+     * 逐条驱动一键确认（而不是丢给插件一口气跑完）。
+     *
+     * 为什么由界面驱动：
+     *  - 每条完成后能**立刻更新进度与结果**（用户反馈"没看到每项结果"）；
+     *  - 禁用状态由 `batchConfirm.running` 决定，重建 DOM 也不会丢；
+     *  - 循环**每次重新取列表并按 key 定位**，不依赖会变的下标。
+     */
+    /**
+     * 渲染"一键确认"的进度与**逐条结果**。
+     *
+     * 真机反馈："这次我没看到每项条目操作的结果" ——
+     * 旧做法只在全部跑完后报一句"已确认 N/M 项"，
+     * 中间过程与逐条成败都看不到。
+     *
+     * 现在每条完成都会刷新这一块：
+     * 进度在上，每条的结果逐行列在下。
+     */
+    function renderBatchProgress(target) {
+      if (!batchConfirm) return null;
+      var box = document.createElement("div");
+      box.style.cssText =
+        "margin:6px 0;padding:6px 8px;background:" +
+        (batchConfirm.running ? "#fef3c7" : "#ecfdf5") +
+        ";border:1px solid " +
+        (batchConfirm.running ? "#fcd34d" : "#a7f3d0") +
+        ";border-radius:5px;font-size:12px";
+      var head = document.createElement("div");
+      head.style.cssText = "font-weight:600";
+      head.textContent = batchConfirm.running
+        ? "正在逐条确认…（" +
+          batchConfirm.done +
+          "/" +
+          batchConfirm.total +
+          "）—— 请勿重复点击"
+        : "一键确认完成：" +
+          batchConfirm.total +
+          " 项（成功 " +
+          batchConfirm.results.filter(function (r) {
+            return r && r.indexOf("失败") !== 0 && r.indexOf("跳过") !== 0;
+          }).length +
+          "）";
+      box.appendChild(head);
+      batchConfirm.results.forEach(function (r, i) {
+        var line = document.createElement("div");
+        line.style.cssText = "margin-top:2px;color:#374151";
+        line.textContent = i + 1 + ". " + r;
+        box.appendChild(line);
+      });
+      if (batchConfirm.running) {
+        var hint = document.createElement("div");
+        hint.style.cssText = "margin-top:4px;color:#92400e";
+        hint.textContent =
+          "每条完成后立即出现在这里；未完成前按钮不会恢复可点。";
+        box.appendChild(hint);
+      }
+      if (target) target.appendChild(box);
+      return box;
+    }
+
+    function runBatchConfirm(items) {
+      if (batchConfirm && batchConfirm.running) return;
+      var wanted = (items || []).map(pendingItemKey);
+      // 问插件拿一份**权威的 key 快照**（界面自己算的只能算备用）。
+      // 旧插件没有这个方法 → 返回 null → 继续用界面算的，不会因版本不匹配而不能用。
+      try {
+        var snapshot = capability.confirmAllDeletionsBegin();
+        if (snapshot && snapshot["项"] && snapshot["项"].length) {
+          wanted = snapshot["项"].map(function (it) {
+            return it.key;
+          });
+        }
+      } catch {
+        // 拿不到快照就用界面自己算的 key —— 旧版插件没有那个方法时走这里。
+        // 用无参 `catch`：带个不用的变量名会被 lint 判为未使用。
+      }
+      batchConfirm = {
+        total: wanted.length,
+        done: 0,
+        running: true,
+        results: [],
+        startedAt: Date.now(),
+      };
+      renderPendingDeletions();
+
+      var chain = Promise.resolve();
+      wanted.forEach(function (want) {
+        chain = chain.then(function () {
+          return Promise.resolve()
+            .then(function () {
+              return capability.listPendingDeletions();
+            })
+            .then(function (live) {
+              var idx = -1;
+              for (var i = 0; i < (live || []).length; i += 1) {
+                if (pendingItemKey(live[i]) === want) {
+                  idx = i;
+                  break;
+                }
+              }
+              if (idx < 0) {
+                // 已不在列表里（别人已处理）—— 跳过，绝不猜一个下标
+                batchConfirm.results.push("跳过（已不在列表）：" + want);
+                return "";
+              }
+              return capability.confirmDeletionAt(
+                idx,
+                want.split(":").slice(1).join(":"),
+              );
+            })
+            .then(function (report) {
+              batchConfirm.done += 1;
+              batchConfirm.results.push(report || "（无返回）");
+              renderPendingDeletions();
+            })
+            .catch(function (error) {
+              batchConfirm.done += 1;
+              batchConfirm.results.push(
+                "失败：" +
+                  (error && error.message ? error.message : String(error)),
+              );
+              renderPendingDeletions();
+            });
+        });
+      });
+
+      chain.then(function () {
+        batchConfirm.running = false;
+        renderPendingDeletions();
+        renderPendingInto(pendingEl);
+      });
+    }
     /** 输入区容器：用于把"Agent 在等你"提示固定在输入框上方 */
     var composer = document.getElementById("composer");
     /** 「停止生成」按钮：卡住时的出路 */
@@ -775,7 +954,20 @@
             allBtn0.textContent = "全部确认（" + items.length + " 项）";
             allBtn0.style.cssText =
               "font-weight:600;padding:3px 12px;cursor:pointer";
+            // ⚠️ 禁用状态**从 batchConfirm 恢复**，不是设在元素上。
+            // 这个列表每 2 秒重建一次，设在元素上的 disabled
+            // 会随着重建而消失 —— 那正是"按钮提前恢复可点"的成因。
+            if (batchConfirm && batchConfirm.running) {
+              allBtn0.disabled = true;
+              allBtn0.textContent =
+                "正在全部确认…（" +
+                batchConfirm.done +
+                "/" +
+                batchConfirm.total +
+                "）";
+            }
             allBtn0.addEventListener("click", function () {
+              if (batchConfirm && batchConfirm.running) return;
               // 批量且含删除时不可逆 —— 必须先让用户明确一次
               if (
                 !window.confirm(
@@ -786,24 +978,7 @@
               ) {
                 return;
               }
-              allBtn0.disabled = true;
-              allBtn0.textContent = "正在全部确认…";
-              Promise.resolve()
-                .then(function () {
-                  return capability.confirmAllDeletions();
-                })
-                .then(function (report) {
-                  notice(report);
-                  renderPendingDeletions();
-                })
-                .catch(function (error) {
-                  allBtn0.disabled = false;
-                  allBtn0.textContent = "全部确认（" + items.length + " 项）";
-                  notice(
-                    "批量确认失败：" +
-                      (error && error.message ? error.message : String(error)),
-                  );
-                });
+              runBatchConfirm(items);
             });
             allRow0.appendChild(allBtn0);
             var allHint0 = document.createElement("span");
@@ -863,6 +1038,10 @@
                   );
                 });
             });
+            // ⚠️ 这一处作用域里没有 `target`（那是 `renderPendingInto` 才有的），
+            // 进度块挂在待确认列表里 —— 用 `pendingEl`。
+            // 这是我把插入写成正则时的教训：**按缩进猜作用域会猜错**。
+            renderBatchProgress(pendingEl);
 
             var no = document.createElement("button");
             no.type = "button";
@@ -1234,7 +1413,18 @@
             allBtn.textContent = "全部确认（" + items.length + " 项）";
             allBtn.style.cssText =
               "font-weight:600;padding:3px 12px;cursor:pointer";
+            // 同上：禁用状态从 batchConfirm 恢复，才能抗住 2 秒一次的重建。
+            if (batchConfirm && batchConfirm.running) {
+              allBtn.disabled = true;
+              allBtn.textContent =
+                "正在全部确认…（" +
+                batchConfirm.done +
+                "/" +
+                batchConfirm.total +
+                "）";
+            }
             allBtn.addEventListener("click", function () {
+              if (batchConfirm && batchConfirm.running) return;
               // 二次确认：这是**批量不可逆**操作，误点代价大
               if (
                 !window.confirm(
@@ -1245,25 +1435,7 @@
               ) {
                 return;
               }
-              allBtn.disabled = true;
-              allBtn.textContent = "正在全部确认…";
-              Promise.resolve()
-                .then(function () {
-                  return capability.confirmAllDeletions();
-                })
-                .then(function (report) {
-                  notice(report);
-                  renderPendingInto(target);
-                  renderPendingDeletions();
-                })
-                .catch(function (error) {
-                  allBtn.disabled = false;
-                  allBtn.textContent = "全部确认（" + items.length + " 项）";
-                  notice(
-                    "批量确认失败：" +
-                      (error && error.message ? error.message : String(error)),
-                  );
-                });
+              runBatchConfirm(items);
             });
             allRow.appendChild(allBtn);
             var allHint = document.createElement("span");
@@ -1315,6 +1487,7 @@
                   );
                 });
             });
+            renderBatchProgress(target);
 
             var no = document.createElement("button");
             no.type = "button";

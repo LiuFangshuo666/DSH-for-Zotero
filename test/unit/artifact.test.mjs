@@ -71,6 +71,118 @@ const manifestPath = join(addonDir, "manifest.json");
 const hasBuild = existsSync(manifestPath);
 const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
 
+/**
+ * ## 一键确认：按钮必须**从状态恢复**禁用，且逐条显示结果
+ *
+ * 真机反馈两句，是同一个设计问题的两面：
+ *
+ *  1. "按钮会在先前条目操作完成前恢复可点击状态，若用户再次点击会**二次操作**条目。"
+ *  2. "这次我没看到每项条目操作的结果。"
+ *
+ * 根因：`disabled` 设在**元素**上，而列表由 `setInterval(…, 2000)` **每 2 秒重建** ——
+ * 重建后是新的按钮，禁用状态就没了。而整批调用一口气跑完才返回，
+ * 期间界面拿不到任何进度，也就没法逐条显示结果。
+ *
+ * 修法：状态放**模块级** `batchConfirm`，重建后从它恢复；
+ * 改由界面**逐条驱动**，每步更新进度与结果。
+ *
+ * 这类缺陷**不会让任何构建或测试失败**（页面里的 UI 状态机没有单测），
+ * 所以按本项目的一贯做法，直接在**源码/产物**上钉住关键约束。
+ */
+describe("一键确认的按钮状态与逐条结果", function () {
+  const page = readFileSync(
+    join(here, "..", "..", "addon", "content", "sessionPage.js"),
+    "utf8",
+  );
+
+  it("按钮的禁用状态必须**从状态变量恢复**（两个渲染器都要）", function () {
+    // ## ⚠️ 这条断言曾经是**假通过**的
+    //
+    // 我先前写成"渲染时必须读 batchConfirm.running"，它确实能匹配到
+    // 两处中的**任何一处** —— 于是我把其中一处改回旧行为时，
+    // 测试依然绿。**假通过的守卫比没有守卫更糟**——
+    // 它会让人以为这条路径已经被钉住了。
+    //
+    // 现在要求：两个渲染器各有一处、且各自**紧跟在 if 之后**。
+    const restores = page.match(
+      /if \(batchConfirm && batchConfirm\.running\) \{\s*allBtn0?\.disabled = true;/g,
+    );
+    assert.ok(
+      restores && restores.length >= 2,
+      "两个渲染器都必须从 batchConfirm.running 恢复禁用（否则列表重建后按钮又可点），" +
+        "实际只找到 " +
+        (restores ? restores.length : 0) +
+        " 处",
+    );
+  });
+
+  it("点击入口必须**先判运行中**再二次确认", function () {
+    assert.match(
+      page,
+      /if \(batchConfirm && batchConfirm\.running\) return;/,
+      "运行中再次点击必须直接返回（这是防二次操作的最后一道）",
+    );
+  });
+
+  it("不得再用整批调用作为一键确认的入口", function () {
+    // 整批版一口气跑完才返回 → 界面既禁不住按钮、也看不到进度。
+    // 它仍留在能力清单里（老调用方可能用），但**点击处理器不该再直接调它**。
+    //
+    // ⚠️ 这里用**整文件级**的断言，不去按 "addEventListener"
+    // 切片—— 切片会把后面的函数定义也包进来，
+    // 我先前那版断言就是这么写错的（切片长 7713 字符）。
+    assert.match(
+      page,
+      /function runBatchConfirm\(/,
+      "必须有逐条驱动的 runBatchConfirm",
+    );
+    const calls = page.match(/runBatchConfirm\(items\);/g) || [];
+    assert.ok(
+      calls.length >= 2,
+      "两个渲染器的点击都应交给 runBatchConfirm，实际只有 " +
+        calls.length +
+        " 处",
+    );
+    assert.ok(
+      !/capability\.confirmAllDeletions\(\)/.test(page),
+      "页面不得再直接调整批版 confirmAllDeletions() —— " +
+        "那正是按钮提前恢复可点、且看不到逐条结果的成因",
+    );
+  });
+
+  it("必须有逐条结果的渲染（用户「没看到每项结果」）", function () {
+    assert.match(
+      page,
+      /function renderBatchProgress\(/,
+      "必须有进度/结果渲染器",
+    );
+    assert.match(
+      page,
+      /batchConfirm\.results\.forEach/,
+      "逐条结果必须被渲染出来，而不是只在最后报一句汇总",
+    );
+  });
+
+  it("逐条确认必须带 key 校验（下标会变）", function () {
+    // 每确认一条列表就少一项，下标随之前移；批量循环若按旧下标推进
+    // 就会点到**别的条目**上。所以插件侧接受 expectKey 并在不符时拒绝。
+    const pane = readFileSync(
+      join(here, "..", "..", "src", "modules", "sessionPane.ts"),
+      "utf8",
+    );
+    assert.match(
+      pane,
+      /expectKey/,
+      "confirmPendingDeletion 必须接受期望 key 并校验",
+    );
+    assert.match(
+      page,
+      /confirmDeletionAt\(\s*idx\s*,/s,
+      "页面必须把 key 一起传下去",
+    );
+  });
+});
+
 describe("构建产物结构", function () {
   this.timeout(10000);
 

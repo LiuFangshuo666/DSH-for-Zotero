@@ -1130,9 +1130,10 @@ const STALE_DIR = "_stale";
  * | 6 | 新增 `findPaper`（论文检索）与 `createItem` 的取全文说明 |
  * | 7 | `createItem`：默认加入会话所属分类；字段按类型校验的说明 |
  * | 8 | 与 web search 的分工说明（不再禁止用它） |
- * | **9** | **新增 `attachPdf`（给已存在条目补全文）；不得绕过插件用本地 API 写库** |
+ * | 9 | 新增 `attachPdf`（给已存在条目补全文）；不得绕过插件用本地 API 写库 |
+ * | **10** | **一键确认改为逐条驱动（防二次操作，并显示每条结果）** |
  */
-const MATERIALS_VERSION = 9;
+const MATERIALS_VERSION = 10;
 
 /** 材料版本标记的写法（写在 README 首行，便于解析与人工辨认） */
 function materialsStamp(version: number): string {
@@ -1985,6 +1986,9 @@ export class SessionPane {
       confirmDeletion: (index: number) => this.confirmPendingDeletion(index),
       dismissDeletion: (index: number) => this.dismissPendingDeletion(index),
       confirmAllDeletions: () => this.confirmAllPendingDeletions(),
+      confirmAllDeletionsBegin: () => this.beginBatchConfirm(),
+      confirmDeletionAt: (index: number, key?: string) =>
+        this.confirmPendingDeletion(index, key),
       refreshWorkspace: () => this.refreshWorkspace(record),
       cancelTurn: () => this.cancelTurnInRecord(record.sessionId),
       answerQuestions: (
@@ -3330,9 +3334,49 @@ export class SessionPane {
    *  - 用 `eraseTx()` 走 Zotero 自己的删除路径（不直接改数据库）；
    *  - 结果写回工作区，Agent 下一轮能看到（不必用户转述）。
    */
-  async confirmPendingDeletion(index: number): Promise<string> {
+  /**
+   * 确认第 `index` 项待确认改动。
+   *
+   * @param expectKey 可选的**期望 key**。
+   *
+   * ## ⚠️ 为什么要这个参数（真机缺陷：一键确认会把条目操作两次）
+   *
+   * 用户反馈："一键确认时，因为执行需要时间，按钮会在先前条目操作完成前
+   * 恢复可点击；若用户再次点击会**二次操作**条目。"
+   *
+   * 根因有两层：
+   *  1. 按钮的 `disabled` 设在**元素**上，而列表每 2 秒自动重建一次 ——
+   *     重建后按钮是新的、又可点了（那条在页面侧修）；
+   *  2. **即使界面挡住，下标也会错位**：每确认一条就 `splice` 一次，
+   *     批量循环若仍按旧下标推进，就会点到**别的条目**上。
+   *
+   * 所以批量循环按 **key** 定位，而不是按下标。`expectKey` 就是那道保险：
+   * 若当前 `index` 上的 key 与期望不符（列表在循环期间被改动过），
+   * **拒绝执行**而不是操作错条目 —— 对删除与新建来说，操作错条目比不操作糟得多。
+   */
+  async confirmPendingDeletion(
+    index: number,
+    expectKey?: string,
+  ): Promise<string> {
     const request = this.pendingDeletions[index];
     if (!request) return "该待确认项已不存在。";
+    if (expectKey) {
+      const actualKey =
+        request.op === "createItem"
+          ? `createItem:${index}`
+          : (request.keys[0] ?? "");
+      const wantedKey =
+        expectKey.startsWith("createItem:") && request.op === "createItem"
+          ? `createItem:${index}`
+          : expectKey;
+      if (actualKey !== wantedKey) {
+        const message =
+          `跳过：第 ${index} 项已不是「${expectKey}」（列表在确认过程中被改动过）。` +
+          `请重新查看待确认列表再操作。`;
+        appendPanelLog("session", message);
+        return message;
+      }
+    }
 
     // 新建条目走另一条路：它不删任何东西，而是创建
     if (request.op === "createItem") {
@@ -3469,6 +3513,49 @@ export class SessionPane {
    * 一旦删除，**后面所有项目的下标都会前移**。所以界面每次操作后必须重读列表
    * （它会重新拿到 0..n-1），否则第二次点"确认"就会作用到错误的项目上。
    *
+  /**
+   * 开始一次"一键确认"：把当前待确认项的 **key 列表快照**交给界面。
+   *
+   * ## 为什么拆成"界面驱动"（真机缺陷）
+   *
+   * 用户反馈两件事，它们是同一个设计问题的两面：
+   *
+   *  1. **按钮会提前恢复可点**，再点一次就把条目**操作了两次**；
+   *  2. **看不到每项的结果**。
+   *
+   * 整批版 `confirmAllPendingDeletions` 一口气跑完才返回 —— 期间界面
+   * 拿不到任何进度，于是既无法可靠地禁用按钮（它只能靠"等这个 Promise"，
+   * 而列表每 2 秒重建、把它设的 disabled 冲掉），也无法逐条显示结果。
+   *
+   * 所以改成：**界面拿 key 列表自己循环**，每条完成后更新进度与结果。
+   * 这样：
+   *  - 禁用状态由界面的一个**模块级标志**决定，重建 DOM 也不会丢；
+   *  - 每条的结果立刻可见，用户知道做到哪了、哪条失败了；
+   *  - 插件侧只需提供原语，不必猜界面想怎么显示。
+   */
+  beginBatchConfirm(): {
+    total: number;
+    项: Array<{ index: number; key: string; summary: string }>;
+  } {
+    const items = this.pendingDeletions.map((request, index) => ({
+      index,
+      // `createItem` 没有 key；用一个稳定的合成标识，供界面回传校验
+      key:
+        request.op === "createItem"
+          ? `createItem:${index}`
+          : (request.keys[0] ?? ""),
+      summary:
+        request.summary ??
+        `${request.op}：${request.keys.join(", ") || "（无 key）"}`,
+    }));
+    appendPanelLog(
+      "session",
+      `一键确认开始：共 ${items.length} 项（界面逐条驱动，便于显示进度与结果）`,
+    );
+    return { total: items.length, 项: items };
+  }
+
+  /**
    * 批量确认（`confirmAllPendingDeletions`）正是因为这个原因**从后往前**处理。
    */
   dismissPendingDeletion(index: number): string {
