@@ -1434,6 +1434,32 @@ export class ChatTransport {
     const blockShapes: string[] = [];
     /** 本轮 `ask_user_question` 的问题批（含选项） */
     let questions: AskUserQuestion[] | undefined;
+    /**
+     * 诊断用：这一页里**轮次的边界信息**。
+     *
+     * ## 为什么必须记（本轮排查的教训）
+     *
+     * 用户反馈："（我怀疑它结束了，试探性发消息）1 —— 这里又把前面的对话内容
+     * 复制了一份，说明当轮会话没有结束，但是仍然会有[本轮结束]提前出现截断输出。"
+     *
+     * 我有一个**合乎逻辑但无法证实**的怀疑：`readTurn` 读的是**整页历史**，
+     * 里面的 `turn/end` 是"**某一轮**结束了"，不是"当前这一轮结束了" ——
+     * 于是刚发完提问、新轮的 `turn/start` 还没进日志时，可能把**上一轮**的
+     * 正文与结束当成本轮的，界面就提前画上「本轮结束」并重复渲染内容。
+     *
+     * 我据此改了 7 版轮询逻辑，**每次都引入新的测试回归，而且始终无法证实**。
+     * 最后全部撤回 —— 因为我在**没有证据**的情况下改核心链路，
+     * 那比不改更危险。
+     *
+     * 缺的正是这几个数字：**这页里有几个 turn/start、文本属于哪一轮、
+     * 最后一个 turn/end 在第几条**。有了它们，"是不是拿到了上一轮的结束"
+     * 一查便知，不必再猜。
+     */
+    const startSeqs: number[] = [];
+    const endSeqs: number[] = [];
+    /** 最后一条 `assistant/message` 属于第几个 `turn/start`（0 = 它之前没有 start） */
+    let textAfterStartIndex = 0;
+    let startCount = 0;
     for (const record of records) {
       const event = (
         record as { event?: { type?: unknown; data?: unknown } } | undefined
@@ -1441,6 +1467,8 @@ export class ChatTransport {
       const type = typeof event?.type === "string" ? event.type : "";
       if (type === "turn/end") {
         ended = true;
+        const seq = (event as { seq?: unknown } | undefined)?.seq;
+        if (typeof seq === "number") endSeqs.push(seq);
         const data = event?.data as
           | {
               turn?: unknown;
@@ -1460,6 +1488,9 @@ export class ChatTransport {
         }
       }
       if (type === "turn/start") {
+        startCount += 1;
+        const sseq = (event as { seq?: unknown } | undefined)?.seq;
+        if (typeof sseq === "number") startSeqs.push(sseq);
         text = "";
         ended = false;
         error = undefined;
@@ -1542,7 +1573,10 @@ export class ChatTransport {
       // **选项整段丢掉**，用户只看到"有几个决定要你拍板："——
       // 真机反复反馈的"看不到选项"就是这个。
       // 现在与历史分支用同一套合并逻辑（重发式替换 / 累积式追加）。
-      if (parts.length > 0) text = mergeResponseText(text, parts.join(""));
+      if (parts.length > 0) {
+        text = mergeResponseText(text, parts.join(""));
+        textAfterStartIndex = startCount;
+      }
     }
     // ⚠️ 诊断必须用 `appendPanelLog`（**落盘**），不能用 `this.log`。
     //
@@ -1560,7 +1594,11 @@ export class ChatTransport {
     // 又不至于把用户正文大量写进日志。
     if (blockShapes.length > 0) {
       const tail = text.slice(-80).replace(/\s+/g, " ");
-      const snapshot = `${blockShapes.join(" ｜ ")}；正文 ${text.length} 字；尾部「${tail}」；已结束=${ended}`;
+      const snapshot =
+        `${blockShapes.join(" ｜ ")}；正文 ${text.length} 字；尾部「${tail}」；已结束=${ended}` +
+        `；start=${startCount}个@[${startSeqs.slice(-3).join(",")}]` +
+        `；end@[${endSeqs.slice(-3).join(",")}]` +
+        `；文本属于第${textAfterStartIndex}个start（共${startCount}个）`;
       if (this.lastBlockShapeLog !== snapshot) {
         this.lastBlockShapeLog = snapshot;
         appendPanelLog(
