@@ -286,13 +286,32 @@ describe("工具轮询器的去重键", function () {
    * 函数再长也不会误报。
    */
   const toolPollerBody = () => {
-    const start = paneSource.indexOf("private startToolPoller(");
-    assert.ok(start > 0, "找不到 startToolPoller");
-    // 到下一个 `private ` / `async ` 方法定义或类结束为止
-    const rest = paneSource.slice(start);
+    /**
+     * ⚠️ 必须匹配**方法签名行**，不能只搜方法名。
+     *
+     * 我先前匹配"类方法名的任意出现"，结果命中的是**另一处注释里提到
+     * `startToolPoller` 的那句话**（`…"重复启动轮询不会重复执行"` 附近），
+     * 切片只有 660 字符，两条守卫随即报"找不到 toolPollers.has(dir)" ——
+     * 一个与它们本意完全无关的失败。
+     *
+     * 签名行的形状是唯一的：**行首恰好两空格** + 修饰符 + 方法名 + `(` … `{` 收尾。
+     */
+    const m =
+      /^ {2}(?:private|public|protected)?\s*(?:async\s+)?startToolPoller\s*\([^)]*\)[^{]*\{/m.exec(
+        paneSource,
+      );
+    assert.ok(m, "找不到 startToolPoller 的方法定义");
+    /**
+     * 取到**下一个类方法签名**为止（同样是"行首两空格 + 修饰符 + 名字"）。
+     *
+     * 不能只找 `async` 字样 —— 我的守卫注释里就有 `async`，切片会在函数体中间断掉；
+     * 也不能靠大括号配平 —— 守卫代码里的 `{` / `}` 会把配平带偏。
+     * 两者我都试过，都误报过。
+     */
+    const rest = paneSource.slice(m.index);
     const next = rest
       .slice(1)
-      .search(/\n {2}(private|public|protected|async) /);
+      .search(/\n {2}(?:private|public|protected|async) [A-Za-z_]/);
     return next > 0 ? rest.slice(0, next + 1) : rest;
   };
 

@@ -1863,7 +1863,7 @@ export class SessionPane {
       await mountSession(record);
       // 启动工具轮询：让 Agent 能通过 zotero/call.json 请插件代它操作 Zotero
       this.sessionCache.set(record.sessionId, record);
-      this.startToolPoller(record);
+      await this.startToolPoller(record);
       // 右键菜单建完立即打开会话窗口 —— 否则用户看不到任何即时反馈
       await this.openInWindow(record);
     } catch (error) {
@@ -2194,8 +2194,83 @@ export class SessionPane {
    *
    * 幂等：每个 call.json 只执行一次（用 id 记账），重复启动轮询不会重复执行。
    */
-  private startToolPoller(record: SessionRecord): void {
-    const dir = PathUtils.join(record.workspace, TOOL_DIR);
+  private async startToolPoller(record: SessionRecord): Promise<void> {
+    /**
+     * ## ⚠️ 必须用 `ensureWorkspaceDir`，不能用 `record.workspace`（真机：桥彻底不响应）
+     *
+     * 用户反馈："插件确实不响应了（15 秒内没处理任何调用）" —— Agent 连发 5 次调用，
+     * `call.json` 一直躺着不动，而插件是活的、Zotero 也是活的。
+     *
+     * 根因：记录里存的路径是**混合分隔符**写法：
+     *
+     * ```text
+     *   "C:\\Users\\…\\home\\dsh-for-zotero/collection-VZVXRZ6D"
+     *                                      ↑ 只有最后一段是正斜杠
+     * ```
+     *
+     * 全部 **29 条**记录都是这个形态（由 `joinPath` 拼接产生）。而这里原先是
+     * `PathUtils.join(record.workspace, TOOL_DIR)` —— Gecko 对混合分隔符的路径
+     * **直接抛 `NS_ERROR_FILE_UNRECOGNIZED_PATH`**（就是日志里那条"维护动作失败"）。
+     *
+     * 后果不是"某个会话不可用"，而是**一个轮询器都起不来**：
+     * 这行在 `maintain()` 的 `for (const record of records)` 里**没有 try**，
+     * 第一条记录就抛 → 循环中断 → 所有会话的桥全部失效。
+     * Agent 那边表现为"插件停了"，而插件其实活着。
+     *
+     * `ensureWorkspaceDir` 会按**当前机器**重新解析并把路径归一化
+     * （跨设备同步也靠它），第 3828 行早就为此写过注释 —— 这里当时漏了。
+     */
+    let workspace: string;
+    try {
+      workspace = await ensureWorkspaceDir(record);
+    } catch (error) {
+      // 单条记录解析不出来，不该让**整批**会话的桥都失效（上面那个教训）
+      appendPanelLog(
+        "session",
+        `会话 ${record.sessionId} 的工作区无法解析，跳过它的工具轮询：${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return;
+    }
+    /**
+     * ⚠️ **实测分隔符归一化**（作者本机日志直接可读，所以这条我能验证）。
+     *
+     * 背景：日志里反复出现 `PathUtils.join: NS_ERROR_FILE_UNRECOGNIZED_PATH`，
+     * 而记录里的路径形态是混合分隔符
+     * （`C:\…\dsh-for-zotero/collection-VZVXRZ6D`，只有最后一段是正斜杠）。
+     * 全部 29 条记录都是这个形态。
+     *
+     * 我在 Node 里无法复现 Gecko 的行为（Node 对混写是宽容的），
+     * 静态查看 Zotero core 只能看到编译后的 `omni.ja` ——
+     * **所以把三种写法都交给运行中的 Gecko 试一遍，把结果写进日志。**
+     */
+    const probe = (label: string, value: string): string => {
+      try {
+        const joined = PathUtils.join(value, TOOL_DIR);
+        appendPanelLog(
+          "session",
+          `DIAG ${label}：${JSON.stringify(value)} → join 得 ${JSON.stringify(joined)}（未抛错）`,
+        );
+        return joined;
+      } catch (error) {
+        appendPanelLog(
+          "session",
+          `DIAG ${label}：${JSON.stringify(value)} → **抛错** ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+        return "";
+      }
+    };
+    const mixed = probe("原始（混合分隔符）", workspace);
+    const normalized = probe(
+      "归一化（全反斜杠）",
+      workspace.replace(/\//g, "\\"),
+    );
+    const forward = probe("全正斜杠", workspace.replace(/\\/g, "/"));
+    // 用**第一个没抛错**的那个；三个都不行时退回原始写法并如实记录
+    const dir =
+      mixed || normalized || forward || PathUtils.join(workspace, TOOL_DIR);
     // ⚠️ 按**工作区目录**去重，不是按 sessionId。
     //
     // 多个会话可以共用同一个工作区（同一个分类建多个会话就是这样）——
@@ -4081,7 +4156,20 @@ export class SessionPane {
       // 恢复工具轮询：上次运行创建的会话也要能用工具（否则"重启后模型调不动 Zotero"）
       for (const record of records) {
         this.sessionCache.set(record.sessionId, record);
-        this.startToolPoller(record);
+        // ⚠️ **必须逐条 try**：这个循环原先没有保护，
+        // 第一条记录抛错就会中断循环 ——
+        // 于是**所有会话的桥全部失效**，而日志只有一行"维护动作失败"。
+        // Agent 那边看起来就像"插件停了"。
+        try {
+          await this.startToolPoller(record);
+        } catch (error) {
+          appendPanelLog(
+            "session",
+            `启动会话 ${record.sessionId} 的工具轮询失败：${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
       }
       // ⚠️ 材料版本落后就**自动刷新**：老会话里的说明没有新工具，
       //    Agent 会如实回答"读不到正文、不能建条目"（真机反馈过）。
