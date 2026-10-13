@@ -1260,7 +1260,9 @@ export class ChatTransport {
       return;
     }
 
-    this.deps.emit({ kind: "assistant-end", outcome: kind });
+    // ⚠️ 带来源上报：这是四条"宣布本轮结束"的路径之一，
+    // 而用户三次报告的"假结束"我一直没能确定是哪一条发的。
+    this.emitAssistantEnd(kind, "流式 end 帧（endStreamStep 判定收尾）");
     this.deps.emit({ kind: "status", generating: false });
   }
 
@@ -1525,7 +1527,7 @@ export class ChatTransport {
       if (state === false) {
         // harness 明确说它不跑了 —— 这一轮确实结束了
         this.stopPolling();
-        this.deps.emit({ kind: "assistant-end", outcome: "committed" });
+        this.emitAssistantEnd("committed", "轮询超时且 harness 明确说停了");
         return;
       }
       // true（仍在跑）或 undefined（问不到）：继续等，但要节流并让界面知道
@@ -1557,12 +1559,12 @@ export class ChatTransport {
         if (turn.error) {
           this.stopPolling();
           this.emitFault("client/turn-failed", turn.error);
-          this.deps.emit({ kind: "assistant-end", outcome: "abandoned" });
+          this.emitAssistantEnd("abandoned", "轮询发现 turn/end 带错误");
           return;
         }
         if (turn.ended) {
           this.stopPolling();
-          this.deps.emit({ kind: "assistant-end", outcome: "committed" });
+          this.emitAssistantEnd("committed", "轮询看到 turn.ended=true");
         }
       }
     } catch (error) {
@@ -1825,6 +1827,30 @@ export class ChatTransport {
   /** 上一次记录的块构成快照：用于去重，避免轮询时反复刷同一行 */
   private lastBlockShapeLog = "";
   // ── 小工具 ──────────────────────────────────────────────
+
+  /**
+   * 发 `assistant-end` 并**记下是谁发的**。
+   *
+   * ## ⚠️ 为什么要记来源（真机第三次“假本轮结束”）
+   *
+   * 用户三次报告界面提前显示「本轮结束」，而我每次都能用実主的
+   * `running=true` 证实它**还在跑** —— 但我**始终没能确定是哪条路径**
+   * 发的结束信号：`transport.ts` 里有四处 `emit assistant-end`，
+   * 而日志里只能看到快照（它不记录这件事）。
+   *
+   * 上一次我据此改了四版轮询逻辑，全部无法验证而撤回。
+   * **这次先把证据补上。**
+   */
+  private emitAssistantEnd(
+    outcome: "committed" | "abandoned" | "cancelled",
+    from: string,
+  ): void {
+    appendPanelLog(
+      "session",
+      `DIAG assistant-end 由【${from}】发出（outcome=${outcome}，会话 ${this.sessionId ?? "?"}）`,
+    );
+    this.deps.emit({ kind: "assistant-end", outcome });
+  }
 
   private emitFault(code: string, message: string): void {
     this.setStatus({ ready: false, error: message, port: this.config?.port });
