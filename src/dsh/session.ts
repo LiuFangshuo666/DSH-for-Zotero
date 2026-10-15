@@ -22,6 +22,9 @@
  */
 
 import { appendPanelLog } from "./runLog";
+// ⚠️ Gecko 只接受全反斜杠路径（真机实测，见 paths.ts 里 nativeSeparators 的说明）——
+// 混合或全正斜杠会让 PathUtils.join 抛 NS_ERROR_FILE_UNRECOGNIZED_PATH。
+import { nativeSeparators } from "./paths";
 
 export type SessionKind = "collection" | "item";
 
@@ -334,9 +337,25 @@ export function workspaceNameOf(workspace: string): string | undefined {
 /** 已尝试迁移过的工作区目录名（避免每次启动都重试重命名） */
 const migratedNames = new Set<string>();
 
-/** 路径拼接（只用 `/`；Zotero 在 Windows 上也接受） */
+/**
+ * 路径拼接（Windows 上产出**全反斜杠**）。
+ *
+ * ⚠️ 这里曾写着"只用 `/`；Zotero 在 Windows 上也接受" —— **那个前提是错的**。
+ * 作者在运行中的 Gecko 上实测：`PathUtils.join` 对**混合分隔符**与**全正斜杠**
+ * 都抛 `NS_ERROR_FILE_UNRECOGNIZED_PATH`，只有全反斜杠可用。
+ *
+ * 而这行正是混合路径的**源头**：它把 `C:\…\dsh-for-zotero`（反斜杠结尾）
+ * 与目录名用 `/` 拼起来，产出的路径让 `startToolPoller` 抛错，
+ * 于是**全库所有会话的工具桥一起失效**。
+ *
+ * 详见 `paths.ts` 里 `nativeSeparators` 的说明（含实测输出）。
+ */
 function joinPath(root: string, name: string): string {
-  return `${root.replace(/[/\\]+$/, "")}/${name}`;
+  const trimmed = root.replace(/[/\\]+$/, "");
+  const base = /^[A-Za-z]:[\\/]/.test(trimmed)
+    ? trimmed.replace(/\//g, "\\")
+    : trimmed;
+  return `${base}/${name}`;
 }
 
 async function ioExists(path: string): Promise<boolean> {
@@ -387,11 +406,13 @@ export async function ensureWorkspaceDir(
   record: Pick<SessionRecord, "kind" | "scopeKey" | "workspace">,
 ): Promise<string> {
   const root = currentWorkspaceRoot();
-  const resolved = resolveWorkspace(record);
+  // ⚠️ 归一化分隔符：这个值会被传给 PathUtils.join（轮询器、传输层），
+  // 而 Gecko 对混合/正斜杠路径一律抛 NS_ERROR_FILE_UNRECOGNIZED_PATH（真机实测）。
+  const resolved = nativeSeparators(resolveWorkspace(record));
   if (!root) return resolved;
 
   const name = workspaceNameOf(resolved);
-  const target = name ? joinPath(root, name) : resolved;
+  const target = nativeSeparators(name ? joinPath(root, name) : resolved);
 
   try {
     if (await ioExists(target)) return target;
@@ -454,7 +475,12 @@ export function workspaceFor(
   scopeKey: string,
 ): string {
   const safeScope = scopeKey.replace(/[^A-Za-z0-9_-]/g, "_") || "root";
-  return PathUtils.join(workspaceRoot, `${kind}-${safeScope}`);
+  // ⚠️ 先把 root 的分隔符归一：它来自 `dshHome`（带正斜杠），
+  // 直接交给 PathUtils.join 会报 NS_ERROR_FILE_UNRECOGNIZED_PATH（真机实测）。
+  const root = /^[A-Za-z]:[\\/]/.test(workspaceRoot)
+    ? workspaceRoot.replace(/\//g, "\\")
+    : workspaceRoot;
+  return PathUtils.join(root, `${kind}-${safeScope}`);
 }
 
 /** 从首次提问生成一个可读标题 */

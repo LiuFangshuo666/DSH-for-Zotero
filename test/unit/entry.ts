@@ -15,6 +15,7 @@ export {
   decodeBase64Url,
 } from "../../src/dsh/base64url";
 export { parseCredentials } from "../../src/dsh/credentials";
+export * from "../../src/dsh/paths";
 export { decodeSecret, hmacSha256 } from "../../src/dsh/crypto";
 export {
   buildCookieParts,

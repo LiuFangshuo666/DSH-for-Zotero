@@ -43,6 +43,9 @@ import {
   titleFromQuestion,
   workspaceFor,
 } from "../dsh/session";
+// ⚠️ `nativeSeparators`：Gecko 只接受全反斜杠路径（真机实测），
+// 混合/正斜杠会让 PathUtils.join 抛 NS_ERROR_FILE_UNRECOGNIZED_PATH。
+import { nativeSeparators } from "../dsh/paths";
 import { ChatTransport } from "../chat/transport";
 import { appendPanelLog } from "../dsh/runLog";
 import { refreshInstalledDshSide } from "../dsh/install";
