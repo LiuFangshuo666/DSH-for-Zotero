@@ -194,6 +194,45 @@ export function decideTurnOutcome(input: {
     return { action: "throw", message: input.error };
   }
   if (!input.ended) return { action: "continue" };
+  /**
+   * ## ⚠️ `turn/end` 与"这一轮答完了"是两件事（真机缺陷：正文被截断）
+   *
+   * 用户实测那一轮（13 篇精读 + 改写大纲 + 起草正文）：
+   * 界面停在"**等**精读结果的同时…稍等片刻再收集卡片："就画上了「本轮结束」，
+   * 而完整的一轮还有 6 张精读卡、大纲 v3、两章半草稿（2000+ 字）。
+   *
+   * 日志坐实了停点：`readTurn` 的快照最后一条是
+   * `15:37:08 正文 477 字 已结束=false`，此后**再无任何快照** ——
+   * 而 `readTurn` 每 700ms 调一次、且只在内容变化时落盘，
+   * 所以"没有新行"就等于"没人再读了"。宿主当时仍 `running=true`。
+   *
+   * 根因是这里的短路：原先的顺序是
+   *
+   * ```text
+   *   ended && textLength === 0  → 问 harness        ✅ 早就做了
+   *   ended && textLength  > 0   → **直接 return**   ❌ 从不看 harness
+   * ```
+   *
+   * 而多步执行时**每一步都带一个 `turn/end`**（本项目测试注释里写明的真机事实）。
+   * 于是"agent 说完一句、转身去等后台任务"的那一刻就被当成了收尾 ——
+   * 界面宣布结束、`onDelta` 不再被消费、后续正文全丢。
+   *
+   * ## 三态与 `decideStreamEnd` **刻意一致**
+   *
+   * 同一个文件里的 `decideStreamEnd` 早就写明了正确的处理表
+   * （"流式 `end` 帧是**一个 step 结束了**，与 `turn/end` 是同一个病的两条路"）。
+   * 那条路做了，**这条路漏了** —— 这里就是那处不一致的补齐。
+   *
+   * | `harnessRunning` | 决定 | 理由 |
+   * | --- | --- | --- |
+   * | `true` | 继续等 | 确认还在跑 → 这个 `turn/end` 只是中间步边界 |
+   * | `false` | 收尾 | 确实停了 |
+   * | `undefined` | 继续等 | 问不到时不赌 —— 早收尾会丢正文 |
+   *
+   * ⚠️ 调用方负责**有界**（连续等够 N 轮就强制按 `false` 处理），
+   * 否则"提前结束"会被换成"永不结束"。
+   */
+  if (input.harnessRunning === true) return { action: "continue" };
   if (input.textLength > 0) return { action: "return" };
   // 结束但无正文：这正是"工具步"的形态
   if (input.harnessRunning === false) {
@@ -1018,6 +1057,15 @@ export class ChatTransport {
 
     const timeoutMs = params.timeoutMs ?? 180_000;
     const deadline = Date.now() + timeoutMs;
+    /**
+     * "出现了 `turn/end`、但 harness 说它还在跑"已经连续等了多少轮。
+     *
+     * 上限存在的唯一理由是**保证可终止**：若某个 `turn/end` 之后 harness
+     * 一直报 running=true（例如它卡住了），没有上限就永远不返回 ——
+     * 那比"提前结束"更糟。我在别处栽过一次，这次设计上排除。
+     */
+    let endWaitRounds = 0;
+    const HARNESS_END_MAX_WAIT = 60; // ≈42 秒（每轮 700ms）
     let text = "";
     let lastReported = "";
     /** 上一次已上报的提问指纹：避免每轮询都重复回调 */
@@ -1094,9 +1142,45 @@ export class ChatTransport {
          */
         // 结束与否的判断交给纯函数（有单测）—— 规则本身就是一个真机缺陷的修正，
         // 写在这里会被环境问题掩盖掉（我就因此白折腾了几轮）。
+        /**
+         * ## ⚠️ `turn/end` **不等于**这一轮答完了（真机缺陷：正文被截断）
+         *
+         * 用户实测那一轮（13 篇精读 + 改写大纲 + 起草正文）：界面停在
+         * "**等**精读结果的同时…稍等片刻再收集卡片："就画上了「本轮结束」，
+         * 而完整的一轮还有 6 张精读卡、大纲 v3、两章半草稿（2000+ 字）。
+         *
+         * 日志坐实了停点：快照最后一条是 `15:37:08 正文 477 字 已结束=false`，
+         * 此后**再无任何快照**（`readTurn` 每 700ms 一次，不去重就刷屏，
+         * 所以"没有新行"就等于"没人再读了"）。而宿主当时仍 `running=true`。
+         *
+         * 根因就是这个盲区：
+         *
+         * ```text
+         *   turn.ended && text.length === 0  → 问 harness   ✅ 早就做了
+         *   turn.ended && text.length  > 0   → **不问，直接 return**   ❌ 盲区
+         * ```
+         *
+         * 多步执行时**每一步都带一个 `turn/end`**（本项目测试注释里写明的真机事实）。
+         * 于是"agent 说完一句、转身去等后台任务"的那一刻，`turn/end` 到达、
+         * 正文非空 → 立刻 return → 界面宣布结束、**`onDelta` 不再被消费** → 后续正文全丢。
+         *
+         * 修法：**有正文时也要问一次 harness** —— 它才是"这一轮到底结束没有"的
+         * 权威答案（`pollOnce` 的超时分支早就在用它，这里只是补齐同一处不一致）。
+         * `true` → 继续等；`undefined` → 保守继续等；只有 `false` 才收尾。
+         *
+         * ⚠️ **必须有界**：每轮只问一次，且连续问不到/仍在跑超过 `HARNESS_END_MAX_WAIT`
+         * 次就放行 —— 否则"提前结束"会被换成"永不结束"（我在别处栽过这个坑）。
+         */
         let stillRunning: boolean | undefined;
-        if (turn.ended && text.length === 0) {
+        if (turn.ended) {
           stillRunning = await this.harnessRunning(client, sessionId);
+          if (stillRunning !== true) {
+            endWaitRounds = 0;
+          } else {
+            endWaitRounds += 1;
+          }
+        } else {
+          endWaitRounds = 0;
         }
         const verdict = decideTurnOutcome({
           ended: turn.ended,
@@ -1105,13 +1189,19 @@ export class ChatTransport {
           ...(stillRunning === undefined
             ? {}
             : { harnessRunning: stillRunning }),
+          // 有界：等够这么多轮就认定"这个 turn/end 就是结束"，不再无限等
+          ...(endWaitRounds > HARNESS_END_MAX_WAIT
+            ? { harnessRunning: false }
+            : {}),
         });
         if (verdict.action === "throw") throw new Error(verdict.message);
         if (verdict.action === "return") return text;
-        if (turn.ended && text.length === 0) {
+        if (turn.ended) {
           appendPanelLog(
             "session",
-            `第 ${turn.endedTurn} 轮结束但无正文（Agent 可能只在调用工具），继续等待后续轮次`,
+            `第 ${turn.endedTurn} 轮出现 turn/end，但 harness 仍在运行` +
+              `（正文 ${text.length} 字）—— 判定为**中间步边界**，继续等后续轮次` +
+              `（已等 ${endWaitRounds}/${HARNESS_END_MAX_WAIT} 次）`,
           );
         }
       }

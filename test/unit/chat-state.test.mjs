@@ -416,6 +416,61 @@ describe("一轮读完之后该怎么走（多步执行的核心规则）", func
     assert.equal(v.action, "return");
   });
 
+  it("⚠️ **有正文但 harness 说还在跑 → 继续等**（真机：正文被截断）", function () {
+    // ## 这一格一直没被测过，所以那个 bug 溜了过去
+    //
+    // 用户实测那一轮（13 篇精读 + 改写大纲 + 起草正文）：
+    // 界面停在"**等**精读结果的同时…稍等片刻再收集卡片："就画上了「本轮结束」，
+    // 而完整的一轮还有 6 张精读卡、大纲 v3、两章半草稿（2000+ 字）。
+    //
+    // 日志坐实了停点：快照最后一条是 `15:37:08 正文 477 字 已结束=false`，
+    // 此后**再无任何快照**（`readTurn` 每 700ms 一次、只在内容变化时落盘，
+    // 所以"没有新行"= "没人再读了"）。宿主当时仍 `running=true`。
+    //
+    // 根因：这个函数原先的顺序把"有正文"排在"问 harness"**之前** ——
+    // 于是 `ended && 有正文` 直接 return，**从不看 harness**。
+    // 而多步执行每一步都带一个 `turn/end`，于是 agent 说完一句转身去等
+    // 后台任务的那一刻就被当成了收尾。
+    //
+    // 同一个文件里的 `decideStreamEnd` 早就写明了正确的三态表，
+    // 这条路径漏了 —— 这一格就是那处不对称。
+    assert.equal(
+      decideTurnOutcome({
+        ended: true,
+        textLength: 477,
+        harnessRunning: true,
+      }).action,
+      "continue",
+      "harness 明确说还在跑时，即使已有正文也必须继续等 —— " +
+        "否则界面会宣布结束、onDelta 不再被消费、后续正文全丢",
+    );
+  });
+
+  it("有正文且 harness 明确停了 → 返回（正常收尾不受影响）", function () {
+    assert.equal(
+      decideTurnOutcome({
+        ended: true,
+        textLength: 477,
+        harnessRunning: false,
+      }).action,
+      "return",
+    );
+  });
+
+  it("有正文、问不到 harness（undefined）→ 返回（不因抖动卡住）", function () {
+    // 与流式路径刻意不同：这里 `undefined` 选"返回"。
+    // 因为调用方在 `turn.ended` 时已问过一次；若把 undefined 也当"继续等"，
+    // RPC 一抖动就会一直等到超时 —— 而"有正文"说明这一轮确实产出了东西。
+    assert.equal(
+      decideTurnOutcome({
+        ended: true,
+        textLength: 477,
+        harnessRunning: undefined,
+      }).action,
+      "return",
+    );
+  });
+
   it("**结束但没有正文 → 继续等**（这就是工具步的形态）", function () {
     // 多步执行时每一步都带 turn/end，工具步没有 text 块。
     // 一见"结束且无正文"就抛错，会把正在进行的任务判成失败。
