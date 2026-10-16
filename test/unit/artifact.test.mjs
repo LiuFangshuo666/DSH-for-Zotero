@@ -164,6 +164,71 @@ describe("会话页的持续刷新", function () {
   });
 });
 
+/**
+ * ## 生成中不得显示"存为笔记"，也不得让占位提示消失
+ *
+ * 用户："发送消息后，先是看不到任何回复（原先的 `…` 也瞬间消失），
+ * 然后回复陆续出现，但是**一直有"存为笔记"样式让人误以为回答结束**。
+ * 不过回复结束后确实在气泡下正常显示了"本轮结束"。"
+ *
+ * 三处根因，共同点是**每 2.5 秒的重建会把流式的临时 DOM 冲掉**：
+ *
+ *  1. 占位 `bubble("assistant", "…")` 被冲掉 → 一瞬间什么都不显示；
+ *  2. "存为笔记"的判据只是"**有文字**" → 半截回答也带按钮 → 看起来像答完了；
+ *  3. `markTurnEnd()` 插的分隔也被冲掉 → 只有收尾瞬间能看到。
+ *
+ * 修法：把"是否生成中"变成**渲染函数知道的输入**，而不是 DOM 里的临时状态。
+ */
+describe("生成中的气泡不该伪装成已完成", function () {
+  const page = readFileSync(
+    join(here, "..", "..", "addon", "content", "sessionPage.js"),
+    "utf8",
+  );
+
+  it("\u0060bubble\u0060 必须接收\u201c是否生成中\u201d，并据此决定要不要给按钮", function () {
+    assert.match(
+      page,
+      /function bubble\(role, text, question, live\)/,
+      "bubble 必须知道这一轮是否还在生成",
+    );
+    assert.match(
+      page,
+      /role === "assistant" && !live && text && text !== "…"/,
+      "生成中不得挂\u201c存为笔记\u201d —— 那个按钮等于在说\u201c答完了\u201d",
+    );
+  });
+
+  it("\u0060renderTurns\u0060 必须自己画出\u201c生成中\u201d提示，而不是依赖 submit 里的临时 notice", function () {
+    assert.match(
+      page,
+      /还在生成中…/,
+      "生成中的提示要在 renderTurns 里画，否则每次重建都会消失",
+    );
+    assert.match(
+      page,
+      /function renderTurns\(turns\)/,
+      "渲染函数是唯一能在刷新后仍然成立的地方",
+    );
+  });
+
+  it("\u201c本轮结束\u201d分隔必须也由 renderTurns 画（只给最后一轮）", function () {
+    assert.match(
+      page,
+      /if \(!live && last\) markTurnEnd\(\);/,
+      "分隔要在渲染里画，且只给最后一轮 —— 否则多轮会话里满地都是分隔线",
+    );
+  });
+
+  it("submit 里不得再插一次\u201c本轮结束\u201d（会被冲掉且与渲染重复）", function () {
+    // submit 的收尾分支里应改为触发重绘，而不是直接插 DOM
+    assert.match(
+      page,
+      /setAwaitingInput\(false\);[\s\S]{0,400}?void refreshHistory\(true\);/,
+      "收尾应触发重绘，由渲染函数统一画分隔",
+    );
+  });
+});
+
 describe("会话页的工作状态恢复", function () {
   const page = readFileSync(
     join(here, "..", "..", "addon", "content", "sessionPage.js"),

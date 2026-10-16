@@ -1742,7 +1742,26 @@
     }
 
     /** 追加一条气泡；role 决定对齐与配色 */
-    function bubble(role, text, question) {
+    /**
+     * @param live - 这一轮**是否还在生成中**。
+     *
+     * ## ⚠️ 为什么需要它（真机反馈：回复还没完就出现"存为笔记"）
+     *
+     * 用户："发送消息后…回复陆续出现，但是**一直有'存为笔记'样式让人误以为回答结束**。
+     * 不过回复结束后确实在气泡下正常显示了'本轮结束'。"
+     *
+     * 原先的判据只是"**有文字**"：
+     *
+     * ```js
+     *   if (role === "assistant" && text && text !== "…") addSaveNoteButton(…)
+     * ```
+     *
+     * 而持续刷新（每 2.5 秒）会把流式中的**半截回答**也用这个判据画一遍，
+     * 于是正文每长一段就多一个"存为笔记" —— 用户合理地读成"答完了"。
+     *
+     * 现在只有**已完成**的轮次才给按钮；生成中不给，改用"生成中…"提示。
+     */
+    function bubble(role, text, question, live) {
       var wrap = document.createElement("div");
       wrap.className = "dsh-row";
       wrap.style.display = "flex";
@@ -1757,8 +1776,10 @@
       box.style.border =
         "1px solid " + (role === "user" ? "#bfdbfe" : "#e5e7eb");
       paint(box, role, text);
-      // 只有真实回答才给"存为笔记"按钮（用户提问、"…"占位、错误信息都不给）
-      if (role === "assistant" && text && text !== "…") {
+      // 只有**已完成**的真实回答才给"存为笔记"按钮。
+      // 用户提问、"…"占位、错误信息、**以及仍在生成中的正文**都不给 ——
+      // 生成中给按钮等于告诉用户"答完了"，而它还在写。
+      if (role === "assistant" && !live && text && text !== "…") {
         addSaveNoteButton(box, question, text);
       }
       wrap.appendChild(box);
@@ -1841,15 +1862,20 @@
         })
         .then(function (running) {
           if (running === true) {
+            runningKnown = true;
             setBusy(true);
-            // 这一轮开始了：若用户中途离开再回来，探测会把状态恢复。
-            scheduleRunningProbe();
             runningProbeMisses = 0;
+            // ⚠️ 只调一次。这里先前连着调了两次 —— 第二次因为定时器已存在而直接返回，
+            // 所以没造成双倍轮询，但读起来像"故意排两次"，是纯噪声。
             scheduleRunningProbe();
-            notice(
-              "检测到 Agent **仍在工作**（你是中途离开的）—— 界面已恢复生成状态。",
-            );
+            // 重绘一次：让"还在生成中…"提示与"存为笔记"按钮按新的运行状态出现
+            // （否则要等下一个 2.5 秒周期）
+            void refreshHistory(true);
           } else if (running === false) {
+            runningKnown = false;
+            // 确认停了 → 重绘一次：把"还在生成中…"换成正式回答
+            // （否则要等到下一个 2.5 秒周期才更新）
+            void refreshHistory(true);
             stopRunningProbe();
           } else {
             // 问不到：只提示，不动界面
@@ -1872,6 +1898,13 @@
      * 这与 `askInSession` 里"宁可多等，也不要提前宣布结束"是两回事 ——
      * 那是**取回答**，这是**界面装饰**：装饰不该无限占资源。
      */
+    /**
+     * 最近一次探测到的运行状态：true / false / **null = 还没问到**。
+     *
+     * 给 `renderTurns` 用：它要判断"最后一轮是不是还在生成中"，
+     * 而那决定了**要不要给"存为笔记"按钮**。
+     */
+    var runningKnown = null;
     var runningProbeTimer = null;
     var runningProbeMisses = 0;
     var RUNNING_PROBE_MS = 5000;
@@ -1941,12 +1974,40 @@
         notice("这条会话还没有内容。在下面输入你的第一个问题。");
         return;
       }
+      /**
+       * ⚠️ **只有最后一轮可能"还在生成中"**，其余都是历史。
+       *
+       * 判据（任一成立即为生成中）：
+       *  - 最后一轮**有提问但没有回答**（刚发出去、还没写出正文）；
+       *  - 或运行状态探测说会话仍在跑。
+       *
+       * 历史轮次一律给"存为笔记"按钮 —— 它们确实已经完成了。
+       */
+      var last = turns[turns.length - 1];
+      var live =
+        (last && last.prompt && !last.response) || runningKnown === true;
       for (var i = 0; i < turns.length; i++) {
+        var isLive = live && i === turns.length - 1;
         if (turns[i].prompt) bubble("user", turns[i].prompt);
         // 把问题一起带上：笔记正文需要它，而回答气泡自己不知道问了什么
         if (turns[i].response)
-          bubble("assistant", turns[i].response, turns[i].prompt);
+          bubble("assistant", turns[i].response, turns[i].prompt, isLive);
+        // 生成中：在气泡下方给一个**持续存在**的提示。
+        // 它必须画在这里（而不是只在 submit 里插一个 notice）——
+        // 因为每 2.5 秒的重建会把那个 notice 冲掉，
+        // 这正是用户反馈"原先的 … 也瞬间消失"的原因。
+        if (isLive) {
+          notice(last && last.response ? "还在生成中…" : "正在思考…");
+        }
       }
+      /**
+       * ⚠️ "本轮结束"分隔也要画在**这里**，否则它会被下一次刷新冲掉。
+       *
+       * 用户反馈："回复结束后确实在气泡下正常显示了'本轮结束'" ——
+       * 那个标记是 `markTurnEnd()` 直接插进 DOM 的，而每 2.5 秒的重建会把它抹掉。
+       * 只给**最后一轮**画：历史轮次不画，否则多轮会话里满地都是分隔线。
+       */
+      if (!live && last) markTurnEnd();
       if (atBottom) messages.scrollTop = messages.scrollHeight;
     }
 
@@ -2046,6 +2107,16 @@
       bubble("user", text);
       input.value = "";
       setBusy(true);
+      /**
+       * ⚠️ 告诉渲染器"这一轮正在生成"。
+       *
+       * 没有这一步，每 2.5 秒的重建会把下面那个
+       * `bubble("assistant", "…")` 占位气泡**冲掉**，
+       * 而新气泡又带上"存为笔记" ——
+       * 这正是用户反馈的"先是看不到任何回复
+       * （原先的 … 也瞬间消失）"。
+       */
+      runningKnown = true;
       var pending = bubble("assistant", "…");
 
       var settled = false;
@@ -2106,12 +2177,14 @@
           pending.style.borderColor = "#fca5a5";
         })
         .then(function () {
+          runningKnown = false;
           setBusy(false);
           // 本轮结束：清掉"等待你回答"提示，并给一个**明确的分隔**，
           // 否则增量回显下用户分不清"它在写"还是"写完了在等我"
           setAwaitingInput(false);
-          markTurnEnd();
-          messages.scrollTop = messages.scrollHeight;
+          // ⚠️ 不在这里插"本轮结束"：每 2.5 秒的重建会把它冲掉。
+          // 现在由 `renderTurns` 统一画（只给最后一轮），才能持续可见。
+          void refreshHistory(true);
         });
     }
 
