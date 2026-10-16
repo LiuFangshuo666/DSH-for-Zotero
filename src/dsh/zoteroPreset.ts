@@ -84,24 +84,32 @@
 /**
  * 前台等待窗口（秒）。
  *
- * ## ⚠️ 这个数字直接决定用户体验（第一版取 1 秒，是错的）
+ * ## ⚠️ 必须很**短** —— 它不是「等人」的时间，而是「多久才告诉 Agent 没人答」
  *
- * 我第一版取 **1 秒**，理由是"反正没有 Client 能 claim，就别白等"。
- * 那个理由**只对一半**：确实没人 claim，但"等人"本身就是目的。
+ * 我在这个数字上**错了两次，而且是相反的方向**，所以把机制写清楚：
  *
- * ```text
- *   1 秒   → Agent 刚问完就被告知"没人答"→ 它自己猜一个继续干
- *               而用户看到的选项卡片还在那里 —— 选了也只是事后追认
- *   120 秒  → Agent 真的在等；用户在窗口内选完，答案在下一步到达
- * ```
+ * | 窗口 | 结果 |
+ * | --- | --- |
+ * | 阻塞（无限） | **死锁**：回答进了 inbox，而 inbox 的 `next-step` 要等当前步结束；当前步却卡在等这个工具 —— 真机卡了 14 分钟 |
+ * | 很**长**（120 秒） | **无谓的长卡顿**：回答早到也要等窗口到期，因为当前步同样要等工具返回 |
+ * | 很**短**（3 秒） | 工具几乎立刻返回 `pending` → 当前步结束 → **下一步立刻读到回答** |
  *
- * 两个分支对模型**同形**（都是 `pending` 加一条用户消息），
- * 所以窗口长短不影响"答案是否被当作答案"，只影响**用户来不得及**。
+ * 关键事实在 `user-questions/src/timed-wait.ts:36`：定时器**只在没人 claim 时跑**，
+ * 而 `claims` 只由 `attach` 填充 —— **本插件从不调用 `attach`**（那是客户端的事），
+ * 所以它**不可能提前结束**，只能等到期。
  *
- * 为什么不更长：用户不在桌前时，这段时间是**白等**（Agent 什么都不做）。
- * 120 秒是"人在桌前能选完"与"不在桌前不至于傻等"的折衷。
+ * 而「等人」本来就不靠这个窗口：工具返回 `pending` 后，插件仍在轮询 `session/page`，
+ * 你的回答一到就会在**下一个步边界**被读到 —— 不需要长窗口。
+ *
+ * 取 3 秒而不是 0：给「原生客户端在场」那种情形留一点余地
+ * （那种情况下它会 claim，答案直接成为工具返回值）。
+ *
+ * ## ⚠️ 窗口短了以后，真正的问题变成：**Agent 拿到 `pending` 之后干什么**
+ *
+ * 它必须**停下来等**，而不是自己猜一个继续干。那是人设（`suffix`）里的规则，
+ * **不是这个窗口能解决的** —— 见下面 persona 的那条。
  */
-export const ASK_USER_TIMEOUT_SECONDS = 120;
+export const ASK_USER_TIMEOUT_SECONDS = 3;
 
 /** 本 preset 的标识符（会话记录里保存的就是它） */
 export const ZOTERO_PRESET_ID = "zotero";
@@ -160,6 +168,14 @@ export function buildZoteroPresetPatch(): string {
     "          suffix: >-",
     "            Working rules for this library.",
     "",
+    "            - When you need a decision from the user, ask with `ask_user_question` and then",
+    "              STOP. Its result will say `pending`, with the built-in note that you may",
+    '              "continue useful independent work". In this product that note is wrong: the',
+    "              user is answering on a card right now, and the card is answered through the",
+    "              conversation, so their reply arrives as your next message. Its other sentence",
+    "              still holds and settles it - a pending result is not permission. So end your",
+    "              turn with one line naming what you are waiting for. Do not guess the answer,",
+    "              do not re-ask, and do not start other work.",
     "            - Ground every claim in what you actually read. Papers, notes, tags and",
     "              library metadata are readable; read before asserting, and say so when",
     "              you could not obtain a full text.",
