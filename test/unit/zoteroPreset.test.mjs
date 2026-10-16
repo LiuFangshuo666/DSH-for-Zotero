@@ -52,7 +52,7 @@ describe("Zotero 专用 preset", function () {
     assert.equal(ZOTERO_PRESET_ID, "zotero");
   });
 
-  it("**`tool-ask-user` 必须是 timed 且超时很短**（这正是它存在的理由）", function () {
+  it("**`tool-ask-user` 必须是 timed，且窗口够长到用户能回答**", function () {
     assert.match(
       patch,
       /- id: tool-ask-user\n {8}name: '@deepseek-ai\/dsh-tool-ask-user'\n {8}config:\n {10}mode: timed/,
@@ -61,11 +61,28 @@ describe("Zotero 专用 preset", function () {
     assert.match(
       patch,
       new RegExp(`timeout: ${ASK_USER_TIMEOUT_SECONDS}\\b`),
-      "超时必须很短：本插件没有能 claim 前台等待的 Client，窗口越长 Agent 白等越久",
+      "超时值必须真的写进 patch",
+    );
+    /**
+     * ## ⚠️ 区间是**下界为主**的（第一版取 1 秒，被实测推翻）
+     *
+     * 我第一版写的是 `1–5 秒`，理由是"反正没有 Client 能 claim，别白等"。
+     * 那个理由**只对一半**：确实没人 claim，但**「等人」本身就是目的**。
+     * 1 秒的真实效果是：Agent 刚问完就被告知"没人答"，于是自己猜一个继续干，
+     * 而用户看到的选项卡片还在那里 —— 选了也只是事后追认。
+     *
+     * 两个分支对模型**同形**（都是 `pending` 加一条用户消息），
+     * 所以窗口长短不改变"答案是否被当作答案"，只决定**用户来不来得及**。
+     * 因此这里要守的是**下界**：短于 ~30 秒就等于没有窗口。
+     */
+    assert.ok(
+      ASK_USER_TIMEOUT_SECONDS >= 30,
+      "窗口不能短于约 30 秒 —— 更短就等于「立刻放弃」，" +
+        "用户看到的提问卡片形同虚设（第一版 1 秒就是这么错的）",
     );
     assert.ok(
-      ASK_USER_TIMEOUT_SECONDS >= 1 && ASK_USER_TIMEOUT_SECONDS <= 5,
-      "超时应落在 1–5 秒：够「原生客户端在场时立刻成交」，又几乎立刻退化成 pending",
+      ASK_USER_TIMEOUT_SECONDS <= 600,
+      "也不该超过 10 分钟：用户不在桌前时这段时间是纯白等，Agent 什么都不做",
     );
   });
 
