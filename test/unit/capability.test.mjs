@@ -24,6 +24,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+// 按**语法边界**取源码片段，而不是按字符数 ——
+// 固定窗口在这个文件里误报过三次，详见 sourceSlices.mjs 顶部。
+import { methodBody } from "./sourceSlices.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..", "..");
@@ -437,44 +440,24 @@ describe("待确认返回值必须指引回执位置", function () {
 
 describe("工具轮询器的去重键", function () {
   /**
-   * ⚠️ **不要用固定长度的切片窗口**。
+   * ## ⚠️ 这里踩过**三个**坑，所以最终交给共享助手
    *
-   * 这里原来是 `slice(start, start + 2600)`，而 `toolPollers.set(dir` 在函数**末尾**。
-   * 我给函数加了一段防重跑的守卫后，它被推到 **+3765** —— 这条测试立刻误报
-   * "注册时也必须用 dir 当键"。而它的注释里**早就写着**"窗口要够大：
-   * `toolPollers.set` 在函数末尾，900 字符截不到（第一版就是这么误报的）"。
+   * 1. **固定字符窗口**（`slice(start, start + 2600)`）：`toolPollers.set(dir`
+   *    在函数末尾，给函数加一段守卫后它被推到 `+3765` —— 测试立刻误报
+   *    "注册时也必须用 dir 当键"，而代码完全正确。
+   * 2. **只搜方法名**：`indexOf("private startToolPoller(")` 命中过
+   *    **注释里提到这个名字**的地方，切出 660 字符，13 个操作全报"缺失"。
+   * 3. **按关键字找下一个方法**（`search(/\n {2}(private|async) /)`）：
+   *    守卫自己的注释里就含 `async`，切片在**函数体中间**断掉。
    *
-   * **同一个坑踩了两次。** 所以改成取到**下一个方法定义**为止 ——
-   * 函数再长也不会误报。
+   * 现在用 `sourceSlices.methodBody()` —— 按**配平的大括号**取，
+   * 不随函数变长、也不受注释里出现什么词影响。
+   * 详见 `test/unit/sourceSlices.mjs` 顶部的说明。
    */
   const toolPollerBody = () => {
-    /**
-     * ⚠️ 必须匹配**方法签名行**，不能只搜方法名。
-     *
-     * 我先前匹配"类方法名的任意出现"，结果命中的是**另一处注释里提到
-     * `startToolPoller` 的那句话**（`…"重复启动轮询不会重复执行"` 附近），
-     * 切片只有 660 字符，两条守卫随即报"找不到 toolPollers.has(dir)" ——
-     * 一个与它们本意完全无关的失败。
-     *
-     * 签名行的形状是唯一的：**行首恰好两空格** + 修饰符 + 方法名 + `(` … `{` 收尾。
-     */
-    const m =
-      /^ {2}(?:private|public|protected)?\s*(?:async\s+)?startToolPoller\s*\([^)]*\)[^{]*\{/m.exec(
-        paneSource,
-      );
-    assert.ok(m, "找不到 startToolPoller 的方法定义");
-    /**
-     * 取到**下一个类方法签名**为止（同样是"行首两空格 + 修饰符 + 名字"）。
-     *
-     * 不能只找 `async` 字样 —— 我的守卫注释里就有 `async`，切片会在函数体中间断掉；
-     * 也不能靠大括号配平 —— 守卫代码里的 `{` / `}` 会把配平带偏。
-     * 两者我都试过，都误报过。
-     */
-    const rest = paneSource.slice(m.index);
-    const next = rest
-      .slice(1)
-      .search(/\n {2}(?:private|public|protected|async) [A-Za-z_]/);
-    return next > 0 ? rest.slice(0, next + 1) : rest;
+    const body = methodBody(paneSource, "startToolPoller");
+    assert.ok(body, "找不到 startToolPoller 的方法定义");
+    return body;
   };
 
   it("按工作区目录去重（不是 sessionId）", function () {

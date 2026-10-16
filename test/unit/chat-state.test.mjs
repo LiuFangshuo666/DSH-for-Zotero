@@ -6,6 +6,7 @@
  */
 
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -543,6 +544,81 @@ describe("一轮读完之后该怎么走（多步执行的核心规则）", func
  *
  * 与上一轮的 `turn/end` 是同一个病的两条路：多步执行时每步都会结束一次。
  */
+/**
+ * ## ⚠️ 「确定空闲」必须真的发出 false（真机：状态行永远「运行状态未知」）
+ *
+ * "这个会话还在跑吗"这个问题在本仓库曾有 **5 份实现**，而复制已经**静默分叉**：
+ * readerPanel.probeRunning 的文档写着"明确没在跑 → running: false，正常空闲"，
+ * 代码却是 running: runningSession ? true : undefined —— **false 永不发出**。
+ *
+ * 后果：reducer 每次都觉得"问不到"，状态行**永远显示「运行状态未知」**。
+ * 而那本该是"一切正常、已空闲"这个**最常见**的情况 ——
+ * 用户看到的是一个恒定警告，久了就学会忽略它，于是真出问题时也看不见。
+ *
+ * 现在传输层把三态分清楚了（probeWorkspaceRunning）：
+ *  - 有 runningSessionId          → 在跑
+ *  - 空对象（枚举成功、都不在跑）→ **确定空闲 → false**
+ *  - undefined（枚举失败 / 该工作区无会话）→ 问不到
+ */
+describe("运行状态三态：确定空闲必须发出 false", function () {
+  const src = readFileSync(
+    join(here, "..", "..", "src", "modules", "readerPanel.ts"),
+    "utf8",
+  );
+
+  it("不得再把三态压成两态（? true : undefined 就是那个 bug 的写法）", function () {
+    /**
+     * ⚠️ **必须先剔除注释**。
+     *
+     * 我第一版直接对整个源文件做正则，结果命中了**我自己写的说明注释** ——
+     * 那段注释正好引用了旧写法来说明"以前错在哪"。
+     * 于是守卫报了一个**不存在的** bug。
+     *
+     * 这正是本项目反复记录的“文本判据”陷阱：
+     * **文本里出现某个字符串 ≠ 行为如此**。
+     * 内容说明与实现在同一个文件里，就必须把它们分开看。
+     */
+    const codeOnly = src
+      .split("\n")
+      .filter((line) => {
+        const s = line.trim();
+        return !s.startsWith("//") && !s.startsWith("*") && !s.startsWith("/*");
+      })
+      .join("\n");
+    assert.ok(
+      !/running:\s*\w+\s*\?\s*true\s*:\s*undefined/.test(codeOnly),
+      "running: x ? true : undefined 会让 false 永不发出 —— " +
+        "状态行会永远显示「运行状态未知」",
+    );
+  });
+
+  it("必须显式区分「问不到」与「确定空闲」", function () {
+    assert.match(
+      src,
+      /found === undefined \? undefined : Boolean\(runningSession\)/,
+      "三态要如实映射：只有 found === undefined 才是问不到，" +
+        "空对象是**确定空闲**（应给 false）",
+    );
+  });
+
+  it("传输层必须用可区分的返回形状（而不是 string | undefined）", function () {
+    const tr = readFileSync(
+      join(here, "..", "..", "src", "chat", "transport.ts"),
+      "utf8",
+    );
+    assert.match(
+      tr,
+      /probeWorkspaceRunning/,
+      "按工作区查询必须返回可区分三态的方法",
+    );
+    assert.match(
+      tr,
+      /\{ runningSessionId\?: string \} \| undefined/,
+      "返回类型要能表达「确定空闲」（空对象）与「问不到」（undefined）的区别",
+    );
+  });
+});
+
 describe("流式 end 帧的收尾规则", function () {
   it("harness 明确还在跑 → 交给轮询接管，**不宣布结束**", function () {
     assert.equal(

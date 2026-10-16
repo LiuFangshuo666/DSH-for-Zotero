@@ -8,6 +8,11 @@
 import { strict as assert } from "node:assert";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  CASES as MD_CASES,
+  HEADING_BASE,
+  expandHeading,
+} from "./markdown.fixtures.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const writeback = await import(
@@ -21,6 +26,7 @@ const {
   buildNoteTitle,
   buildSessionNoteTitle,
   buildMarkdown,
+  markdownToHtml,
 } = writeback;
 
 describe("HTML 转义", function () {
@@ -284,4 +290,38 @@ describe("Markdown → 笔记 HTML（真机反馈：曾被二次格式化）", f
     );
     assert.ok(long.length < 80, `标题过长：${long.length} 字符`);
   });
+});
+
+/**
+ * ## 共享夹具：**与会话页用同一组用例**
+ *
+ * 同一段模型输出会在会话页与「存为笔记」两处渲染成 HTML，
+ * 而它们是**两份独立实现**（`sessionPage.renderMarkdown` 与
+ * `writeback.markdownToHtml`）。两边各有自己的用例，
+ * **从来没比过它们对同一输入是否一致** ——
+ * 于是同一段回答在两处渲染得不一样而无人察觉。
+ *
+ * 夹具在 `markdown.fixtures.mjs`：`CASES` 两边都跑，
+ * `DIFFERENCES` 显式登记**已确认、且有意**的差异
+ * （每条都必须写出“为什么两边不同”）。
+ */
+describe("共享夹具：写笔记的 Markdown 渲染器", function () {
+  for (const c of MD_CASES) {
+    it(c.name, function () {
+      const html = markdownToHtml(c.md);
+      for (const raw of c.expect || []) {
+        const want = expandHeading(raw, HEADING_BASE.writeback);
+        assert.ok(
+          html.includes(want),
+          "应包含 " + want + "，实际：" + html.slice(0, 200),
+        );
+      }
+      for (const bad of c.absent || []) {
+        assert.ok(
+          !html.includes(bad),
+          "不应出现 " + bad + "，实际：" + html.slice(0, 200),
+        );
+      }
+    });
+  }
 });

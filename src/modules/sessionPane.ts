@@ -4075,7 +4075,8 @@ export class SessionPane {
    * 页面是全新的、状态是空闲，而 harness 那边**还在干活**。
    * 用户看到的是一个安静的界面，以为答完了。
    *
-   * v0.8.0 我给 **reader 侧面板**加过同类探测（`findRunningSession`），
+   * v0.8.0 我给 **reader 侧面板**加过同类探测（当时的名字是 `findRunningSession`，
+   * 现已并入传输层的 `probeWorkspaceRunning`），
    * 但会话页走的是**另一条路径**（`chrome://` 页面 + 全局 API），
    * 那份修复到不了这里 —— 这正是这次漏掉的原因。
    *

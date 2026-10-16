@@ -1467,6 +1467,76 @@ export class ChatTransport {
   }
 
   /**
+   * ## 「这个会话/这个工作区现在还在跑吗」——**唯一的查询入口**
+   *
+   * ### 为什么收敛到一处（三份独立审计的共同结论）
+   *
+   * 这个问题原先在仓库里有 **5 份实现**：
+   * `harnessRunning`（按 sessionId）、`probeHarnessRunning`、`findRunningSession`
+   * （按 itemKey）、`sessionPane.isSessionRunning`、`readerPanel.probeRunning`、
+   * 外加"页面按字符位置判断"的 `sessionPage.probeSessionRunning`。
+   *
+   * 复制已经开始分叉 —— 而且是**静默**分叉：
+   * `readerPanel.probeRunning` 的文档写着"明确没在跑 → `running: false`，正常空闲"，
+   * 代码却是 `running: runningSession ? true : undefined` —— **`false` 永不发出**。
+   * 于是 reducer 每次都觉得"问不到"，状态行**永远显示「运行状态未知」**，
+   * 而那本该是"一切正常"的常见情况。
+   *
+   * ### 三态怎么区分（这是唯一需要想清楚的地方）
+   *
+   * `session/list` 成功 + 按 cwd 过滤后：
+   *
+   * | 情况 | 返回 | 为什么 |
+   * | --- | --- | --- |
+   * | 枚举成功，有会话在跑 | `{ runningSessionId }` | 确定在跑 |
+   * | **枚举成功，有会话但都不在跑** | `{}`（两者皆无） | **确定空闲** —— 这是原先缺的那一格 |
+   * | **枚举成功，该工作区一条会话都没有** | `undefined` | 无法判断（"没有会话"≠"没在跑"） |
+   * | 枚举失败 / 连不上 | `undefined` | 问不到，**不能当空闲** |
+   *
+   * ⚠️ 第 3 行容易被写成"确定空闲"，但那是错的：宿主刚重启、会话还没列出来时，
+   * 说"确实没在跑"会诱导用户追问一个可能还在跑的会话。
+   */
+  private async queryRunning(input: {
+    sessionId?: string;
+    itemKey?: string;
+  }): Promise<{ runningSessionId?: string } | undefined> {
+    const client = this.client ?? (await this.connect());
+    if (!client) return undefined;
+    let items: SessionSummary[];
+    try {
+      const result = await listSessions(client);
+      const listed = result.value?.items;
+      if (!Array.isArray(listed)) return undefined;
+      items = listed;
+    } catch (error) {
+      this.log(
+        `查询运行状态失败（保守处理为"不确定"）：${this.describeError(error)}`,
+      );
+      return undefined;
+    }
+
+    // 按 sessionId 问：只关心那一条
+    if (input.sessionId) {
+      const mine = items.find((s) => s.sessionId === input.sessionId);
+      if (!mine) return undefined; // 不在列表里 = 问不到，不是"停了"
+      return mine.running === true ? { runningSessionId: mine.sessionId } : {};
+    }
+
+    // 按工作区问：把该工作区的会话挑出来，再看有没有在跑的
+    const cwd = input.itemKey
+      ? this.deps.workspaceDir(input.itemKey)
+      : undefined;
+    const normalize = (p?: string) =>
+      (p ?? "").replace(/[\\/]+$/, "").toLowerCase();
+    const scoped = cwd
+      ? items.filter((s) => normalize(s.cwd) === normalize(cwd))
+      : items;
+    if (scoped.length === 0) return undefined; // 没有会话 → 无法判断
+    const running = scoped.find((s) => s.running === true);
+    return running ? { runningSessionId: running.sessionId } : {};
+  }
+
+  /**
    * 该文献的工作区里，**是否有会话正在进行**？
    *
    * ## 为什么需要（真机反馈的缺口）
@@ -1480,55 +1550,21 @@ export class ChatTransport {
    * 而 harness 那边上一轮**还在跑**。用户于是追问一句 → 轮次错乱。
    *
    * 这个方法就是给"回来时"用的：**按工作区**问一次（而不是按某个已知 sessionId，
-   * 因为新实例未必知道当前该看哪个会话），把答案交给界面。
+   * 因为新实例未必知道当前该看哪个会话）。
    *
-   * 返回**在跑的那个**会话 id（便于界面直接接管），或 `undefined`（没人跑 / 问不到）。
-   * ⚠️ 调用方不能把 `undefined` 当成"确定空闲" —— 见 `probeHarnessRunning` 的说明。
+   * ## ⚠️ 返回三态，**不要**把 `undefined` 与 `{}` 混为一谈
+   *
+   *  - `{ runningSessionId: "…" }` → 确实在跑（界面可据此接管）
+   *  - `{}`                        → **确定不在跑**（工作区有会话，但都空闲）
+   *  - `undefined`                 → **问不到**，界面应显示"运行状态未知"
+   *
+   * 先前这里只返回 `string | undefined`，把"确定空闲"与"问不到"压成了同一个值 ——
+   * 那正是 `readerPanel.probeRunning` 永远发不出 `false` 的原因。
    */
-  async findRunningSession(itemKey: string): Promise<string | undefined> {
-    try {
-      const sessions = await this.listWorkspaceSessions(itemKey);
-      const running = sessions.find((s) => s.running === true);
-      return running?.sessionId;
-    } catch (error) {
-      this.log(`查询工作区运行状态失败：${this.describeError(error)}`);
-      return undefined;
-    }
-  }
-
-  /**
-   * 问 harness：这个会话的 agent 现在**还在跑吗**？
-   *
-   * ## 为什么必须是公开方法（真机反馈的缺口）
-   *
-   * 用户反馈："对话容易因轮询读取超时或**中途退出会话界面**而被判断为一轮对话的结束，
-   * 缺乏对 harness 状态的监测表示。"
-   *
-   * 传输层这边其实已经处理得很谨慎（见 `pollOnce`：超时先问 `running`，
-   * 不确定就继续盯）。**但那份知识只活在传输层的内存里** ——
-   * 用户一旦退出会话页再回来，面板是**新实例**：
-   *
-   * ```text
-   *   新实例的 state.generating === false（初始值）
-   *   → 状态行显示"已连接 dsh"，看起来空闲
-   *   → 用户以为这一轮结束了，于是追问一句
-   *   → 而 harness 那边上一轮还在跑 → 轮次错乱
-   * ```
-   *
-   * 所以这里把"问一次 harness"开放给界面：**面板挂载时先问一次**，
-   * 若仍在跑就明确显示"仍在生成"，而不是显示成空闲。
-   *
-   * 返回三态，**调用方必须区分 `undefined` 与 `false`**：
-   *  - `true`  → 确实还在跑
-   *  - `false` → 确实停了
-   *  - `undefined` → **问不到**（RPC 失败 / 会话不在列表里）
-   *
-   * 把 `undefined` 当 `false` 会在 RPC 抖动时宣布"结束了"，正是误导用户的根源。
-   */
-  async probeHarnessRunning(sessionId: string): Promise<boolean | undefined> {
-    const client = this.client ?? (await this.connect());
-    if (!client) return undefined;
-    return this.harnessRunning(client, sessionId);
+  async probeWorkspaceRunning(
+    itemKey: string,
+  ): Promise<{ runningSessionId?: string } | undefined> {
+    return this.queryRunning({ itemKey });
   }
 
   /**
@@ -1542,10 +1578,23 @@ export class ChatTransport {
    * 返回 `true`/`false`/`undefined`（问不到）。**调用方必须把 `undefined` 当作
    * "不确定"，而不是"没在跑"** —— 在 RPC 抖动时宣布结束，正是误导用户的根源。
    */
+  async probeHarnessRunning(sessionId: string): Promise<boolean | undefined> {
+    const found = await this.queryRunning({ sessionId });
+    if (!found) return undefined;
+    return found.runningSessionId !== undefined;
+  }
+
+  /**
+   * ⚠️ 已并入 `queryRunning`（见那里的说明：这个问题原先有 5 份实现，
+   * 而其中一份已经静默分叉）。保留这个薄包装是为了让 `pollOnce` 的调用点保持可读：
+   * 它手里已经有 `client`，不必再走一次"取 client"。
+   */
   private async harnessRunning(
     client: DshClient,
     sessionId: string,
   ): Promise<boolean | undefined> {
+    // 注意：这里**不**复用 `queryRunning` 的"取 client"那一步，
+    // 因为调用方已经持有它，重取会多一次潜在的重连判断。
     try {
       const result = await listSessions(client);
       const items = result.value?.items;

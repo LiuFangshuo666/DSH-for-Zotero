@@ -118,6 +118,62 @@ const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
  * `getHistory` 走 `session/page`，每次都是最新的（这正是"重进能看到新内容"的原因），
  * 所以修法就是**定期再取一次**。
  */
+/**
+ * ## 待确认列表的**标题只能由一处产生**
+ *
+ * 真机故障：这一块原本是"删除确认"，后来扩展成
+ * "结构性改动确认"，但**标题文案没跟着改** ——
+ * 结果 Agent 请求**新建 4 个网页条目**时，面板显示
+ * "请求删除 4 项（删除不可逆）"，把用户吓一跳。
+ *
+ * 之后两处渲染（主面板 / 角标就地展开）**各写了一遍分类逻辑**，
+ * 而就地展开那份的注释只写了一句"与主面板同一套分类逻辑"——
+ * **那句话不是保证，只是愿望**。
+ *
+ * 现在两处都调 `describePendingHead()`，这条守卫把它钉住：
+ * 文案只能出现在那一个函数里。
+ */
+describe("待确认标题只能由一处产生", function () {
+  const page = readFileSync(
+    join(here, "..", "..", "addon", "content", "sessionPage.js"),
+    "utf8",
+  );
+
+  it("三条标题文案各自只出现一次", function () {
+    for (const frag of [
+      "Agent 请求新建 ",
+      "Agent 请求删除 ",
+      "Agent 请求改动 ",
+    ]) {
+      const n = page.split(frag).length - 1;
+      assert.equal(
+        n,
+        1,
+        "「" +
+          frag +
+          "」出现了 " +
+          n +
+          " 次 —— 它只应该在 " +
+          "describePendingHead() 里出现一次；" +
+          "多一处就意味着又有人抄了一遍，" +
+          "而下次改文案时必定漏一处（真机踩过）",
+      );
+    }
+  });
+
+  it("分类谓词也只能有一份", function () {
+    const n = (page.match(/it\.op === "createItem"/g) || []).length;
+    assert.equal(
+      n,
+      1,
+      '`it.op === "createItem"` 出现 ' +
+        n +
+        " 次 —— " +
+        "它应该只在 pendingItemIsCreate() 里",
+    );
+  });
+});
+
 describe("会话页的持续刷新", function () {
   const page = readFileSync(
     join(here, "..", "..", "addon", "content", "sessionPage.js"),

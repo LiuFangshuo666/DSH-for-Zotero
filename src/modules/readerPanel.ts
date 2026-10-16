@@ -663,21 +663,37 @@ class PanelInstance {
    * 与 `loadHistory` 一样是"回到面板时"的补课动作。区别在于它回答的是
    * **"现在还在跑吗"**，而不是"以前聊过什么"。
    *
-   * ⚠️ 结果三态，界面必须区分：
-   *  - 找到在跑的会话 → `running: true`，状态行显示"仍在运行（自 HH:MM 起）"
-   *  - 明确没有在跑   → `running: false`，正常空闲
-   *  - 问不到         → `running: undefined`，显示"运行状态未知"
-   *    （**不能**显示成空闲 —— 那会诱导用户追问一个其实还在跑的会话）
+   * ## ⚠️ 三态必须**真的**传出去（这里曾经静默说谎）
+   *
+   * 本方法的文档一直写着三者要区分，但代码是：
+   *
+   * ```js
+   *   running: runningSession ? true : undefined    // ← false 永不发出
+   * ```
+   *
+   * 于是 reducer 每次都觉得"问不到"，状态行**永远显示「运行状态未知」**——
+   * 而那本该是"一切正常、已空闲"的**最常见**情况。
+   * 用户看到的是一个恒定的警告，久了就学会忽略它，于是真出问题时也看不见。
+   *
+   * 现在 `probeWorkspaceRunning()` 返回可区分的三态，这里如实映射：
+   *  - `runningSessionId` 有值 → `true`，状态行显示"仍在运行（自 HH:MM 起）"
+   *  - `{}`（确定空闲）        → **`false`**
+   *  - `undefined`（问不到）   → `undefined`，显示"运行状态未知"
+   *
+   * `undefined` **不能**显示成空闲 —— 那会诱导用户追问一个其实还在跑的会话。
    */
   private async probeRunning(itemKey: string): Promise<void> {
     try {
       await this.mappingReady;
       if (this.itemKey !== itemKey) return; // 期间切走了
-      const runningSession = await this.transport.findRunningSession(itemKey);
+      const found = await this.transport.probeWorkspaceRunning(itemKey);
       if (this.itemKey !== itemKey) return;
+      const runningSession = found?.runningSessionId;
       this.applyEvent({
         kind: "harness",
-        running: runningSession ? true : undefined,
+        // ⚠️ 三态如实映射：`found === undefined` 才是"问不到"，
+        // 而 `found === {}` 是**确定空闲**。先前两者被压成了同一个值。
+        running: found === undefined ? undefined : Boolean(runningSession),
       });
       if (runningSession) {
         appendPanelLog(

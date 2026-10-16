@@ -50,9 +50,27 @@
   /** 行内 Markdown → HTML；输入先整体转义 */
   function renderInline(text) {
     var out = escapeHtml(text);
-    // 行内代码优先：内容单独存起来，最后原样放回
-    // （⚠️ writeback.ts 那份实现有个既有局限：代码内容会被后续粗体/斜体规则再处理；
-    //   这里在放回时**再次转义**，避免同样的问题）
+    /**
+     * 行内代码优先：内容单独存起来、渲染完再放回（NUL 哨兵占位符），
+     * 这样代码里的 `**`、`*`、`_` 不会被后续规则再处理。
+     *
+     * ⚠️ 这里曾写着「writeback.ts 那份实现有个既有局限：代码内容会被
+     * 粗体/斜体规则再处理；这里在放回时再次转义，避免同样的问题」——
+     * **那句话是错的**。写共享夹具时实测了两份实现：
+     *
+     * ```text
+     *   输入  a **bold** and `b**c`
+     *   两边都得到  a <strong>bold</strong> and <code>b**c</code>
+     * ```
+     *
+     * 两份都用 NUL 哨兵，**都不会**再处理代码内容；差别只在块级包装
+     * （笔记那份会包 `<p>`，这一份只产出行内片段）。
+     * 实测结论与用例在 `test/unit/markdown.fixtures.mjs`，
+     * 两条 `CASES` 会把任何一份的退化变成红灯。
+     *
+     * 教训：**"另一份实现有局限"这种跨文件的断言，必须实测**。
+     * 它读起来像经验，实际只是当时没有验证的猜测，而且会误导后来者去"修"已经好的代码。
+     */
     var codes = [];
     out = out.replace(/`([^`]+)`/g, function (_m, code) {
       codes.push(code);
@@ -1001,37 +1019,14 @@
           renderPendingBadge(items.length);
           pendingEl.style.display = "";
           // ⚠️ 标题必须按**实际请求**分类，不能写死"删除"。
-          //
-          // 真机故障：这一块原本是"删除确认"，后来扩展成"结构性改动确认"，
-          // 但标题文案没跟着改 —— 结果 Agent 请求**新建 4 个网页条目**时，
-          // 面板显示"请求删除 4 项（删除不可逆）"，把用户吓一跳。
-          var isCreate = function (it) {
-            return it.op === "createItem" || (it.summary && it.summary.length);
-          };
-          var createCount = items.filter(isCreate).length;
-          var deleteCount = items.length - createCount;
-          var headText;
-          if (createCount > 0 && deleteCount === 0) {
-            headText =
-              "Agent 请求新建 " + createCount + " 个条目 —— 需要你确认";
-          } else if (deleteCount > 0 && createCount === 0) {
-            headText =
-              "Agent 请求删除 " +
-              deleteCount +
-              " 项 —— 需要你确认（删除不可逆）";
-          } else {
-            headText =
-              "Agent 请求改动 " +
-              items.length +
-              " 项（新建 " +
-              createCount +
-              "，删除 " +
-              deleteCount +
-              "）—— 需要你确认";
-          }
+          // 分类与配色都在 describePendingHead 里 —— 抽出去是因为
+          // 就地展开那份原先"照抄一遍"，而抄漏过一次文案（见那里的真机故障）。
+          var headInfo = describePendingHead(items);
+          var isCreate = headInfo.isCreate;
+          var deleteCount = headInfo.deleteCount;
+          var headText = headInfo.text;
           head.textContent = headText;
-          // 新建不加红：红色代表危险，新建不是危险操作（删除才是）
-          head.style.color = deleteCount > 0 ? "#b91c1c" : "#1d4ed8";
+          head.style.color = headInfo.color;
           pendingEl.appendChild(head);
 
           // ── 一键确认（与就地面板同一功能；条目多时逐条点太麻烦）──
@@ -1458,6 +1453,62 @@
      *
      * 2. **标题写死"删除"**：新建条目被显示成"请求删除"（见主面板里的说明）。
      */
+    /**
+     * ## ⚠️ 待确认列表的**标题与配色**只在这里算一次
+     *
+     * 真机故障（这条注释原先只写在主面板那一份里，就地展开那份是"照抄一遍"）：
+     *
+     * > 这一块原本是"删除确认"，后来扩展成"结构性改动确认"，但**标题文案没跟着改** ——
+     * > 结果 Agent 请求**新建 4 个网页条目**时，面板显示"请求删除 4 项（删除不可逆）"，
+     * > 把用户吓一跳。
+     *
+     * 现在两处渲染（主面板 / 角标就地展开）都调这个函数，
+     * **"两处必须一致"由结构保证，而不是靠两人各自记得**。
+     *
+     * `createItem` 与带 `summary` 的都算"新建"（summary 只在新建类待确认项上有），
+     * 其余算"删除"。配色规则：**新建不加红**（红色代表危险，新建不危险）。
+     */
+    function describePendingHead(items) {
+      var isCreate = pendingItemIsCreate;
+      var createCount = items.filter(isCreate).length;
+      var deleteCount = items.length - createCount;
+      var text;
+      if (createCount > 0 && deleteCount === 0) {
+        text = "Agent 请求新建 " + createCount + " 个条目 —— 需要你确认";
+      } else if (deleteCount > 0 && createCount === 0) {
+        text =
+          "Agent 请求删除 " + deleteCount + " 项 —— 需要你确认（删除不可逆）";
+      } else {
+        text =
+          "Agent 请求改动 " +
+          items.length +
+          " 项（新建 " +
+          createCount +
+          "，删除 " +
+          deleteCount +
+          "）—— 需要你确认";
+      }
+      return {
+        text: text,
+        isCreate: isCreate,
+        createCount: createCount,
+        deleteCount: deleteCount,
+        color: deleteCount > 0 ? "#b91c1c" : "#1d4ed8",
+      };
+    }
+
+    /**
+     * 判断一条待确认项是不是"新建类"。
+     *
+     * `createItem` 与带 `summary` 的都算新建（`summary` 只在新建类待确认项上有），
+     * 其余算删除。**单独抽出来**是因为它被三处用到
+     * （标题计数、每项文案、每项配色）—— 先前是各写一遍，
+     * 于是"新建不加红"这类规则很容易只改一处。
+     */
+    function pendingItemIsCreate(it) {
+      return it.op === "createItem" || Boolean(it.summary && it.summary.length);
+    }
+
     function renderPendingInto(target) {
       if (!target) return;
       if (
@@ -1479,29 +1530,14 @@
             return;
           }
 
-          // 标题：与主面板同一套分类逻辑（不能写死"删除"）
+          // 标题：与主面板**同一套分类逻辑**（不能写死"删除"）——
+          // 分类、配色与计数都在 describePendingHead 里，见那里的真机故障记录
+          var headInfo = describePendingHead(items);
+          var deleteCount = headInfo.deleteCount;
           var head = document.createElement("div");
-          var createCount = items.filter(function (it) {
-            return it.op === "createItem" || (it.summary && it.summary.length);
-          }).length;
-          var deleteCount = items.length - createCount;
           head.style.cssText =
-            "font-weight:600;margin-bottom:6px;color:" +
-            (deleteCount > 0 ? "#b91c1c" : "#1d4ed8");
-          head.textContent =
-            createCount > 0 && deleteCount === 0
-              ? "Agent 请求新建 " + createCount + " 个条目 —— 需要你确认"
-              : deleteCount > 0 && createCount === 0
-                ? "Agent 请求删除 " +
-                  deleteCount +
-                  " 项 —— 需要你确认（删除不可逆）"
-                : "Agent 请求改动 " +
-                  items.length +
-                  " 项（新建 " +
-                  createCount +
-                  "，删除 " +
-                  deleteCount +
-                  "）—— 需要你确认";
+            "font-weight:600;margin-bottom:6px;color:" + headInfo.color;
+          head.textContent = headInfo.text;
           target.appendChild(head);
 
           // ── 一键确认（用户要求：条目一多，逐条点太麻烦）──────

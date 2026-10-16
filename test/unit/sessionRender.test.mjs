@@ -8,6 +8,11 @@ import { strict as assert } from "node:assert";
 import vm from "node:vm";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  CASES as MD_CASES,
+  HEADING_BASE,
+  expandHeading,
+} from "./markdown.fixtures.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pagePath = join(here, "..", "..", "addon", "content", "sessionPage.js");
@@ -408,4 +413,38 @@ describe("待确认列表：批量确认期间的定位与互斥", function () {
     assert.equal(helpers.batchBlocksAction(), false, "跑完后必须解除挡住");
     helpers.__setBatchConfirm(null);
   });
+});
+
+/**
+ * ## 共享夹具：两份渲染器用**同一组**用例
+ *
+ * 同一段模型输出会在这里和「存为笔记」两处渲染，
+ * 而两边各有自己的用例、**从来没比过**。
+ * 夹具在 `markdown.fixtures.mjs`，两个测试文件都跑它。
+ */
+describe("共享夹具：会话页渲染器", function () {
+  for (const c of MD_CASES) {
+    it(c.name, function () {
+      const html = renderMarkdown(c.md);
+      for (const raw of c.expect || []) {
+        const want = expandHeading(raw, HEADING_BASE.sessionPage);
+        assert.ok(
+          html.includes(want),
+          "\u5e94\u5305\u542b " +
+            want +
+            "\uff0c\u5b9e\u9645\uff1a" +
+            html.slice(0, 200),
+        );
+      }
+      for (const bad of c.absent || []) {
+        assert.ok(
+          !html.includes(bad),
+          "\u4e0d\u5e94\u51fa\u73b0 " +
+            bad +
+            "\uff0c\u5b9e\u9645\uff1a" +
+            html.slice(0, 200),
+        );
+      }
+    });
+  }
 });
