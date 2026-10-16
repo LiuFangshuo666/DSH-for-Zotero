@@ -20,6 +20,7 @@
  */
 import assert from "node:assert/strict";
 import yaml from "js-yaml";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -31,6 +32,13 @@ const bundle = await import(
 );
 const { buildZoteroPresetPatch, ASK_USER_TIMEOUT_SECONDS, ZOTERO_PRESET_ID } =
   bundle;
+
+/** Cordis 的 entry-list 方言带 `!!js` 标签（上游也用），普通解析器会报 unknown tag */
+const jsTag = new yaml.Type("tag:yaml.org,2002:js", {
+  kind: "scalar",
+  resolve: () => true,
+  construct: (value) => ({ js: value }),
+});
 
 describe("Zotero 专用 preset", function () {
   const patch = buildZoteroPresetPatch();
@@ -133,12 +141,6 @@ describe("Zotero 专用 preset", function () {
 describe("preset 的 YAML 可解析性", function () {
   const patch = buildZoteroPresetPatch();
 
-  const jsTag = new yaml.Type("tag:yaml.org,2002:js", {
-    kind: "scalar",
-    resolve: () => true,
-    construct: (value) => ({ js: value }),
-  });
-
   it("必须能解析成两行：registry 与 preset 声明", function () {
     const parsed = yaml.load(patch, {
       schema: yaml.DEFAULT_SCHEMA.extend([jsTag]),
@@ -171,6 +173,110 @@ describe("preset 的 YAML 可解析性", function () {
     assert.ok(
       bash.disabled !== undefined && typeof bash.disabled === "object",
       "tool-bash 的 disabled 应是 !!js 表达式；写成普通字符串就不会按平台生效",
+    );
+  });
+});
+
+/**
+ * ## 参考的包**必须真的装得上**（真机缺陷）
+ *
+ * 我把上游 `standard.patch.yml` 当成权威清单来镜像，但**上游的包集合与本插件实际提取的运行时不同步**：
+ *
+ * ```text
+ *   standard.patch.yml 里有 @deepseek-ai/dsh-tool-schedule
+ *   而实际运行时（0.2.0-rc.2）里【没有这个包】
+ *   → 引用不存在的包 → preset 声明加载失败
+ * ```
+ *
+ * 而失败的表现是「插件装了但什么都不工作」，极难定位。
+ * 同样的道理适用于**必填的 config 字段**：`plan-mode` 的 `section`
+ * 是必填，我漏掉它时也是“加载即报错”。
+ *
+ * ⚠️ 这条守卫依赖本机的运行时目录：找不到就**跳过**（而不是假绿）。
+ */
+describe("参考的包必须真的装得上", function () {
+  const patch = buildZoteroPresetPatch();
+  const runtimeRoot = join(
+    process.env.USERPROFILE ?? "",
+    "Zotero",
+    "dsh-for-zotero",
+    "runtime",
+    "node_modules",
+    "@deepseek-ai",
+  );
+  const available = existsSync(runtimeRoot);
+
+  it("每个引用的包都要在实际运行时里存在", function () {
+    if (!available) {
+      this.skip();
+      return;
+    }
+    /**
+     * ⚠️ 判据是「**引用了不存在的包、又没有显式 `disabled: true`**」。
+     *
+     * 为什么不是"名字都不能出现"：上游 `standard.patch.yml` 里有一行
+     * `@deepseek-ai/dsh-tool-schedule`，而这个插件实际提取的运行时
+     * （0.2.0-rc.2）**没有那个包** —— 引用它会加载失败，所以本 preset 必须关掉它。
+     * 保留那一行并显式禁用，是为了记下「它为何不在」与「何时该启回来」。
+     *
+     * 所以真正危险的是**被启用**却装不上的行。
+     */
+    const rows = [];
+    const walk = (list) => {
+      for (const r of list) {
+        rows.push(r);
+        if (Array.isArray(r.config)) walk(r.config);
+      }
+    };
+    walk(
+      yaml.load(patch, { schema: yaml.DEFAULT_SCHEMA.extend([jsTag]) })[1]
+        .config.plugins,
+    );
+
+    const unresolved = rows.filter((r) => {
+      const name = typeof r.name === "string" ? r.name : "";
+      if (!name.startsWith("@deepseek-ai/")) return false;
+      const dir = name.replace("@deepseek-ai/", "").split("/")[0];
+      return !existsSync(join(runtimeRoot, dir));
+    });
+    const notDisabled = unresolved.filter((r) => r.disabled !== true);
+    assert.deepEqual(
+      notDisabled.map((r) => r.id),
+      [],
+      "这些行引用了实际运行时里**不存在**的包，会让整份 preset 加载失败：" +
+        notDisabled.map((r) => r.id).join(", ") +
+        "（确实要保留就必须 `disabled: true`）",
+    );
+  });
+
+  it("必填的 config 字段不能漏（plan-mode.section）", function () {
+    const parsed = yaml.load(patch, {
+      schema: yaml.DEFAULT_SCHEMA.extend([jsTag]),
+    });
+    const find = (id) => {
+      const walk = (rows) => {
+        for (const r of rows) {
+          if (r.id === id) return r;
+          if (Array.isArray(r.config)) {
+            const hit = walk(r.config);
+            if (hit) return hit;
+          }
+        }
+        return undefined;
+      };
+      return walk(parsed[1].config.plugins);
+    };
+    const plan = find("plan-mode");
+    assert.ok(plan, "应当挂载 plan-mode");
+    assert.ok(
+      typeof plan.config?.section === "string" &&
+        plan.config.section.trim().length > 0,
+      "plan-mode 的 section 是**必填**：缺失或空白都会让插件加载失败（真机踩过）",
+    );
+    assert.match(
+      plan.config.section,
+      /exit_plan_mode/,
+      "这段引导必须提到 exit_plan_mode：否则模型不知道怎么退出计划模式",
     );
   });
 });
