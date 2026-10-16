@@ -32,7 +32,6 @@ import { mintCookieFromCredentials } from "../dsh/auth";
 import { DshClient, fetchModelCatalog, type ModelCatalog } from "../dsh/rpc";
 import { appendPanelLog } from "../dsh/runLog";
 import {
-  setSelectedModel,
   setUserApiKey,
   setUserBaseUrl,
   selectedModel,
@@ -388,15 +387,6 @@ export function initModelSection(win: Window | undefined): void {
   } else {
     scheduleReadyRefresh(win);
   }
-}
-
-/** 供选择模型后立刻联动等级下拉框（`modelId` 的 preference 变化时调用） */
-export async function onModelChanged(win: Window | undefined): Promise<void> {
-  const list = el<MenulistLike>(win, MODEL_ID);
-  if (!list) return;
-  const pick = decodeModel(list.value);
-  if (pick) setSelectedModel({ ...pick, reasoningEffort: "" });
-  await fillEffortList(win, list.value);
 }
 
 // ── 运行时未就绪时的自愈 ───────────────────────────────────────

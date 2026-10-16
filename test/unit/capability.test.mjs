@@ -122,6 +122,78 @@ describe("会话能力对象的完整性", function () {
     }
   });
 
+  /**
+   * ## ⚠️ 真正的守卫：**页面调用什么，两条路径就得有什么**
+   *
+   * 上面那三条只校验 `REQUIRED_METHODS`（3 个），而 `isSessionRunning`、
+   * `confirmAllDeletionsBegin`、`confirmDeletionAt` 都在 `OPTIONAL_METHODS` 里 ——
+   * "有守卫"被当成了"有提供"。两次独立审计都从这个缝里查出了真缺陷：
+   *
+   *  - **全局 API 缺 `confirmAllDeletionsBegin` / `confirmDeletionAt`**：
+   *    页面侧的包装有版本探测，方法不存在就**退回整批版** ——
+   *    于是"逐条驱动、防二次操作、显示每条结果"在**唯一**的挂载路径上完全没生效；
+   *    更糟的是 `confirmDeletionAt(idx, uid)` 拿不到时 `expectUid` 为 `undefined`，
+   *    "下标错位就拒绝"那道保险**从不执行**。
+   *
+   * 这类漏项的表现是**功能静默变回旧版**，不报错、不写日志 —— 所以必须由守卫抓。
+   */
+  it("页面读取的每个 capability.xxx 都必须在两条路径上提供", function () {
+    // 页面实际读取的能力名（`capability.x` 与 `cap.x`）
+    const used = new Set();
+    for (const m of pageSource.matchAll(/\b(?:capability|cap)\.(\w+)/g)) {
+      used.add(m[1]);
+    }
+    /**
+     * 数据字段不是方法，全局路径下本来就给不出（页面用 `|| "DSH 会话"` 兜底）。
+     * 把它们显式列出，而不是靠"名字看起来像数据"来猜。
+     */
+    const DATA_FIELDS = new Set([
+      "title",
+      "scopeKind",
+      "scopeTitle",
+      "workspace",
+      "sessionId",
+    ]);
+    const need = [...used].filter((n) => !DATA_FIELDS.has(n)).sort();
+    assert.ok(
+      need.length >= 8,
+      "页面读取的能力太少，抽取逻辑可能失效：" + need.join(", "),
+    );
+
+    // 路径一：全局注册表（`const api = { … }`）
+    const gi = paneSource.indexOf("const api = {");
+    assert.ok(gi > 0, "找不到 registerGlobalApi 里的 api 对象");
+    const gEnd = paneSource.indexOf("\n  };", gi);
+    const globalBody = paneSource.slice(gi, gEnd > 0 ? gEnd : gi + 4200);
+    const globalKeys = new Set(
+      [...globalBody.matchAll(/^\s{4}(\w+):/gm)].map((m) => m[1]),
+    );
+
+    // 路径二：窗口注入（`const capability = { … }`）
+    const wi = paneSource.indexOf("const capability = {");
+    assert.ok(wi > 0, "找不到 openInDialog 注入的 capability 对象");
+    const wEnd = paneSource.indexOf("\n    };", wi);
+    const winBody = paneSource.slice(wi, wEnd > 0 ? wEnd : wi + 4200);
+    const winKeys = new Set(
+      [...winBody.matchAll(/^\s{6}(\w+):/gm)].map((m) => m[1]),
+    );
+
+    const missingGlobal = need.filter((n) => !globalKeys.has(n));
+    const missingWin = need.filter((n) => !winKeys.has(n));
+    assert.deepEqual(
+      missingGlobal,
+      [],
+      "全局注册表路径缺这些能力：" +
+        missingGlobal.join(", ") +
+        " —— 页面会静默退回旧实现（不报错，所以必须靠这条守）",
+    );
+    assert.deepEqual(
+      missingWin,
+      [],
+      "窗口注入路径缺这些能力：" + missingWin.join(", "),
+    );
+  });
+
   it("窗口路径（openInDialog 注入）提供全部必需方法", function () {
     const start = paneSource.indexOf("const capability = {");
     assert.ok(start > 0, "找不到 openInDialog 里的 capability 对象");
@@ -326,6 +398,39 @@ describe("确认回执", function () {
       body,
       /deletion-result\.json/,
       "已有会话的 Agent 可能还在读旧文件，改版不能让它失灵",
+    );
+  });
+});
+
+/**
+ * ## 每个 `pending: true` 的返回值都必须说清**去哪儿看用户决定**
+ *
+ * 真机反馈："我确认完条目后，Agent 貌似无法直观地知道。"
+ *
+ * 光在 `describeOps()` 里写不算数 —— Agent 提交时逐字读到的是**这个返回值**，
+ * 它决定了下一步是"**去读回执**"还是"**再提交一次试探**"（后者会让确认区出现重复项）。
+ *
+ * 现有三个待确认操作：`createItem` / `attachPdf` / 删除类兜底分支。
+ * 将来新增任何一个，都必须同时带上这个字段 —— 所以钉在守卫里。
+ */
+describe("待确认返回值必须指引回执位置", function () {
+  it("每个 `pending: true` 分支都要有\u201c确认结果在哪\u201d", function () {
+    const src = readFileSync(
+      join(here, "..", "..", "src", "modules", "sessionPane.ts"),
+      "utf8",
+    );
+    // 只数真正返回的（排除文档注释里的那一处）
+    const pendingReturns = (src.match(/^\s+pending: true,\s*$/gm) || []).length;
+    const hints = (src.match(/确认结果在哪:/g) || []).length;
+    assert.ok(
+      pendingReturns >= 3,
+      "应至少有三个待确认分支，实际 " + pendingReturns,
+    );
+    assert.equal(
+      hints,
+      pendingReturns,
+      "每个返回 pending 的分支都要带\u201c确认结果在哪\u201d（含 confirm-log.json 与待确认剩余），" +
+        "否则 Agent 只能靠重复提交试探",
     );
   });
 });

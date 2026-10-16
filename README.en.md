@@ -60,14 +60,14 @@ work where the library is.
 
 ## What it can do
 
-| Capability             | Detail                                                                                                                                                                                |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Read**               | Search, read item metadata, list the collection tree, read notes, **read full text** (`getFullText`, chunked on demand - long papers need not be read in one go)                      |
-| **Write**              | Retag, add notes, add to collections - executed directly and **pushed onto Zotero's undo stack** (`Ctrl+Z` reverts)                                                                   |
-| **Structural changes** | **Creating items** and **deleting** are not executed directly. They are registered as pending and a yellow badge appears at the top of the session page for you to confirm one by one |
-| **Sessions**           | **Standalone sessions** (workspace = one collection) and **item sessions** (workspace = one paper)                                                                                    |
-| **Mounting**           | A session is a **real Zotero attachment** (a web link); double-clicking opens the interactive page inside Zotero                                                                      |
-| **Write-back**         | Any answer can be **saved as a note** - item sessions file it under the item, standalone sessions under the collection                                                                |
+| Capability             | Detail                                                                                                                                                                                                                      |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Read**               | Search, read item metadata, list the collection tree, read notes, **read full text** (`getFullText`, chunked on demand - long papers need not be read in one go)                                                            |
+| **Write**              | Retag, add notes, add to collections - executed directly and **pushed onto Zotero's undo stack** (`Ctrl+Z` reverts)                                                                                                         |
+| **Structural changes** | **Creating items**, **fetching full text** (`attachPdf`) and **deleting** are not executed directly. They are registered as pending and a yellow badge appears at the top of the session page for you to confirm one by one |
+| **Sessions**           | **Standalone sessions** (workspace = one collection) and **item sessions** (workspace = one paper)                                                                                                                          |
+| **Mounting**           | A session is a **real Zotero attachment** (a web link); double-clicking opens the interactive page inside Zotero                                                                                                            |
+| **Write-back**         | Any answer can be **saved as a note** - item sessions file it under the item, standalone sessions under the collection                                                                                                      |
 
 ### Safety boundary
 
@@ -110,13 +110,17 @@ The flow (you just describe what you want; the agent takes these two steps):
 > arXiv's `10.48550/arXiv.1706.03762` could not be found, and an agent does not stop there:
 > it picks the nearest hit, which writes a **wrong DOI and wrong year** into the library.
 
-Order of attempts for the full text, from best-informed to last resort:
+Order of attempts for the full text, **by certainty, highest first** (matches `paperFetch.ts`):
 
-1. `Zotero.Attachments.addAvailableFile()` - **Zotero's own resolver chain**: follows the
+1. an explicit `pdfUrl`, tried **first** - the caller already knows the exact address, so it is
+   the most certain path;
+2. `Zotero.Attachments.addAvailableFile()` - **Zotero's own resolver chain**: follows the
    DOI to the publisher, your custom resolvers, open access. This is where your
    institutional access gets used;
-2. an open-access direct link (OpenAlex) - covers "no subscription, but an OA version exists";
-3. a direct download, only when an explicit `pdfUrl` was supplied.
+3. an open-access direct link (OpenAlex) - covers "no subscription, but an OA version exists".
+
+> 📌 This order used to be written backwards here, with the most certain path last. The code has
+> always been pdfUrl -> resolver chain -> OpenAlex; `attachBestPdf` is the reference.
 
 > ⚠️ **Fetching can take tens of seconds** (following the DOI, institutional proxy
 > authentication), and **failing to fetch does not fail the item** - the item is created and

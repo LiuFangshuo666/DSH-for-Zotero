@@ -561,45 +561,16 @@ export async function selectSessionModel(
   );
 }
 
-/**
- * 设置：读一个命名空间的视图。
- *
- * dsh 把**用户可改的配置**放在"设置"里，命名空间就是插件的 id（例如
- * `llm-deepseek-api-key`）。返回的视图带 `revision`，写入时用它做乐观并发控制。
- */
-export async function describeSettings(client: DshClient): Promise<
-  DshCallResult<{
-    writable: boolean;
-    namespaces: Array<{
-      ns: string;
-      revision: number;
-      /** 该命名空间当前**已存**的用户配置（密钥会被脱敏） */
-      section?: Record<string, unknown>;
-    }>;
-  }>
-> {
-  return client.call("settings/describe", {});
-}
-
-/**
- * 设置：把一个补丁**合并**进某个命名空间已存的用户配置。
- *
- * ⚠️ 用 `update` 而不是 `replace`：后者会**整段替换**，把用户在 dsh 网页里
- * 配过的其它字段一起抹掉。`update` 是字段级合并，只动我们给的那几个键。
- *
- * `expectedRevision` 传 `undefined` 表示不做乐观并发检查（无条件写入）——
- * 第三方端点这种设置没有并发写入的场景，为此失败一次反而更烦人。
- */
-export async function updateSettings(
-  client: DshClient,
-  ns: string,
-  patch: Record<string, unknown>,
-): Promise<DshCallResult<unknown>> {
-  return client.call("settings/update", {
-    ns,
-    patch,
-    expectedRevision: undefined,
-  });
-}
+// ⚠️ 这里原有两个设置包装函数：`describeSettings()` 与 `updateSettings()`。
+// **已删除 —— 它们从来没有调用者。**
+//
+// 真正需要设置读写的地方（`modelConfig.ts` 的 `syncBaseUrlToHost`）是
+// **直接调 `client.call("settings/describe" | "settings/update", …)`**，
+// 而且那里要传 `expectedRevision`，与包装函数的签名并不一致。
+//
+// 删掉时把其中**唯一有价值的东西**（"用 `update` 而不是 `replace`" 的理由）
+// 搬到了调用现场 —— 经验留在死代码里等于没有。
+//
+// 判断死代码的方法：导出符号在整个仓库里只出现一次（只有定义本身）。
 
 export { newRpcId };

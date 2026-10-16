@@ -1919,17 +1919,23 @@ export class ChatTransport {
   // ── 小工具 ──────────────────────────────────────────────
 
   /**
-   * 发 `assistant-end` 并**记下是谁发的**。
+   * 发 `assistant-end`，并**记下是哪条路径发的**。
    *
-   * ## ⚠️ 为什么要记来源（真机第三次“假本轮结束”）
+   * ## 为什么值得一直留着（不是临时诊断）
    *
-   * 用户三次报告界面提前显示「本轮结束」，而我每次都能用実主的
-   * `running=true` 证实它**还在跑** —— 但我**始终没能确定是哪条路径**
-   * 发的结束信号：`transport.ts` 里有四处 `emit assistant-end`，
-   * 而日志里只能看到快照（它不记录这件事）。
+   * 用户先后三次报告界面提前显示「本轮结束」，而每次都能用宿主
+   * `session/list` 的 `running=true` 证实 agent **还在跑**。
+   * `transport.ts` 里有**四处**会宣布结束，而"是谁宣布的"这件事
+   * 光看快照日志看不出来 —— 我因此改了四版轮询逻辑又全部撤回，
+   * 因为分不清"真修好了"和"碰巧过了"。
    *
-   * 上一次我据此改了四版轮询逻辑，全部无法验证而撤回。
-   * **这次先把证据补上。**
+   * 现在每次结束都会在面板日志里留下来源（例如
+   * `轮询看到 turn.ended=true` / `流式 end 帧（endStreamStep 判定收尾）`）。
+   * 排查同类问题时，**这一行就是"凶手是谁"的直接答案**，
+   * 代价只有一行日志 —— 值得常驻。
+   *
+   * ⚠️ `from` 请写成**人能读的原因**（"轮询超时且 harness 明确说停了"），
+   * 不要写函数名：读日志的人需要的是判据，不是调用栈。
    */
   private emitAssistantEnd(
     outcome: "committed" | "abandoned" | "cancelled",
@@ -1937,7 +1943,7 @@ export class ChatTransport {
   ): void {
     appendPanelLog(
       "session",
-      `DIAG assistant-end 由【${from}】发出（outcome=${outcome}，会话 ${this.sessionId ?? "?"}）`,
+      `本轮结束信号由【${from}】发出（outcome=${outcome}，会话 ${this.sessionId ?? "?"}）`,
     );
     this.deps.emit({ kind: "assistant-end", outcome });
   }

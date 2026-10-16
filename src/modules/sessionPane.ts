@@ -473,6 +473,30 @@ function registerGlobalApi(pane: SessionPane): void {
      */
     steer: async (sessionId: string, text: string) =>
       pane.steerInRecord(sessionId, text),
+    /**
+     * ⚠️ **逐条确认用的两个原语**（真机缺陷：全局路径上它们曾经缺失）
+     *
+     * 用户通过附件双击打开会话时走的是**全局注册表**这条路径
+     * （`mountSession` 现在只挂 `chrome://` 会话页链接，所以这其实是**唯一**路径）。
+     * 而这里原先**没有**这两个方法 —— 只有窗口注入对象有。
+     *
+     * 后果是静默降级，很难发现：
+     *
+     *  1. 页面侧的能力包装做了版本探测，方法不存在就**退回整批版**
+     *     （`confirmDeletion`），于是"逐条驱动、防二次操作、显示每条结果"
+     *     这套改进在这条路径上**完全没生效**；
+     *  2. 更要紧的是 `confirmDeletionAt(idx, uid)` 一旦拿不到，
+     *     `confirmPendingDeletion(index)` 收到的 `expectUid` 就是 `undefined`，
+     *     于是"下标错位就拒绝执行"那道保险**从不执行** ——
+     *     而那正是 `7e61328`（给待确认项一个稳定身份）要解决的问题。
+     *
+     * 教训：**能力有三处包装**（窗口注入 / 全局注册表 / 页面转接），
+     * 加一个方法必须三处都加；漏一处的表现是"功能静默变回旧版"，
+     * 而不是报错。守卫原先只校验 `REQUIRED_METHODS`，所以没拦住。
+     */
+    confirmAllDeletionsBegin: async () => pane.beginBatchConfirm(),
+    confirmDeletionAt: async (index: number, uid?: string) =>
+      pane.confirmPendingDeletion(index, uid),
     /** 待用户确认的删除请求（"仅删除需确认"） */
     listPendingDeletions: async () => pane.listPendingDeletions(),
     /** 用户确认删除（不可逆，只有点击后才执行） */
@@ -1155,8 +1179,14 @@ const STALE_DIR = "_stale";
  * | 8 | 与 web search 的分工说明（不再禁止用它） |
  * | 9 | 新增 `attachPdf`（给已存在条目补全文）；不得绕过插件用本地 API 写库 |
  * | **10** | **一键确认改为逐条驱动（防二次操作，并显示每条结果）** |
+ * | 11 | `getFullText` 的"没有全文"改为返回 `有全文: false` 状态，**不再抛错** |
+ * | 12 | 用户决定的**追加式回执** `confirm-log.json`（含拒绝与 `待确认剩余`） |
+ * | 13 | `attachPdf` 的**作用域**说明；id 复用后果的修正（被跳过，而非重复执行） |
+ *
+ * ⚠️ 这张表曾经漏掉 11 与 12（改材料却没记），于是后来者会以为"11 没动过材料"。
+ * **改材料时必须同时补一行** —— 这张表是"改动材料要 bump"这条纪律的唯一记录点。
  */
-const MATERIALS_VERSION = 12;
+const MATERIALS_VERSION = 13;
 
 /** 材料版本标记的写法（写在 README 首行，便于解析与人工辨认） */
 function materialsStamp(version: number): string {
@@ -2005,6 +2035,23 @@ export class SessionPane {
       // 与全局 API 一致：窗口路径也要能用补充说明与确认，
       // 否则"在窗口里打开的会话"少了这些能力（能力契约测试会抓到）。
       steer: (text: string) => this.steerInRecord(record.sessionId, text),
+      /**
+       * ⚠️ 页面用 `capability.describe()` 补齐标题与工作区展示信息
+       * （见 `sessionPage.js` 的 `renderWorkspace`）。
+       *
+       * 这条路径**原先没有它**，而页面是带 `typeof … === "function"` 守卫判断的 ——
+       * 于是窗口里打开的会话页**静默**只显示默认标题「DSH 会话」，
+       * 工作区路径与类型也不显示。不报错，所以一直没人发现。
+       *
+       * 是新守卫（"页面读取的每个能力都必须在两条路径上提供"）把它抓出来的。
+       */
+      describe: async () => ({
+        sessionId: record.sessionId,
+        title: record.title,
+        scopeTitle: record.scopeTitle,
+        scopeKind: record.kind,
+        workspace: record.workspace,
+      }),
       listPendingDeletions: () => this.listPendingDeletions(),
       confirmDeletion: (index: number) => this.confirmPendingDeletion(index),
       dismissDeletion: (index: number) => this.dismissPendingDeletion(index),
@@ -2246,43 +2293,32 @@ export class SessionPane {
       return;
     }
     /**
-     * ⚠️ **实测分隔符归一化**（作者本机日志直接可读，所以这条我能验证）。
+     * ⚠️ **归一化分隔符，不能直接用 `workspace`**（真机实测结论）。
      *
-     * 背景：日志里反复出现 `PathUtils.join: NS_ERROR_FILE_UNRECOGNIZED_PATH`，
-     * 而记录里的路径形态是混合分隔符
-     * （`C:\…\dsh-for-zotero/collection-VZVXRZ6D`，只有最后一段是正斜杠）。
-     * 全部 29 条记录都是这个形态。
+     * 记录里的工作区路径曾是混合分隔符形态
+     * （`C:\…\dsh-for-zotero/collection-VZVXRZ6D`，只有最后一段是正斜杠，29 条全是）。
+     * 作者在运行中的 Gecko 上把三种写法都试了一遍：
      *
-     * 我在 Node 里无法复现 Gecko 的行为（Node 对混写是宽容的），
-     * 静态查看 Zotero core 只能看到编译后的 `omni.ja` ——
-     * **所以把三种写法都交给运行中的 Gecko 试一遍，把结果写进日志。**
+     * ```text
+     *   混合分隔符  → 抛 NS_ERROR_FILE_UNRECOGNIZED_PATH
+     *   全反斜杠    → ✅ 正常
+     *   全正斜杠    → 抛 NS_ERROR_FILE_UNRECOGNIZED_PATH
+     * ```
+     *
+     * **Windows 上只接受全反斜杠**，而 Node 对混写是宽容的
+     * （所以单测永远发现不了，只有真机能暴露）。
+     *
+     * 这正是那条反复出现的"维护动作失败（不影响使用）：PathUtils.join: …"的真相 ——
+     * 而它并非"不影响使用"：这行在 `maintain()` 的 for 循环里没有 try，
+     * 第一条记录抛错就中断了整个循环，**全库所有会话的工具桥一起失效**。
+     *
+     * 分隔符规则本身集中在 `paths.ts` 的 `nativeSeparators`（带同一份实测记录），
+     * 这里再兜一层：将来任何路径来源变化都不该让桥静默失效。
+     *
+     * 📌 这段原先是"三种写法各试一遍并写 DIAG 日志"的临时实测代码。
+     * 结论已定，实测代码已删 —— 否则每次启动都会往日志里写 3 行无用的 DIAG。
      */
-    const probe = (label: string, value: string): string => {
-      try {
-        const joined = PathUtils.join(value, TOOL_DIR);
-        appendPanelLog(
-          "session",
-          `DIAG ${label}：${JSON.stringify(value)} → join 得 ${JSON.stringify(joined)}（未抛错）`,
-        );
-        return joined;
-      } catch (error) {
-        appendPanelLog(
-          "session",
-          `DIAG ${label}：${JSON.stringify(value)} → **抛错** ` +
-            `${error instanceof Error ? error.message : String(error)}`,
-        );
-        return "";
-      }
-    };
-    const mixed = probe("原始（混合分隔符）", workspace);
-    const normalized = probe(
-      "归一化（全反斜杠）",
-      workspace.replace(/\//g, "\\"),
-    );
-    const forward = probe("全正斜杠", workspace.replace(/\\/g, "/"));
-    // 用**第一个没抛错**的那个；三个都不行时退回原始写法并如实记录
-    const dir =
-      mixed || normalized || forward || PathUtils.join(workspace, TOOL_DIR);
+    const dir = PathUtils.join(nativeSeparators(workspace), TOOL_DIR);
     // ⚠️ 按**工作区目录**去重，不是按 sessionId。
     //
     // 多个会话可以共用同一个工作区（同一个分类建多个会话就是这样）——
@@ -2545,8 +2581,15 @@ export class SessionPane {
             data: {
               说明: "已登记为待确认：新建条目会永久改变文库结构，需要用户在插件界面确认后才会创建。",
               确认位置:
-                "会话页**顶部黄色角标**「有 N 项改动等你确认」——点它跳到确认区，逐条确认或忽略。",
+                "会话页**顶部黄色角标**「⚠ 有 N 项改动等你确认（点这里展开/收起）」——点它**就地展开**确认区（不是跳到别处），逐条确认或忽略。",
               待确认数: this.pendingDeletions.length,
+              // ⚠️ 必须在**返回值**里说清去哪儿看结果（真机反馈：
+              // "确认完条目后 Agent 无法直观地知道"）。`describeOps` 里写了不算数 ——
+              // Agent 逐字读到的是这个返回值，它决定了下一步是"去读回执"还是"再提交试探"。
+              确认结果在哪:
+                "用户确认或拒绝后，结果会追加到 `zotero/confirm-log.json`" +
+                "（含 `决定`=已确认/已拒绝 与 `待确认剩余`）。" +
+                "**不要靠重复提交来试探**：读那个文件的最后一条即可。",
               提示:
                 "**不要为同一件事反复提交**：重复提交会让用户在确认区看到多条相同的待确认项。" +
                 "提交一次后告诉用户去顶部确认，然后继续其它工作。",
@@ -2626,10 +2669,15 @@ export class SessionPane {
                 "已登记为待确认：取全文会**下载文件并在库里新增附件条目**，" +
                 "属于结构性改动，需要用户在插件界面逐条确认后才会执行。",
               确认位置:
-                "会话页**顶部黄色角标**「有 N 项改动等你确认」——点它跳到确认区，逐条确认或忽略。",
+                "会话页**顶部黄色角标**「⚠ 有 N 项改动等你确认（点这里展开/收起）」——点它**就地展开**确认区（不是跳到别处），逐条确认或忽略。",
               待确认数: this.pendingDeletions.length,
               已登记: inScope,
               ...(rejected.length ? { 超出本会话范围未登记: rejected } : {}),
+              // ⚠️ 同 createItem / 删除类：结果去哪儿看，要在**返回值**里说（见上面说明）
+              确认结果在哪:
+                "用户确认或拒绝后，结果会追加到 `zotero/confirm-log.json`" +
+                "（含 `决定`=已确认/已拒绝 与 `待确认剩余`）。" +
+                "**不要靠重复提交来试探**：读那个文件的最后一条即可。",
               提示:
                 "**不要为同一件事反复提交**。另外：不是每篇都拿得到全文" +
                 "（没有开放获取版 / 机构未订阅 / 需要先登录），拿不到时结果里会说明原因，" +
@@ -2669,6 +2717,16 @@ export class SessionPane {
               "已登记为待确认：删除是不可逆操作，需要用户在你的插件界面里点确认后才会执行。" +
               "你可以继续其它操作，或请用户确认。",
             待删除: target,
+            待确认数: this.pendingDeletions.length,
+            // ⚠️ 必须在这里也说一遍回执位置（真机反馈："确认完条目后 Agent 无法直观地知道"）。
+            // `describeOps` 里写了不算数 —— Agent 真正逐字读到的是**这个返回值**，
+            // 而它决定了它接下来是"去读回执"还是"再提交一次试探"。
+            确认结果在哪:
+              "用户确认或拒绝后，结果会追加到 `zotero/confirm-log.json`" +
+              "（含 `决定`=已确认/已拒绝 与 `待确认剩余`）。" +
+              "**不要靠重复提交来试探**：读那个文件的最后一条即可。",
+            确认位置:
+              "会话页**顶部黄色角标**「⚠ 有 N 项改动等你确认（点这里展开/收起）」——点它**就地展开**确认区（不是跳到别处），逐条确认或忽略。",
           },
         };
       }
@@ -3479,7 +3537,14 @@ export class SessionPane {
         "",
         "3. 读 `data`，需要时用**新的 id** 再调一次（可以迭代）。",
         "",
-        "**每次调用必须用新的 id**（插件按 id 去重，同一个 id 只执行一次）。",
+        "**每次调用必须用新的 id**。",
+        "",
+        "  ⚠️ **复用旧 id 的后果是「被跳过」，不是「再执行一次」**（真机修正过的说法）：",
+        "  插件在执行前会比对 `zotero/result.json` 里的 id，**相同就直接跳过不执行**",
+        "  （这是为了避免 Zotero 重启后把**已经确认过**的操作重跑一遍）。",
+        "  所以复用 id 不会重复写库，但会让你**永远等不到结果** ——",
+        "  `result.json` 里留着的是上一次的结果，而你会以为那是本次的。",
+        "",
         "失败时 `ok:false` 且 `error` 会说明原因，按提示改正后重试。",
         "",
         describeOps(),
@@ -3924,8 +3989,70 @@ export class SessionPane {
           2,
         ),
       );
-    } catch {
-      // 写不进去不影响操作本身
+    } catch (error) {
+      /**
+       * ## ⚠️ 这里**不能**静默（审查发现：吞掉的正是 Agent 唯一的答复渠道）
+       *
+       * 原先这里只有一个空 catch 加一句"写不进去不影响操作本身"。
+       * 但 `confirm-log.json` **就是** Agent 得知"用户决定了什么"的唯一渠道 ——
+       * 它写不出去，症状与这个功能**修之前一模一样**：
+       * Agent 提交后无论用户确认还是拒绝都收不到任何答复，
+       * 只能反复追问或重复提交（而重复提交又会让确认区出现重复项）。
+       *
+       * 而且它写不出去是有现实原因的：工作区目录可能被清理、或换机器后
+       * 还没重建（`record.workspace` 是记录里的路径）。
+       *
+       * 所以照 `writeToolResult` 的成例：**记完整原因 + 重建目录 + 重试一次**。
+       * 本项目反复强调"诊断必须落盘"，这里是最后一处违反它的地方。
+       */
+      const reason = error instanceof Error ? error.message : String(error);
+      appendPanelLog(
+        "session",
+        `写确认回执失败（${request.sessionId} / ${request.op} / ${decision}）：${reason}`,
+      );
+      try {
+        const record = this.sessionCache.get(request.sessionId);
+        if (!record) return;
+        const dir = PathUtils.join(
+          nativeSeparators(record.workspace),
+          TOOL_DIR,
+        );
+        await IOUtils.makeDirectory(dir, { ignoreExisting: true });
+        // 重试只保证"这一条决定"落地：读回历史再追加一次
+        let history: unknown[] = [];
+        const logPath = PathUtils.join(dir, CONFIRM_LOG_FILE);
+        try {
+          if (await IOUtils.exists(logPath)) {
+            const parsed = JSON.parse(
+              await IOUtils.readUTF8(logPath),
+            ) as unknown;
+            if (Array.isArray(parsed)) history = parsed;
+          }
+        } catch {
+          // 坏文件就从这一条重新开始
+        }
+        history.push({
+          时间: new Date().toISOString(),
+          操作: request.op,
+          决定: decision,
+          keys: request.keys,
+          成功: done,
+          失败: failed,
+          待确认剩余: this.pendingDeletions.length,
+        });
+        if (history.length > 200) history = history.slice(-200);
+        await IOUtils.writeUTF8(logPath, JSON.stringify(history, null, 2));
+        appendPanelLog("session", `重试写确认回执成功（${request.op}）`);
+      } catch (retryError) {
+        appendPanelLog(
+          "session",
+          `重试写确认回执仍失败（${request.op}）：${
+            retryError instanceof Error
+              ? retryError.message
+              : String(retryError)
+          } —— Agent 将收不到这次决定的通知`,
+        );
+      }
     }
   }
 
@@ -4053,6 +4180,67 @@ export class SessionPane {
           `补齐工作区失败（${record.sessionId}）：${error instanceof Error ? error.message : String(error)}`,
         );
       }
+    }
+  }
+
+  /**
+   * 保证每个会话的 `zotero/README.md`（**模型据以调用 op 的那份说明**）确实存在。
+   *
+   * ## ⚠️ 为什么单靠版本闸门不够（真机隐患，审查时发现）
+   *
+   * `refreshStaleMaterials` 的闸门只看**工作区 `README.md` 首行的版本号**，
+   * 而 `refreshWorkspace` 的写入顺序是：
+   *
+   * ```text
+   *   populateWorkspace(...)   ← 先把版本号写成最新（含 README.md / collection.md）
+   *   writeToolDirectory(...)  ← 再写 zotero/README.md（失败只记日志、**不抛**）
+   * ```
+   *
+   * 于是只要"README.md 写成功、`zotero/README.md` 写失败（或被人删改）"，
+   * 版本号已经是最新 → 此后**每次启动都被闸门跳过**（`if (version >= MATERIALS_VERSION) continue`）
+   * → 那份说明**永远修不回来**，除非用户手动点「刷新材料」。
+   *
+   * 而它恰恰是最要紧的一份：模型就是照它调用 `call.json` 的。
+   * `collection.md` 同理（也在 `populateWorkspace` 里）。
+   *
+   * `backfillWorkspaces` 也救不了：`workspaceLooksPopulated` 见到
+   * `README.md`/`meta.json`/`paper.txt`/`collection.md` **任一**存在就返回 true，
+   * 而它补齐时只调 `populateWorkspace`、**不调 `writeToolDirectory`**。
+   * 所以"README.md 在、`zotero/` 不在"的老会话永远拿不到工具说明。
+   *
+   * ## 修法：一条**与版本闸门无关**的存在性保障
+   *
+   * 启动时逐会话检查这个文件在不在；不在就补写。不比对版本（那份由闸门负责），
+   * 只保证"**文件存在且是当前实现写的**"这个下限。
+   */
+  private async ensureToolReadmes(records: SessionRecord[]): Promise<void> {
+    let repaired = 0;
+    for (const record of records) {
+      try {
+        const config = requireRuntimeConfig();
+        const workspace = await ensureWorkspaceDir(record);
+        const readmePath = PathUtils.join(workspace, TOOL_DIR, TOOL_DIR_README);
+        if (await IOUtils.exists(readmePath)) continue;
+        await this.writeToolDirectory(workspace, config);
+        repaired += 1;
+        appendPanelLog(
+          "session",
+          `会话 ${record.sessionId} 缺工具说明，已补写：${readmePath}`,
+        );
+      } catch (error) {
+        appendPanelLog(
+          "session",
+          `补写工具说明失败（${record.sessionId}）：${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    if (repaired > 0) {
+      appendPanelLog(
+        "session",
+        `共补写 ${repaired} 份工具说明（zotero/README.md）`,
+      );
     }
   }
 
@@ -4263,6 +4451,10 @@ export class SessionPane {
       //    放在后台跑，不阻塞启动。
       void this.refreshStaleMaterials(records);
       void this.backfillWorkspaces(records);
+      // ⚠️ 与版本闸门**无关**的存在性保障：`zotero/README.md` 缺失就补写。
+      // 版本闸门只看工作区 README.md 的版本号，而那份文件写失败时
+      // 版本号已经是最新的 → 闸门此后永远跳过它（详见 ensureToolReadmes 的说明）。
+      void this.ensureToolReadmes(records);
       void this.refreshSessionPages(records);
       void this.repairCollectionMembership(records);
     } catch (error) {

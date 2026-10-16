@@ -1873,6 +1873,16 @@
             void refreshHistory(true);
           } else if (running === false) {
             runningKnown = false;
+            /**
+             * ⚠️ **必须复位界面**（真机缺陷：探测到停了却卡在"生成中"）。
+             *
+             * 原先这个分支只改 `runningKnown`、重绘一次、停探测 —— **没有 `setBusy(false)`**。
+             * 于是：用户在某轮进行中打开会话页 → 探测到 true → `setBusy(true)`
+             * （发送按钮禁用、文案变"生成中…"、"停止生成"常驻）→ 该轮结束、探测到 false
+             * → 内容重画成已完成，**但按钮仍禁用、停止按钮仍在**，
+             * 只能再点一次"停止生成"或关掉重开。
+             */
+            setBusy(false);
             // 确认停了 → 重绘一次：把"还在生成中…"换成正式回答
             // （否则要等到下一个 2.5 秒周期才更新）
             void refreshHistory(true);
@@ -2120,6 +2130,19 @@
       var pending = bubble("assistant", "…");
 
       var settled = false;
+      /**
+       * ⚠️ **这个 185 秒与传输层的 180 秒是耦合的，改一个必须改另一个。**
+       *
+       * 传输层 `src/chat/transport.ts` 的 `POLL_MAX_MS = 180_000` 决定
+       * "我们愿意盯多久"；这个守卫只是**界面兜底**（底层请求挂住时也要给出可读结果）。
+       * 所以它必须**略晚于**传输层 —— 早于它就会出现"界面说超时了、
+       * 而插件其实还在正常取回答"的矛盾。
+       *
+       * 两者分处 TS 与 chrome:// 页面（页面拿不到插件的常量），
+       * 无法共享一个值 —— 所以只能靠这条注释维系。
+       * 真要改，请两边一起改，并保持"页面 > 传输层"。
+       */
+      var UI_TIMEOUT_GUARD_MS = 185000; // 对应 transport.ts 的 POLL_MAX_MS = 180_000
       var guard = setTimeout(function () {
         if (settled) return;
         settled = true;
@@ -2128,7 +2151,7 @@
           "请求超时（180 秒）。请检查运行时状态，或稍后重试。";
         pending.style.borderColor = "#fca5a5";
         setBusy(false);
-      }, 185000);
+      }, UI_TIMEOUT_GUARD_MS);
 
       Promise.resolve()
         .then(function () {

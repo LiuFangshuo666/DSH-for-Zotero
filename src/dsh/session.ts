@@ -338,7 +338,7 @@ export function workspaceNameOf(workspace: string): string | undefined {
 const migratedNames = new Set<string>();
 
 /**
- * 路径拼接（Windows 上产出**全反斜杠**）。
+ * 路径拼接（**Windows 上确实产出全反斜杠** —— 见下面的教训）。
  *
  * ⚠️ 这里曾写着"只用 `/`；Zotero 在 Windows 上也接受" —— **那个前提是错的**。
  * 作者在运行中的 Gecko 上实测：`PathUtils.join` 对**混合分隔符**与**全正斜杠**
@@ -348,14 +348,26 @@ const migratedNames = new Set<string>();
  * 与目录名用 `/` 拼起来，产出的路径让 `startToolPoller` 抛错，
  * 于是**全库所有会话的工具桥一起失效**。
  *
- * 详见 `paths.ts` 里 `nativeSeparators` 的说明（含实测输出）。
+ * ## ⚠️ 第二次踩同一个坑（改文档时发现的）
+ *
+ * 我第一版修注释时**只写了"产出全反斜杠"，却没改实现** ——
+ * 函数仍在返回 `${base}/${name}`，只是靠**调用方**（`ensureWorkspaceDir` 里
+ * 外包一层 `nativeSeparators`）补救。这很危险，因为：
+ *
+ *  - `ioMoveChildren` 的另一个调用点传的是 **`legacy`（记录里的旧路径，
+ *    正是混写形态）**，那里没有外层归一化 → 拼出 `C:\…\/name` →
+ *    `IOUtils.move` 拿到非法路径 → **跨设备迁移静默失败**
+ *    （被 `catch {}` 吞掉，只在日志里留一行）。
+ *
+ * 所以现在**函数自己**保证契约：用 `PathUtils.join` 拼（它已经拿到干净 base，
+ * 不会再抛）。**注释承诺的事必须由实现兑现**，不能指望调用方兜底。
  */
 function joinPath(root: string, name: string): string {
   const trimmed = root.replace(/[/\\]+$/, "");
   const base = /^[A-Za-z]:[\\/]/.test(trimmed)
     ? trimmed.replace(/\//g, "\\")
     : trimmed;
-  return `${base}/${name}`;
+  return PathUtils.join(base, name);
 }
 
 async function ioExists(path: string): Promise<boolean> {

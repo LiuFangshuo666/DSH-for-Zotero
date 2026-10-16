@@ -96,11 +96,15 @@ export function selectedModel(): ModelChoice | undefined {
   };
 }
 
-export function setSelectedModel(choice: ModelChoice): void {
-  setPref("modelProvider", choice.provider);
-  setPref("modelId", choice.model);
-  setPref("modelReasoningEffort", choice.reasoningEffort);
-}
+// ⚠️ 这里原有 `setSelectedModel(choice)`：一次性写 modelProvider / modelId /
+// modelReasoningEffort 三个键。**已删除 —— 它从来没有调用者。**
+//
+// 模型的选择实际上由 `preferences.xhtml` 上那三个 `<menulist preference="…">` 承担
+// （偏好绑定自动写键），而"联动等级列表"由 `handleModelPrefsEvent('model-sync')`
+// → `fillModelList` 完成。留着这个导出会让人以为"设置模型"应该走它 ——
+// 而走它反而会**绕开界面绑定**，造成两套写法。
+//
+// 判断它是死代码的方法（可复用）：导出符号在整个仓库里只出现一次。
 
 // ── 凭据文件操作（纯文本，可单测）──────────────────────────────
 //
@@ -293,6 +297,20 @@ export async function syncBaseUrlToHost(client: {
           "（当前部署可能用了别的模型适配器。）",
       };
     }
+    /**
+     * ⚠️ 用 `settings/update` 而**不是** `settings/replace`。
+     *
+     * `replace` 会**整段替换**该命名空间的用户配置，把用户在 dsh 网页里
+     * 配过的其它字段（例如别的适配器参数）一起抹掉；
+     * `update` 是**字段级合并**，只动我们给的那一个键。
+     *
+     * `expectedRevision: undefined` = 不做乐观并发检查。
+     * 自定义端点这种设置没有并发写入的场景，为此失败一次反而更烦人。
+     *
+     * 📌 这条说明原先写在 `rpc.ts` 的 `updateSettings()` 里 ——
+     * 而那个函数**从来没有调用者**（这里是手写的 RPC 调用）。
+     * 把经验留在死代码里等于没有，所以搬到了真正的调用现场。
+     */
     await client.call("settings/update", {
       ns: LLM_SETTINGS_NS,
       patch: { [BASE_URL_FIELD]: url },

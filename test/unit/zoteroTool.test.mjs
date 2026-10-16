@@ -12,6 +12,7 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -219,6 +220,57 @@ describe("确认回执：Agent 怎么知道用户决定了什么", function () {
       doc,
       /不要为此重新提交|不要靠反复提交/,
       "要明确说\u201c读回执\u201d而不是\u201c重新提交\u201d",
+    );
+  });
+});
+
+/**
+ * ## 三份操作清单必须**同源**（审计发现的漂移风险）
+ *
+ * 同一个能力会在三个地方各写一遍：
+ *  1. `zoteroTool.ts` 的 `READ_OPS`/`WRITE_OPS`/`DESTRUCTIVE_OPS`（实现契约）
+ *  2. `describeOps()`（模型读的第一手说明）
+ *  3. 工作区 README 的能力索引（`sessionPane.ts` 的 `buildWorkspaceReadme`）
+ *
+ * 三份都是**手写**的，所以新增一个 op 时很容易只改一处。
+ * 这次审计就是这样发现漏项的（README 的能力表一度没有 `attachPdf`）。
+ * 这条守卫只钉"每个 op 名至少出现在另外两份里"，不比对措辞（措辞会变）。
+ */
+describe("三份操作清单同源", function () {
+  const ops = [...READ_OPS, ...WRITE_OPS, ...DESTRUCTIVE_OPS];
+
+  it("每个 op 都必须出现在 describeOps() 里", function () {
+    const doc = describeOps();
+    const missing = ops.filter((op) => !doc.includes("`" + op + "`"));
+    assert.deepEqual(
+      missing,
+      [],
+      "这些 op 没写进 describeOps：" + missing.join(", "),
+    );
+  });
+
+  it("每个 op 都必须出现在工作区 README 的能力索引里", function () {
+    // 能力索引是 buildWorkspaceReadme 拼出来的一段 markdown
+    const src = readFileSync(
+      join(here, "..", "..", "src", "modules", "sessionPane.ts"),
+      "utf8",
+    );
+    // ⚠️ 必须匹配**函数定义行**，不能只搜名字 ——
+    // `indexOf` 会命中文件头注释里那句"buildWorkspaceReadme / populateWorkspace …"，
+    // 于是切出一段毫不相干的文本，13 个 op 全报"缺失"（我第一版就是这样误报的）。
+    const m = /^export function buildWorkspaceReadme\(/m.exec(src);
+    assert.ok(m, "找不到 buildWorkspaceReadme 的定义");
+    // 取到下一个顶层 export 为止
+    const rest = src.slice(m.index);
+    const nextTop = rest
+      .slice(1)
+      .search(/\nexport (function|const|async|type|interface) /);
+    const seg = nextTop > 0 ? rest.slice(0, nextTop) : rest;
+    const missing = ops.filter((op) => !seg.includes(op));
+    assert.deepEqual(
+      missing,
+      [],
+      "这些 op 没写进工作区 README 的能力索引：" + missing.join(", "),
     );
   });
 });
