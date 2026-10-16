@@ -174,6 +174,74 @@ describe("待确认标题只能由一处产生", function () {
   });
 });
 
+/**
+ * ## 运行状态探测**必须一直跑**，只调间隔
+ *
+ * 真机缺陷（用户报告）：
+ *
+ * > "我这边没有「停止生成」，因为会话页面已经认为它的回答结束了…"
+ *
+ * 复现序列：
+ *
+ * ```text
+ *   打开会话页 → 探测一次 → false（agent 此刻确实没在跑）
+ *             → 旧代码 stopRunningProbe()，探测【永久停止】
+ *   agent 后来开始跑 → 界面再也不知道 → 显示"不在工作"、没有「停止生成」
+ * ```
+ *
+ * 根因是把探测当成了**一次性的"补课动作"**，
+ * 而它描述的是**持续状态** —— agent 随时可能开始或结束一轮。
+ * 而唯一会重新启动它的路径是"用户在这个页面发消息"。
+ */
+describe("探测必须一直跑（只调间隔）", function () {
+  const page = readFileSync(
+    join(here, "..", "..", "addon", "content", "sessionPage.js"),
+    "utf8",
+  );
+
+  it("\u201c确定停了\u201d的分支不得再停探测", function () {
+    // 取 probeSessionRunning 到下一个函数定义
+    const i = page.indexOf("function probeSessionRunning()");
+    assert.ok(i > 0, "找不到 probeSessionRunning");
+    const rest = page.slice(i);
+    const j = rest.indexOf("\n    function ", 10);
+    const body = j > 0 ? rest.slice(0, j) : rest.slice(0, 4000);
+    assert.ok(
+      !/stopRunningProbe\(\)/.test(body),
+      "probeSessionRunning 里不得调 stopRunningProbe() —— " +
+        "停掉后 agent 再次开始跑时，界面就永远不知道了",
+    );
+    assert.match(
+      body,
+      /keepWatching\(\)/,
+      "每个分支都要续看（包括问不到与 catch）",
+    );
+  });
+
+  it("必须区分在跑与空闲两个间隔", function () {
+    assert.match(page, /RUNNING_PROBE_MS = \d+/, "应有在跑时的间隔");
+    assert.match(
+      page,
+      /RUNNING_PROBE_IDLE_MS = \d+/,
+      "应有空闲时的间隔 —— 空闲也要继续看，只是疏一点",
+    );
+    assert.match(
+      page,
+      /runningKnown === true \? RUNNING_PROBE_MS : RUNNING_PROBE_IDLE_MS/,
+      "keepWatching 要按当前状态选间隔",
+    );
+  });
+
+  it("连续问不到仍有上限（避免无限轮询）", function () {
+    assert.match(page, /RUNNING_PROBE_MAX_MISSES/, "上限要保留");
+    assert.match(
+      page,
+      /runningProbeMisses \+= 1/,
+      "只有问不到才计数 —— 问到 true/false 都应清零",
+    );
+  });
+});
+
 describe("会话页的持续刷新", function () {
   const page = readFileSync(
     join(here, "..", "..", "addon", "content", "sessionPage.js"),

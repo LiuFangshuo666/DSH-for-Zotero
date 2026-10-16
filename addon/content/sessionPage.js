@@ -1903,7 +1903,7 @@
             runningProbeMisses = 0;
             // ⚠️ 只调一次。这里先前连着调了两次 —— 第二次因为定时器已存在而直接返回，
             // 所以没造成双倍轮询，但读起来像"故意排两次"，是纯噪声。
-            scheduleRunningProbe();
+            scheduleRunningProbe(RUNNING_PROBE_MS);
             // 重绘一次：让"还在生成中…"提示与"存为笔记"按钮按新的运行状态出现
             // （否则要等下一个 2.5 秒周期）
             void refreshHistory(true);
@@ -1922,17 +1922,24 @@
             // 确认停了 → 重绘一次：把"还在生成中…"换成正式回答
             // （否则要等到下一个 2.5 秒周期才更新）
             void refreshHistory(true);
-            stopRunningProbe();
+            // ⚠️ **不要在这里停探测**：停了，agent 再次开始跑时界面就永远不知道了
+            //（真机缺陷：用户因此没有「停止生成」可点）。详见 keepWatching 的说明。
+            keepWatching();
           } else {
             // 问不到：只提示，不动界面
+            // 连续问不到才计数（问到 true/false 都会清零），超过上限就暂停
+            runningProbeMisses += 1;
             notice(
               "暂时问不到运行状态（网络或宿主繁忙）—— 可稍后再看，或点「停止生成」试试。",
             );
-            scheduleRunningProbe();
+            keepWatching();
           }
         })
         .catch(function () {
-          // 探测失败不打扰用户（这是增强，不是主流程）
+          // 探测失败不打扰用户（这是增强，不是主流程），
+          // 但**仍要继续看** —— 否则一次拖头就让界面永远不再知道状态
+          runningProbeMisses += 1;
+          keepWatching();
         });
     }
 
@@ -1953,7 +1960,10 @@
     var runningKnown = null;
     var runningProbeTimer = null;
     var runningProbeMisses = 0;
+    /** 在跑时的探测间隔 */
     var RUNNING_PROBE_MS = 5000;
+    /** 空闲时的探测间隔（比在跑时疏得多，但**不会停**） */
+    var RUNNING_PROBE_IDLE_MS = 30000;
     var RUNNING_PROBE_MAX_MISSES = 24; // ≈2 分钟
 
     function stopRunningProbe() {
@@ -1964,17 +1974,57 @@
       runningProbeMisses = 0;
     }
 
-    function scheduleRunningProbe() {
+    /**
+     * 排下一次探测。`delay` 由调用方给 —— 在跑时看密一点，空闲时疏一点。
+     *
+     * `runningProbeMisses` 只在**问不到**时增长（见 `probeSessionRunning`），
+     * 问到 `true`/`false` 都会清零；连续问不到超过上限就暂停，避免宿主长期不可用时无限轮询。
+     */
+    function scheduleRunningProbe(delay) {
       if (runningProbeTimer) return;
-      runningProbeTimer = setTimeout(function () {
-        runningProbeTimer = null;
-        runningProbeMisses += 1;
-        if (runningProbeMisses > RUNNING_PROBE_MAX_MISSES) {
-          stopRunningProbe();
-          return;
-        }
-        probeSessionRunning();
-      }, RUNNING_PROBE_MS);
+      runningProbeTimer = setTimeout(
+        function () {
+          runningProbeTimer = null;
+          if (runningProbeMisses > RUNNING_PROBE_MAX_MISSES) {
+            stopRunningProbe();
+            return;
+          }
+          probeSessionRunning();
+        },
+        typeof delay === "number" ? delay : RUNNING_PROBE_MS,
+      );
+    }
+
+    /**
+     * ## ⚠️ 探测**永不停止**，只是"在跑时看密一点"（真机缺陷）
+     *
+     * 用户报告："但我这边没有「停止生成」，因为会话页面已经认为它的回答结束了，
+     * 于是我又往里敲了个 `1`，界面又弹出选项，我提交选项后回归显示工作状态。"
+     *
+     * 复现序列：
+     *
+     * ```text
+     *   打开会话页 → 探测一次 → false（agent 此刻确实没在跑）
+     *              → 旧代码 stopRunningProbe()，探测【永久停止】
+     *   agent 后来开始跑 → 界面再也不知道 → 显示"不在工作"、没有「停止生成」
+     * ```
+     *
+     * 根因是我把探测当成了**一次性的"补课动作"**（回到页面时问一次就够），
+     * 但它描述的是**持续状态** —— agent 随时可能开始或结束一轮。
+     * 而唯一会重新启动它的路径是"用户在这个页面发消息"，
+     * 恰恰是当时没发生的事（用户以为自己只能等）。
+     *
+     * 现在的做法：探测**一直跑**，只调间隔：
+     *
+     * | 状态 | 间隔 | 理由 |
+     * | --- | --- | --- |
+     * | 在跑 | 5 秒 | 要尽快发现它结束，好让按钮与分隔线及时翻过来 |
+     * | 空闲 | 30 秒 | 一次 `session/list` 很便宜，但没必要每 5 秒问一件长期不变的事 |
+     */
+    function keepWatching() {
+      scheduleRunningProbe(
+        runningKnown === true ? RUNNING_PROBE_MS : RUNNING_PROBE_IDLE_MS,
+      );
     }
 
     /**
