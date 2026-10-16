@@ -41,6 +41,7 @@
 import { appendPanelLog } from "./runLog";
 import { getPref, setPref } from "../utils/prefs";
 import { setCredentialRef } from "./modelConfig";
+import { buildZoteroPresetPatch } from "./zoteroPreset";
 
 /** pi-ai 支持的协议（与 `llm-pi-ai/src/provider.ts` 的注册表逐字一致） */
 export const SUPPORTED_APIS = [
@@ -56,7 +57,26 @@ export type ProviderApi = (typeof SUPPORTED_APIS)[number];
  */
 export const PI_AI_PACKAGE = "@deepseek-ai/dsh-llm-pi-ai";
 
-/** 托管区块的起止标记（重新生成时只替换中间部分） */
+/**
+ * 托管区块的起止标记（重新生成时只替换中间部分）。
+ *
+ * ## ⚠️ **这两个字符串绝对不能改**（实测验证过的破坏性变更）
+ *
+ * 我一度把它们从「自定义 provider 起/止」改成「托管区块起/止」，以为只是措辞 ——
+ * 实测后果是：
+ *
+ * ```text
+ *   mergeManagedBlock 按【新】标记查找 → 找不到 → 走「追加」分支
+ *   → 旧的 provider 区块【原样留在文件里】
+ *   → YAML 里出现两条 llm-pi-ai 条目（重复）
+ * ```
+ *
+ * 而这是**真实存在**的场景：已装插件的用户，其 profile 里就是旧标记。
+ * 改名等于给每个用户制造一次重复条目。
+ *
+ * 标记文本保持原样即可 —— 它说「自定义 provider」，而区块里现在也有
+ * Zotero preset（见 `applyProviders`）。**宁可用注释解释，也不动标记。**
+ */
 export const MANAGED_START = "# ── DSH-for-Zotero: 自定义 provider 起 ──";
 export const MANAGED_END = "# ── DSH-for-Zotero: 自定义 provider 止 ──";
 
@@ -467,7 +487,21 @@ export async function applyProviders(paths: {
     const patchPath = PathUtils.join(paths.profileDir, "cordis.patch.yml");
     if (await IOUtils.exists(patchPath)) {
       const before = await IOUtils.readUTF8(patchPath);
-      const after = mergeManagedBlock(before, buildProviderPatch(defs));
+      /**
+       * ⚠️ 托管区块里现在有**两样东西**：
+       *
+       *  1. **Zotero 专用 preset**（`buildZoteroPresetPatch()`）—— 它**总是**要写。
+       *     它把 `tool-ask-user` 设成 timed，否则 Agent 会阻塞在提问上永久卡住
+       *     （真机实测 14 分钟）；详见 `zoteroPreset.ts` 顶部说明。
+       *  2. 自定义 provider 条目（`buildProviderPatch(defs)`）—— 没有 provider 时为空。
+       *
+       * ⚠️ 两样都要，**不能**写成 `defs.length === 0` 就跳过整块 ——
+       * 那会让 preset 在最常见的配置下（用默认模型）不被写入。
+       */
+      const block = [buildZoteroPresetPatch(), buildProviderPatch(defs)]
+        .filter((part) => part.trim().length > 0)
+        .join("\n");
+      const after = mergeManagedBlock(before, block);
       if (after !== before) {
         await IOUtils.writeUTF8(patchPath, after);
         changedComposition = true;

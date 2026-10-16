@@ -151,3 +151,4 @@ export {
 export { isPdfBytes } from "../../src/dsh/paperFetch";
 // 轮次结束的判断（工具步无正文不是失败 —— 真机细节）
 export { decideTurnOutcome, decideStreamEnd } from "../../src/chat/transport";
+export * from "../../src/dsh/zoteroPreset";

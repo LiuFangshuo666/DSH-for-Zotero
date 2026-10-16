@@ -396,3 +396,78 @@ describe("接线与界面", function () {
     assert.match(body, /validateProvider/, "必须逐条校验");
   });
 });
+
+/**
+ * ## ⚠️ 托管区块的标记**不得改名**（实测验证过的破坏性变更）
+ *
+ * 我一度把标记从「自定义 provider 起/止」改成「托管区块起/止」，以为只是措辞。
+ * 实测后果：
+ *
+ * ```text
+ *   mergeManagedBlock 按【新】标记查找 → 找不到 → 走「追加」分支
+ *   → 旧的 provider 区块原样留在文件里 → YAML 里出现两条 llm-pi-ai
+ * ```
+ *
+ * 而**已装插件的用户，其 profile 里就是旧标记** —— 改名等于给他们制造重复条目。
+ * 这条守卫把标记文本钉死，并直接对"旧标记文件"验证合并结果不重复。
+ */
+describe("托管区块标记不得改名", function () {
+  it("标记文本必须与已发布版本一致", function () {
+    assert.equal(
+      MANAGED_START,
+      "# ── DSH-for-Zotero: 自定义 provider 起 ──",
+      "改这个字符串会让 mergeManagedBlock 找不到旧区块，从而追加出重复条目",
+    );
+    assert.equal(MANAGED_END, "# ── DSH-for-Zotero: 自定义 provider 止 ──");
+  });
+
+  it("对**旧标记**的已有文件合并后不得出现重复条目", function () {
+    // 模拟一个已装插件的用户：文件里是旧标记 + 一条 provider
+    const existing = [
+      "# 用户自己的东西",
+      "- id: agent-default-model",
+      '  name: "@deepseek-ai/dsh-agent-default-model"',
+      MANAGED_START,
+      "- id: llm-pi-ai",
+      '  name: "@deepseek-ai/dsh-llm-pi-ai"',
+      "  config:",
+      "    providers: {}",
+      MANAGED_END,
+      "",
+    ].join("\n");
+
+    const preset = [
+      "- id: agent-preset-registry",
+      "  name: '@deepseek-ai/dsh-agent-preset-registry'",
+      "  config:",
+      "    default: zotero",
+    ].join("\n");
+    const after = mergeManagedBlock(existing, preset);
+
+    /**
+     * ⚠️ 断言要的是**旧区块被替换掉**，不是"旧条目还在"。
+     *
+     * 我第一版写成 `llm === 1`，测试红了 —— 而**合并其实是对的**：
+     * 旧的 `llm-pi-ai` 被新块**整段替换**，所以它是 0 次。
+     * 改名的真实危害是「标签找不到 → 走追加分支 → 旧块**留着**」，
+     * 所以判据应当是「旧标记的**内容**不再单独存在」+「标记只有一对」。
+     */
+    const llm = (after.match(/- id: llm-pi-ai/g) || []).length;
+    assert.equal(
+      llm,
+      0,
+      "区块内的旧条目应被**替换**掉（这次传的 preset 里没有它）。" +
+        "若它还在，说明标记没被识别、走了追加分支 —— 那正是改名的危害",
+    );
+    assert.equal(
+      (after.match(/# ── DSH-for-Zotero: 自定义 provider 起 ──/g) || []).length,
+      1,
+      "标记必须只有一对 —— 出现两对说明旧块被留在文件里，那会造成重复条目",
+    );
+    assert.ok(after.includes("agent-preset-registry"), "新内容要进托管区块");
+    assert.ok(
+      after.includes("# 用户自己的东西"),
+      "用户区块外的内容必须原样保留",
+    );
+  });
+});
