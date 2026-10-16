@@ -968,6 +968,15 @@ interface ScopeItemInfo {
 const TOOL_DIR = "zotero";
 const TOOL_CALL_FILE = "call.json";
 const TOOL_RESULT_FILE = "result.json";
+/**
+ * 用户对结构性改动的**追加式**决定历史（确认 / 拒绝都记）。
+ *
+ * ⚠️ 与 `deletion-result.json` 的分工：那个是**覆盖写、只留最新一条**
+ * （为兼容已有会话的 Agent 而保留）；这个**只追加**，是主渠道 ——
+ * 因为"一键确认 10 条"若只留最后一条，Agent 就看不出哪些成功了，
+ * 也就无法直观地知道用户到底决定了什么（真机反馈）。
+ */
+const CONFIRM_LOG_FILE = "confirm-log.json";
 /** 轮询间隔：够快（模型等待可接受）又不至于空转 */
 const TOOL_POLL_MS = 1000;
 const TOOL_DIR_README = "README.md";
@@ -1147,7 +1156,7 @@ const STALE_DIR = "_stale";
  * | 9 | 新增 `attachPdf`（给已存在条目补全文）；不得绕过插件用本地 API 写库 |
  * | **10** | **一键确认改为逐条驱动（防二次操作，并显示每条结果）** |
  */
-const MATERIALS_VERSION = 11;
+const MATERIALS_VERSION = 12;
 
 /** 材料版本标记的写法（写在 README 首行，便于解析与人工辨认） */
 function materialsStamp(version: number): string {
@@ -3765,8 +3774,21 @@ export class SessionPane {
     const request = this.pendingDeletions[index];
     if (!request) return "该待确认项已不存在。";
     this.pendingDeletions.splice(index, 1);
-    appendPanelLog("session", `用户拒绝了删除请求：${request.keys.join(", ")}`);
-    return "已取消该删除请求（未删除任何条目）。";
+    /**
+     * ⚠️ **拒绝也必须写回执**（真机反馈："确认完条目后 Agent 无法直观地知道"）。
+     *
+     * 原先这里只改内存数组，于是 Agent 提交之后，
+     * **无论用户确认还是拒绝，它都永远等不到任何答复** ——
+     * 它只能反复追问或重复提交（而重复提交又会让用户在确认区看到重复项）。
+     *
+     * 用 `void` 不阻塞界面：写文件失败也不该让"取消"这个动作卡住。
+     */
+    void this.appendConfirmLog(request, "已拒绝", [], []);
+    appendPanelLog(
+      "session",
+      `用户拒绝了 ${request.op} 请求：${request.keys.join(", ") || "（无 key）"}`,
+    );
+    return "已取消该改动请求（未执行任何操作）。";
   }
 
   /**
@@ -3812,36 +3834,98 @@ export class SessionPane {
     return summary.join("，");
   }
 
-  /** 把删除结果写回工作区，供 Agent 读取 */
+  /**
+   * 把**用户对结构性改动的决定**写回工作区，供 Agent 读取。
+   *
+   * ## ⚠️ 这里修的是一个真机反馈："确认完条目后 Agent 无法直观地知道"
+   *
+   * 用户："我确认完条目后，Agent 貌似无法直观地知道，从我给出的真实会话记录中就能看出来。"
+   *
+   * 原先有两个缺陷，合起来让 Agent 只能靠猜：
+   *
+   * 1. **回执只有一个文件、每次覆盖写**。用户一键确认 10 条补全文后，
+   *    `deletion-result.json` 里**只剩最后一条**（真机实测：确实只有 1 条
+   *    "…已从直链取得 PDF 并挂为附件（key=HZ3T6RF6）"）。
+   *    Agent 看不到"哪些成功了、哪些失败了"。
+   * 2. **用户"拒绝"时根本不写回执**（`dismissPendingDeletion` 只改内存数组）——
+   *    于是 Agent 提交之后，无论用户确认还是拒绝，它都**永远等不到任何答复**。
+   *
+   * 现在的做法：
+   *  - 写一份**追加式历史**（`confirm-log.json`），每件事一条，不覆盖，
+   *    并带上 `待确认剩余` —— Agent 由此能区分"还没决定"和"决定了但我没看到"；
+   *  - **拒绝也记**（`决定: "已拒绝"`）；
+   *  - 老的 `deletion-result.json` **继续写**（只保留最新一条），
+   *    因为已有会话的 Agent 可能还在读它 —— 不能因为改版就让老会话失灵。
+   */
   private async writeDeletionOutcome(
     request: { sessionId: string; op: string; keys: string[] },
+    done: string[],
+    failed: string[],
+  ): Promise<void> {
+    await this.appendConfirmLog(request, "已确认", done, failed);
+  }
+
+  /**
+   * 追加一条"用户决定"到 `confirm-log.json`，并同步写一份最新的
+   * `deletion-result.json`（向后兼容，见上面说明）。
+   */
+  private async appendConfirmLog(
+    request: { sessionId: string; op: string; keys: string[] },
+    decision: "已确认" | "已拒绝",
     done: string[],
     failed: string[],
   ): Promise<void> {
     try {
       const record = this.sessionCache.get(request.sessionId);
       if (!record) return;
-      const path = PathUtils.join(
-        record.workspace,
-        TOOL_DIR,
-        "deletion-result.json",
-      );
+      const dir = PathUtils.join(nativeSeparators(record.workspace), TOOL_DIR);
+      const at = new Date().toISOString();
+      const entry = {
+        时间: at,
+        操作: request.op,
+        决定: decision,
+        keys: request.keys,
+        成功: done,
+        失败: failed,
+        // Agent 用它判断"用户是不是还没决定"—— 这是它先前最缺的一条信息
+        待确认剩余: this.pendingDeletions.length,
+      };
+
+      // ── 追加式历史（主渠道）─────────────────────────────
+      const logPath = PathUtils.join(dir, CONFIRM_LOG_FILE);
+      let history: unknown[] = [];
+      try {
+        if (await IOUtils.exists(logPath)) {
+          const parsed = JSON.parse(await IOUtils.readUTF8(logPath)) as unknown;
+          if (Array.isArray(parsed)) history = parsed;
+        }
+      } catch {
+        // 文件坏了就从这一条重新开始，不要因此丢掉本次决定
+      }
+      history.push(entry);
+      // 只留最近 200 条：这是给 Agent 看的近况，不是审计日志
+      if (history.length > 200) history = history.slice(-200);
+      await IOUtils.writeUTF8(logPath, JSON.stringify(history, null, 2));
+
+      // ── 向后兼容：老会话的 Agent 仍在读这个文件 ─────────
       await IOUtils.writeUTF8(
-        path,
+        PathUtils.join(dir, "deletion-result.json"),
         JSON.stringify(
           {
-            时间: new Date().toISOString(),
+            时间: at,
             操作: request.op,
             已删除: done,
             失败: failed,
-            说明: "用户在插件界面确认后执行的结果。",
+            说明:
+              "用户在插件界面确认后执行的结果。**完整历史见 confirm-log.json**" +
+              "（含被用户拒绝的项，以及待确认剩余数）。",
           },
           null,
           2,
         ),
       );
     } catch {
-      // 写不进去不影响删除本身
+      // 写不进去不影响操作本身
     }
   }
 

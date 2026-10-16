@@ -105,7 +105,7 @@ describe("操作文档必须覆盖**全部**已实现的 op（改 op 时的强�
     });
     const m = readme.match(/dsh-materials-version:\s*(\d+)/);
     assert.ok(m, "工作区 README 首行必须有材料版本标记（老会话靠它自动刷新）");
-    assert.ok(Number(m[1]) >= 11, "材料版本应 >= 10");
+    assert.ok(Number(m[1]) >= 12, "材料版本应 >= 10");
   });
 
   it("分类会话的 README 必须写明「新建条目会自动进本会话分类」", function () {

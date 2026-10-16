@@ -173,6 +173,56 @@ describe("操作说明：getFullText 的“没有全文”是状态而非失败"
   });
 });
 
+/**
+ * ## 用户确认 / 拒绝之后，Agent 必须能**看到结果**
+ *
+ * 用户实测："我确认完条目后，Agent 貌似无法直观地知道，从我给出的真实会话记录中就能看出来。"
+ *
+ * 查下来有两个缺陷，合起来让它只能靠猜：
+ *
+ * 1. **回执只有一个文件、每次覆盖写** —— 一键确认 10 条补全文后，
+ *    `deletion-result.json` 里只剩最后一条（真机实测确实只有 1 条）。
+ * 2. **用户"拒绝"时根本不写回执**（`dismissPendingDeletion` 只改内存数组）——
+ *    于是无论用户确认还是拒绝，Agent 都**永远等不到答复**。
+ *
+ * 修法：追加式历史 `confirm-log.json`（确认与拒绝都记）+ 带 `待确认剩余`；
+ * 老的 `deletion-result.json` 继续写，避免让已有会话的 Agent 失灵。
+ */
+describe("确认回执：Agent 怎么知道用户决定了什么", function () {
+  it("说明里必须点名 \u0060confirm-log.json\u0060，并说清它与旧文件的分工", function () {
+    const doc = describeOps();
+    assert.match(
+      doc,
+      /confirm-log\.json/,
+      "必须告诉 Agent 回执文件叫什么 —— 文件存在但它不知道，等于不存在",
+    );
+    assert.match(
+      doc,
+      /deletion-result\.json/,
+      "也要点明旧文件（只留最新一条），否则它会以为那是全部结果",
+    );
+  });
+
+  it("必须告诉 Agent \u0060待确认剩余\u0060 的含义（用它区分\u201c还没决定\u201d与\u201c决定了\u201d）", function () {
+    const doc = describeOps();
+    assert.match(
+      doc,
+      /待确认剩余/,
+      "这是 Agent 最缺的一条信息：它是判断用户是否处理完的唯一依据",
+    );
+  });
+
+  it("必须明确劝阻\u201c靠反复提交来试探\u201d", function () {
+    // 重复提交会让用户在确认区看到一堆重复项（README 里早有这条纪律）
+    const doc = describeOps();
+    assert.match(
+      doc,
+      /不要为此重新提交|不要靠反复提交/,
+      "要明确说\u201c读回执\u201d而不是\u201c重新提交\u201d",
+    );
+  });
+});
+
 describe("参数取值（不能抛异常）", function () {
   it("字符串：去空白；空串与错类型都当没给", function () {
     assert.equal(argString({ q: " RTL " }, "q"), "RTL");

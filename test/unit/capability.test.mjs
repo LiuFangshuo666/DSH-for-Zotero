@@ -273,6 +273,63 @@ describe("saveReplyAsNote 的参数约定", function () {
  *
  * 这条断言防的是"以后有人觉得按 sessionId 更直观、又改回去"。
  */
+/**
+ * ## 用户"拒绝"也必须写回执（真机：Agent 无法直观地知道）
+ *
+ * 用户实测："我确认完条目后，Agent 貌似无法直观地知道。"
+ *
+ * 查下来两个缺陷：
+ *  1. 回执**每次覆盖写** → 一键确认 10 条只剩最后 1 条（真机实测确实只有 1 条）；
+ *  2. `dismissPendingDeletion` **完全不写回执** → 无论用户确认还是拒绝，
+ *     Agent 都**永远等不到答复**，只能反复追问或重复提交。
+ *
+ * 修法：追加式 `confirm-log.json`（确认与拒绝都记）+ 老的覆盖写文件继续保留。
+ */
+describe("确认回执", function () {
+  it("回执必须是**追加式**的，不能每次覆盖", function () {
+    const start = paneSource.indexOf("private async appendConfirmLog");
+    assert.ok(start > 0, "找不到 appendConfirmLog");
+    const body = paneSource.slice(start, start + 2600);
+    assert.match(
+      body,
+      /CONFIRM_LOG_FILE/,
+      "必须写追加式历史文件 —— 覆盖写会让\u201c确认 10 条\u201d只剩最后 1 条",
+    );
+    assert.match(body, /history\.push\(/, "必须往历史里**追加**，而不是替换");
+    assert.match(
+      body,
+      /待确认剩余/,
+      "必须带\u201c待确认剩余\u201d —— 这是 Agent 区分\u201c还没决定\u201d与\u201c决定了\u201d的唯一依据",
+    );
+  });
+
+  it("**用户拒绝时也要写回执**（这是它先前永远等不到答复的原因）", function () {
+    const start = paneSource.indexOf("dismissPendingDeletion(index: number)");
+    assert.ok(start > 0, "找不到 dismissPendingDeletion");
+    const body = paneSource.slice(start, start + 1200);
+    assert.match(
+      body,
+      /appendConfirmLog\(/,
+      "拒绝必须留痕：否则 Agent 提交后无论用户确认还是拒绝都收不到任何答复",
+    );
+    assert.match(
+      body,
+      /"已拒绝"/,
+      "决定要标明是\u201c已拒绝\u201d，Agent 才知道是用户否掉了而不是还在等",
+    );
+  });
+
+  it("向后兼容：老的 deletion-result.json 仍要写", function () {
+    const start = paneSource.indexOf("private async appendConfirmLog");
+    const body = paneSource.slice(start, start + 2600);
+    assert.match(
+      body,
+      /deletion-result\.json/,
+      "已有会话的 Agent 可能还在读旧文件，改版不能让它失灵",
+    );
+  });
+});
+
 describe("工具轮询器的去重键", function () {
   /**
    * ⚠️ **不要用固定长度的切片窗口**。
