@@ -1898,7 +1898,109 @@
       }, RUNNING_PROBE_MS);
     }
 
-    /** 载入历史 */
+    /**
+     * ## ⚠️ 本页必须**持续刷新**，否则 Agent 在后台跑时界面永远停在旧内容
+     *
+     * 真机反馈："还是有提前截断的现象，退出重进会话页面**只是更新一次内容**、
+     * 不会恢复显示正在运行、也不会持续更新（必须反复退出重进刷新内容）。"
+     *
+     * 根因：`loadHistory()` 只在 `start()` 里调**一次**，此后页面没有任何东西
+     * 去看进度 —— 唯一会驱动界面的是"用户自己发消息"（那条路径才接流）。
+     * 于是 Agent 在后台继续产出时，界面静止；用户只能靠反复退出重进来重新加载。
+     *
+     * `getHistory` 走的是 `session/page`，**每次都是最新的** ——
+     * 这也是"重进就能看到新内容"的原因。所以修法很简单：**定期再取一次**。
+     *
+     * ## 两条边界
+     *
+     * 1. **内容没变就不动 DOM**：每次重渲染会清空 `messages.innerHTML`，
+     *    那会把用户正在读的位置弹走、也会打断选中文本。只在指纹变化时重建。
+     * 2. **保住滚动位置**：重建后按"重建前是否贴着底部"决定是否跟到底部 ——
+     *    原来在底部（最常见：刚发完消息）就继续跟；原来在看中间就别动。
+     */
+    var HISTORY_POLL_MS = 2500;
+    var historyTimer = null;
+    var historyFingerprint = "";
+    var historyPollBusy = false;
+
+    function historySnapshot(turns) {
+      var parts = [];
+      for (var i = 0; i < turns.length; i++) {
+        parts.push(
+          (turns[i].prompt || "") + "\u0000" + (turns[i].response || ""),
+        );
+      }
+      return parts.join("\u0001");
+    }
+
+    function renderTurns(turns) {
+      var atBottom =
+        messages.scrollHeight - messages.scrollTop - messages.clientHeight < 40;
+      messages.innerHTML = "";
+      if (!turns || turns.length === 0) {
+        notice("这条会话还没有内容。在下面输入你的第一个问题。");
+        return;
+      }
+      for (var i = 0; i < turns.length; i++) {
+        if (turns[i].prompt) bubble("user", turns[i].prompt);
+        // 把问题一起带上：笔记正文需要它，而回答气泡自己不知道问了什么
+        if (turns[i].response)
+          bubble("assistant", turns[i].response, turns[i].prompt);
+      }
+      if (atBottom) messages.scrollTop = messages.scrollHeight;
+    }
+
+    /**
+     * 取一次历史并按需重渲染。
+     *
+     * @param silent - 静默模式：失败不写提示（后台轮询不该刷出错误）
+     */
+    function refreshHistory(silent) {
+      if (historyPollBusy) return Promise.resolve();
+      historyPollBusy = true;
+      return Promise.resolve()
+        .then(function () {
+          return capability.getHistory();
+        })
+        .then(function (turns) {
+          var list = turns || [];
+          var fp = historySnapshot(list);
+          // 内容真变了才重建 DOM（见上面第 1 条边界）
+          if (fp !== historyFingerprint) {
+            historyFingerprint = fp;
+            renderTurns(list);
+          }
+        })
+        .catch(function (error) {
+          if (!silent) {
+            messages.innerHTML = "";
+            notice(
+              "载入历史失败：" +
+                (error && error.message ? error.message : String(error)),
+            );
+          }
+        })
+        .then(function () {
+          historyPollBusy = false;
+        });
+    }
+
+    /** 启动/停止持续刷新（生成中密一点，空闲时疏一点，省 RPC） */
+    function stopHistoryPoll() {
+      if (historyTimer) {
+        clearInterval(historyTimer);
+        historyTimer = null;
+      }
+    }
+
+    function startHistoryPoll() {
+      if (historyTimer) return;
+      historyTimer = setInterval(function () {
+        void refreshHistory(true);
+      }, HISTORY_POLL_MS);
+    }
+
+    /** 载入历史（首次：带"正在载入"提示与兜底超时） */
     function loadHistory() {
       var loading = notice("正在载入历史…");
       var settled = false;
@@ -1919,17 +2021,10 @@
           if (settled) return;
           settled = true;
           clearTimeout(guard);
-          messages.innerHTML = "";
-          if (!turns || turns.length === 0) {
-            notice("这条会话还没有内容。在下面输入你的第一个问题。");
-            return;
-          }
-          for (var i = 0; i < turns.length; i++) {
-            if (turns[i].prompt) bubble("user", turns[i].prompt);
-            // 把问题一起带上：笔记正文需要它，而回答气泡自己不知道问了什么
-            if (turns[i].response)
-              bubble("assistant", turns[i].response, turns[i].prompt);
-          }
+          historyFingerprint = historySnapshot(turns || []);
+          renderTurns(turns || []);
+          // ⚠️ 首次载入成功后就**持续刷新** —— 这是"Agent 在后台跑时界面也能跟上"的唯一途径
+          startHistoryPoll();
         })
         .catch(function (error) {
           if (settled) return;
@@ -1940,6 +2035,8 @@
             "载入历史失败：" +
               (error && error.message ? error.message : String(error)),
           );
+          // 失败也继续试：网络/宿主可能只是暂时不可用
+          startHistoryPoll();
         });
     }
 
@@ -2032,7 +2129,10 @@
     probeSessionRunning();
     // 关页面时停探测：页面都没了还在问只是白耗 RPC。
     if (window && typeof window.addEventListener === "function") {
-      window.addEventListener("unload", stopRunningProbe);
+      window.addEventListener("unload", function () {
+        stopRunningProbe();
+        stopHistoryPoll();
+      });
     }
     input.focus();
   } // ← start() 结束

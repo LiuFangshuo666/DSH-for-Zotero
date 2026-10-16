@@ -105,6 +105,65 @@ const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
  * 这条守卫读页面源码：探测函数依赖 `start()` 里的 DOM 闭包，
  * 很难在 vm 里独立跑，所以把"必须存在且在启动时被调用"钉在源码上。
  */
+/**
+ * ## 会话页必须**持续刷新**（真机："退出重进只更新一次"）
+ *
+ * 用户："还是有提前截断的现象，退出重进会话页面**只是更新一次内容**、
+ * 不会恢复显示正在运行、也不会持续更新（必须反复退出重进刷新内容）。"
+ *
+ * 根因：`loadHistory()` 只在 `start()` 里调**一次**，此后页面没有任何东西
+ * 去看进度 —— 唯一会驱动界面的是"用户自己发消息"（那条路径才接流）。
+ * 于是 Agent 在后台继续产出时界面静止，用户只能靠反复退出重进重新加载。
+ *
+ * `getHistory` 走 `session/page`，每次都是最新的（这正是"重进能看到新内容"的原因），
+ * 所以修法就是**定期再取一次**。
+ */
+describe("会话页的持续刷新", function () {
+  const page = readFileSync(
+    join(here, "..", "..", "addon", "content", "sessionPage.js"),
+    "utf8",
+  );
+
+  it("必须有定时刷新，且在首次载入后被启动", function () {
+    assert.match(page, /function startHistoryPoll\(\)/, "必须有启动轮询的函数");
+    assert.match(
+      page,
+      /setInterval\(function \(\) \{\s*void refreshHistory\(true\)/,
+      "轮询必须**静默**取历史（后台失败不该往界面上刷错误）",
+    );
+    // 两个分支（成功/失败）都要启动它，否则一次网络抖动就永久静止
+    const starts = page.match(/startHistoryPoll\(\);/g) || [];
+    assert.ok(
+      starts.length >= 2,
+      "载入成功与失败后都要开始轮询（否则一次抖动就永远不再更新），实际 " +
+        starts.length +
+        " 处",
+    );
+  });
+
+  it("**内容没变就不动 DOM**，并保住滚动位置", function () {
+    // 每 2.5 秒清空重建会把用户正在读的位置弹走、也会打断选中文本
+    assert.match(
+      page,
+      /if \(fp !== historyFingerprint\)/,
+      "必须比对指纹，内容没变就不要重建 DOM",
+    );
+    assert.match(
+      page,
+      /atBottom/,
+      "重建后要按\u201c原来是否贴着底部\u201d决定是否跟到底部",
+    );
+  });
+
+  it("关闭页面时要停掉轮询", function () {
+    assert.match(
+      page,
+      /stopHistoryPoll\(\)/,
+      "unload 时必须清掉定时器，否则页面没了还在请求",
+    );
+  });
+});
+
 describe("会话页的工作状态恢复", function () {
   const page = readFileSync(
     join(here, "..", "..", "addon", "content", "sessionPage.js"),
