@@ -43,7 +43,7 @@ const {
   ASK_USER_TIMEOUT_SECONDS,
   ZOTERO_PRESET_ID,
   presetRequest,
-  isPresetNotFound,
+  isPresetUnusable,
 } = bundle;
 
 /** Cordis 的 entry-list 方言带 `!!js` 标签（上游也用），普通解析器会报 unknown tag */
@@ -88,15 +88,15 @@ describe("Zotero 专用 preset", function () {
 
   it("回退判据只认 not-found，其它错误不得被掩盖", function () {
     assert.equal(
-      isPresetNotFound({ code: "agent-preset/not-found" }),
+      isPresetUnusable({ code: "agent-preset/not-found" }),
       true,
       "preset 未挂载应当回退",
     );
-    assert.equal(isPresetNotFound({ code: "gateway/internal" }), false);
-    assert.equal(isPresetNotFound(new Error("disk full")), false);
-    assert.equal(isPresetNotFound(undefined), false);
-    assert.equal(isPresetNotFound(null), false);
-    assert.equal(isPresetNotFound("agent-preset/not-found"), false);
+    assert.equal(isPresetUnusable({ code: "gateway/internal" }), false);
+    assert.equal(isPresetUnusable(new Error("disk full")), false);
+    assert.equal(isPresetUnusable(undefined), false);
+    assert.equal(isPresetUnusable(null), false);
+    assert.equal(isPresetUnusable("agent-preset/not-found"), false);
   });
 
   it("**`tool-ask-user` 必须是 timed，且窗口很短**", function () {

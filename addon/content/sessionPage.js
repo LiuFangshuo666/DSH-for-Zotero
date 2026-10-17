@@ -659,10 +659,38 @@
 
     function renderModelBar() {
       if (!modelBarEl || !modelSelectEl) return;
+      /**
+       * ## ⚠️ 失败时**显示原因**，而不是悄悄隐藏（真机反馈：下拉框点不开）
+       *
+       * 用户报"点不开模型和推理等级的下拉框"，而实际现象是**整条栏都不出现** ——
+       * 因为我原来在取不到目录时直接 `return`，把整条隐藏了。
+       *
+       * 那是**静默失败**：用户看不出是"没有这个功能"还是"功能坏了"，
+       * 我也无从判断（这次就是这样，只能靠猜）。
+       *
+       * 现在分三种情况：
+       *  1. 老插件没有这个方法 → 隐藏（确实没这个功能，隐藏是对的）；
+       *  2. 有方法但取目录失败 → **显示栏 + 写明错误**；
+       *  3. 取到了但没有模型 → **显示栏 + 写明原因**。
+       */
       if (typeof capability.getModelCatalog !== "function") return; // 老插件：保持隐藏
+      var showProblem = function (text) {
+        modelBarEl.style.display = "flex";
+        if (modelNoteEl) modelNoteEl.textContent = text;
+        if (modelSelectEl) modelSelectEl.disabled = true;
+        if (effortSelectEl) effortSelectEl.disabled = true;
+      };
       Promise.resolve(capability.getModelCatalog())
         .then(function (catalog) {
-          if (!catalog || !catalog.groups) return; // 拿不到就保持隐藏
+          if (!catalog) {
+            // capabilityFromGlobal 在旧插件上返回 null
+            showProblem("插件版本较旧：不支持在会话里切换模型");
+            return;
+          }
+          if (!catalog.groups) {
+            showProblem("取不到模型目录（宿主返回里没有 groups）");
+            return;
+          }
           modelIndex = {};
           modelSelectEl.textContent = "";
           catalog.groups.forEach(function (group) {
@@ -677,7 +705,20 @@
               modelSelectEl.appendChild(opt);
             });
           });
-          if (!modelSelectEl.options.length) return;
+          if (!modelSelectEl.options.length) {
+            var failed = (catalog.failures || [])
+              .map(function (f) {
+                return String(f.name || f.id);
+              })
+              .join("、");
+            showProblem(
+              failed
+                ? "没有可用模型：" + failed + " 加载失败"
+                : "没有可用模型（请到设置页检查模型凭据）",
+            );
+            return;
+          }
+          modelSelectEl.disabled = false;
           // 预选：会话记录里的选择 → 否则宿主的默认 → 否则第一项
           var chosen = catalog["会话已选"] || {};
           var fallback = catalog.default || {};
@@ -704,8 +745,11 @@
             modelNoteEl.textContent = "改动对下一轮生效";
           }
         })
-        .catch(function () {
-          // 取不到目录就保持隐藏 —— 这是增强，不是主流程
+        .catch(function (error) {
+          // ⚠️ 不能静默：这就是"下拉框点不开"时唯一的线索
+          showProblem(
+            "取模型目录失败：" + String((error && error.message) || error),
+          );
         });
     }
 

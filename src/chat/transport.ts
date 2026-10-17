@@ -52,7 +52,7 @@ import type { ChatEvent } from "../chat/state";
 import { mergeResponseText } from "../chat/mergeText";
 import { appendPanelLog } from "../dsh/runLog";
 import { parseAskUserQuestions, type AskUserQuestion } from "../dsh/askUser";
-import { isPresetNotFound, presetRequest } from "../dsh/zoteroPreset";
+import { isPresetUnusable, presetRequest } from "../dsh/zoteroPreset";
 
 /**
  * ## 插件认识几号**会话日志格式**？
@@ -160,7 +160,7 @@ async function createSessionPreferringPreset(
   try {
     return await createSession(client, { ...request, ...presetRequest() });
   } catch (error) {
-    if (!isPresetNotFound(error)) throw error;
+    if (!isPresetUnusable(error)) throw error;
 
     appendPanelLog(
       "session",

@@ -150,17 +150,32 @@ export function presetRequest(): { agentPreset: string } {
 }
 
 /**
- * 判断失败是否属于「本 preset 没挂载」（可安全回退）。
+ * 判断失败是否属于「本 preset **不可用**」（可安全回退到默认组合）。
  *
- * 只认 `agent-preset/not-found` —— 其它错误（磁盘、权限、模型配置）
- * 不该被回退掩盖，否则会变成「静默用错组合」。
+ * ## ⚠️ 必须同时认 `not-found` 与 `invalid`（真机事故）
  *
- * ⚠️ 入参是 `unknown`：它来自 `catch`，而 TS 的 catch 变量就是 unknown。
- * 收在这里判定，而不是让每个调用点各写一遍 code 比较。
+ * 我最初只认 `not-found`，理由是"其它错误不该被回退掩盖"。
+ * 那个原则对，但**范围划错了**：
+ *
+ * 2026-10-17 用户升级到 0.2.1-rc.1 后**完全无法新建会话**，日志：
+ *
+ * ```text
+ *   新建会话失败：agent-preset/invalid: tool-subagent (...):
+ *   toolFilter is no longer supported; ...
+ * ```
+ *
+ * 新版移除了 `toolFilter` 配置，而我的 preset 里还带着它 → preset 非法。
+ * 而 `invalid` 不在回退清单里 → 一个**插件自身配置过时**的问题，
+ * 变成了**用户连会话都建不出来**。
+ *
+ * 教训：回退的判据应当是「**这份 preset 用不了**」，而不是某一个错误码。
+ * `invalid` 与 `not-found` 在这个意义上是同一类。其它错误（磁盘、权限、
+ * 模型凭据）仍然照常抛出，不被掩盖。
  */
-export function isPresetNotFound(error: unknown): boolean {
+export function isPresetUnusable(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
-  return (error as { code?: unknown }).code === "agent-preset/not-found";
+  const code = (error as { code?: unknown }).code;
+  return code === "agent-preset/not-found" || code === "agent-preset/invalid";
 }
 
 /**
@@ -364,23 +379,11 @@ When ready, call exit_plan_mode with the complete plan markdown, starting with a
     "                provider: spawn",
     "                toolName: subagent",
     "                modelSelectionSettings: true",
-    "                toolFilter:",
-    "                  deny:",
-    "                    - schedule_create",
-    "                    - schedule_delete",
-    "                    - schedule_list",
-    "                    - schedule_update",
     "            - id: tool-subagent-fork",
     "              name: '@deepseek-ai/dsh-tool-subagent'",
     "              config:",
     "                provider: fork",
     "                toolName: subagent_fork",
-    "                toolFilter:",
-    "                  deny:",
-    "                    - schedule_create",
-    "                    - schedule_delete",
-    "                    - schedule_list",
-    "                    - schedule_update",
     "            - id: workflow-ptc",
     "              name: '@deepseek-ai/dsh-workflow-ptc'",
     "              config:",
@@ -412,6 +415,10 @@ When ready, call exit_plan_mode with the complete plan markdown, starting with a
     "        - id: tool-plugin-manager",
     "          name: '@deepseek-ai/dsh-plugin-manager/tools'",
     "          disabled: true",
-    "  ",
+    "        # 0.2.1-rc.1 新增的一行（0.2.0-rc.2 没有这个包 → 必须 disabled，",
+    "        # 否则旧版用户会因「引用不存在的包」让整份 preset 加载失败）",
+    "        - id: tool-plugin-market",
+    "          name: '@deepseek-ai/dsh-plugin-market/tools'",
+    "          disabled: true",
   ].join("\n");
 }
