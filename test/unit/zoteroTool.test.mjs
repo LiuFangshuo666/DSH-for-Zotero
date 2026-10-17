@@ -113,6 +113,76 @@ describe("操作分类（安全边界）", function () {
     assert.equal(isKnownOp("nope"), false);
   });
 
+  /**
+   * ## 分类/标签类结构性改动必须**都在**需确认清单里
+   *
+   * 这几条是我在扩充工具面时新增的，它们的共同风险是**影响面超出单个条目**：
+   *  - `deleteTag` 影响全库所有带该标签的条目；
+   *  - `deleteCollection` 可能连带删掉分类内条目；
+   *  - `deleteAttachment` 删的是文件（eraseTx 后撤销栈也救不回）。
+   *
+   * 所以它们**不能**被当成普通写操作直接执行 —— 一旦有人为了"顺手"把它们
+   * 挪进 `WRITE_OPS`，用户就失去了那道确认。这条守卫就是拦这个。
+   */
+  it("分类/标签类改动必须走确认，不得混进普通写操作", function () {
+    const mustConfirm = [
+      "deleteAttachment",
+      "deleteTag",
+      "createCollection",
+      "renameCollection",
+      "deleteCollection",
+    ];
+    for (const op of mustConfirm) {
+      assert.ok(
+        DESTRUCTIVE_OPS.includes(op),
+        `${op} 必须在 DESTRUCTIVE_OPS 里（影响面超出单个条目，需用户确认）`,
+      );
+      assert.equal(
+        WRITE_OPS.includes(op),
+        false,
+        `${op} 不能出现在 WRITE_OPS —— 那会被直接执行，跳掉确认`,
+      );
+    }
+  });
+
+  /**
+   * ## `setFields` 必须在**写**操作里（不是需确认）
+   *
+   * 这是用户边界「读+写自由，仅删除需确认」的直接体现：改元数据属于"写"，
+   * 进 Zotero 撤销栈、不弹确认。
+   *
+   * 但它曾经**完全不存在** —— 于是 Agent 查到正式版 DOI 却写不进去，
+   * 转而去读 `zotero.sqlite`、解压 xpi 找别的路。这条断言防的是"又被拿掉"。
+   */
+  it("`setFields` 必须在写操作里（改元数据属「写自由」）", function () {
+    assert.ok(
+      WRITE_OPS.includes("setFields"),
+      "setFields 必须在 WRITE_OPS：改元数据是用户明确要的「写自由」，不该弹确认",
+    );
+    assert.equal(isDestructiveOp("setFields"), false);
+  });
+
+  /**
+   * ## 新增的读操作必须真的**只读**
+   *
+   * 这些 op 里最容易写错的是 `exportCitation`（它调用 Zotero 的导出翻译器）
+   * 与 `listItemTypes`（它读 schema）。它们看起来"在做事情"，但都不改库。
+   * 一旦被误放进写操作，Agent 会以为需要确认而不敢用。
+   */
+  it("新读操作必须归在 READ_OPS", function () {
+    for (const op of [
+      "searchItems",
+      "listTags",
+      "listAttachments",
+      "getAnnotations",
+      "exportCitation",
+      "listItemTypes",
+    ]) {
+      assert.ok(READ_OPS.includes(op), `${op} 必须在 READ_OPS`);
+      assert.equal(isDestructiveOp(op), false, `${op} 是只读的，不该要求确认`);
+    }
+  });
+
   it("**attachPdf 必须存在**，且必须走确认（真机事故的根因）", function () {
     // ## 为什么这条测试值得单独写
     //

@@ -44,6 +44,58 @@ export const ALLOWED_ITEM_TYPES = [
 ] as const;
 
 /**
+ * 允许写入的**字段名**白名单（`createItem` 与 `setFields` 共用这一份）。
+ *
+ * ## 为什么是白名单而不是"Zotero 认什么就写什么"
+ *
+ * 这是**跨类型通用**的名单，因为同一套字段名要同时服务
+ * `journalArticle`（`publicationTitle`）与 `conferencePaper`
+ * （`proceedingsTitle`）。Zotero 自己会按类型校验：该类型没有的字段
+ * 写进去会被**跳过**并在返回值里列出，不会让整次调用失败。
+ *
+ * ## ⚠️ 为什么必须只有一份
+ *
+ * `createItem` 与 `setFields` 是同一件事的两个方向（新建 vs 修改）。
+ * 两份名单一旦漂移，就会出现"能建出来的条目改不了"或"能改的字段建不出来" ——
+ * 这种不一致极难自查，因为两条路各自看起来都对。
+ */
+export const ALLOWED_ITEM_FIELDS = [
+  "title",
+  "abstractNote",
+  "date",
+  "publicationTitle",
+  "proceedingsTitle",
+  "bookTitle",
+  "publisher",
+  "place",
+  "volume",
+  "issue",
+  "pages",
+  "DOI",
+  "ISBN",
+  "ISSN",
+  "url",
+  "language",
+  "extra",
+  "university",
+  "institution",
+  "reportNumber",
+  // 会议论文的会场有时单独存这两个（Zotero 按类型二选一）
+  "conferenceName",
+  "journalAbbreviation",
+  "shortTitle",
+  "edition",
+  "series",
+  "seriesTitle",
+  "numberOfPages",
+  "accessDate",
+  "archive",
+  "libraryCatalog",
+  "callNumber",
+  "rights",
+] as const;
+
+/**
  * 中文（及少数别名）→ Zotero 标识符。
  *
  * ## 为什么需要（真机故障）

@@ -47,14 +47,49 @@
 /** 读操作：直接执行 */
 export const READ_OPS = [
   "search",
+  // 高级检索：按字段/DOI/条目类型/日期范围精确过滤。
+  //
+  // 为什么在 `search` 之外还要它：`search` 只做"标题/作者/摘要里含关键词"的
+  // 模糊匹配，而文献工作里大量查询是**精确**的（"找 DOI 是 X 的那篇"、
+  // "找 2023 年之后的 conferencePaper"）。用模糊搜索兜精确需求，
+  // 会让 Agent 反复试关键词。
+  "searchItems",
   "getItem",
   "listCollections",
   "listItems",
+  // 库里的**标签总览**（含每个标签的条目数）。
+  //
+  // 为什么需要：治理标签前得先知道有哪些标签。没有它，Agent 只能靠
+  // `listItems` 逐条读 `现有标签` 再自己汇总 —— 53 条还行，5000 条就是灾难。
+  "listTags",
+  // 某条目挂了哪些附件（文件名/类型/大小/路径/是否链接式）。
+  //
+  // 为什么需要：判断"这篇有没有 PDF"以前只能靠 `getFullText` 试，
+  // 而 `getFullText` 返回的是**全文索引**的结果，不是"有没有附件"。
+  // 两者不等价：有 PDF 但没文字层 → `getFullText` 说有全文但内容是空的；
+  // 有 PDF 且是扫描件 → 同上。用 `listAttachments` 才看得到真实附件。
+  "listAttachments",
+  // 某条目 PDF 上的**高亮与批注**。
+  //
+  // 文献工作里这是最有价值的信号之一：用户自己划的线就是他关心的重点。
+  // 读原文（getFullText）拿不到它，因为批注不在 PDF 文字层里。
+  "getAnnotations",
   "getNotes",
   // 按需读某篇的**原文**（Zotero 全文缓存）。
   // 此前工作区里只有"会话建立时"写入的 paper.txt，分类会话根本没有全文，
   // 于是 Agent 只能靠标题与摘要判断内容（真机反馈过这个限制）。
   "getFullText",
+  // 生成引用条目文本（BibTeX / RIS / CSL-JSON）。
+  //
+  // 为什么需要：用户问"给我这几篇的 BibTeX"时，Agent 以前只能自己
+  // 凭字段拼 —— 而字段名、作者格式、转义规则都是 Zotero 更清楚。
+  "exportCitation",
+  // 可用条目类型及其字段清单（含必填标记）。
+  //
+  // 为什么需要：`createItem` / `setFields` 都要写 `itemType` 与字段名，
+  // 而"会议论文的会场叫什么字段"这类知识**不该让模型去猜** ——
+  // 猜错的代价是建出畸形条目，比失败更难清理。
+  "listItemTypes",
   // 在**外部数据库**里检索论文（Crossref / DOI），返回候选与 DOI。
   //
   // 为什么单独做成一个 op，而不是让 Agent 用 dsh 的 web_search：
@@ -66,7 +101,34 @@ export const READ_OPS = [
 ] as const;
 
 /** 写操作：直接执行 + 撤销栈 */
-export const WRITE_OPS = ["setTags", "addNote", "addToCollection"] as const;
+export const WRITE_OPS = [
+  "setTags",
+  // **改条目元数据**（标题/期刊/会议/DOI/年份/卷期页…）。
+  //
+  // ⚠️ 这是此前最大的缺口：插件一直只能改**标签**，不能改字段。
+  // 真机后果：用户说"这些条目都是预印本，补上正式发表信息"，
+  // Agent 能查到正式版 DOI，却**没有任何 op 能把它写进条目** ——
+  // 于是它去翻插件源码、去读 zotero.sqlite，想找一条能写的路。
+  // 「功能没给够，边界就守不住」这句在这个项目里已经应验过两次。
+  "setFields",
+  "addNote",
+  // 改**已有**笔记的正文。
+  //
+  // 为什么不是 `addNote` 够用：笔记写错了要改，而"再写一条正确的"
+  // 会在文献库里留下垃圾。Agent 修自己写错的笔记是高频动作。
+  "updateNote",
+  "addToCollection",
+  // 把条目**移出**某个分类（不动条目本身）。
+  //
+  // 为什么需要：`addToCollection` 只能加不能减，纠正误加只能靠用户手动。
+  "removeFromCollection",
+  // 建立条目之间的**关联**（Zotero 的 Related）。
+  //
+  // 为什么需要：文献工作常要"把会议版与期刊版关联起来"、
+  // "把这篇和被它引用的综述关联起来"。这是 Zotero 的原生关系，
+  // 比往笔记里写一句"另见 X"结构化得多。
+  "addRelated",
+] as const;
 
 /**
  * 结构性改动：登记待确认，不直接执行。
@@ -99,6 +161,23 @@ export const DESTRUCTIVE_OPS = [
   "createItem",
   // 给**已存在**的条目取全文并挂成附件（逐条确认）
   "attachPdf",
+  // 删掉某个附件（不动条目本身）。
+  //
+  // 为什么需要：错误挂上去的 PDF（比如把跳转页当正文存进去）没有 op 可删，
+  // 用户只能手动找、手动删。而 `deleteItems` 会连条目一起删，太重。
+  "deleteAttachment",
+  // 分类树的结构性改动。三个都要确认：
+  //  - `createCollection` 会永久改动文库结构（与 createItem 同理）；
+  //  - `renameCollection` 改名后**用户自己的引用/笔记里的旧名就对不上了**；
+  //  - `deleteCollection` 可能连带删掉分类内的条目（Zotero 有"删除分类及条目"选项）。
+  "createCollection",
+  "renameCollection",
+  "deleteCollection",
+  // 删掉一个**标签在整个库内的所有出现**。
+  //
+  // 为什么不在写操作里：它影响的不是一条条目，而是**全库所有带该标签的条目** ——
+  // 误删一个常用标签，用户要逐条恢复。
+  "deleteTag",
 ] as const;
 
 export type ToolOp =
@@ -287,6 +366,31 @@ export function describeOps(): string {
     "    优先选**年份与作者都吻合**的那条；arXiv 类预印本用 `10.48550/arXiv.…` 形制。",
     "    不要仅因为某条排在前面、或只有它带 PDF 直链，就选一条年份明显不对的登记 ——",
     "    那会把错误的 DOI 与年份写进用户库里。",
+    "- `searchItems` args `{itemType?, field?, value?, doi?, creator?, sinceYear?, untilYear?, inScope?, limit?}`",
+    "  —— **精确**检索（`search` 是模糊匹配，这个是按字段过滤）",
+    "  - `doi`：按 DOI 精确找（唯一、最快）。`field`+`value`：按任意 Zotero 字段精确匹配，",
+    "    例如 `field=publicationTitle` 且 `value=Nature`。`itemType`：只看某类",
+    "    （`conferencePaper` / `journalArticle` / `preprint` …）。",
+    "  - `sinceYear` / `untilYear`：按 `date` 字段的年份区间过滤。`creator`：作者姓或名包含该串。",
+    "  - `inScope` 默认 `true`（只搜本会话范围）。要全库搜传 `false`。",
+    "- `listTags` args `{limit?}` —— 库里的**标签总览**（每个标签 + 条目数，按数量降序）",
+    "  - 治理标签、找同义标签、看用户既有习惯，先用它 —— 不要靠逐条读 `现有标签` 再自己汇总。",
+    "- `listAttachments` args `{key}` —— 某条目挂了哪些**附件**",
+    "  - 返回 `文件名` / `类型` / `大小` / `路径` / `是否链接式`。",
+    "  - ⚠️ **判断「有没有 PDF」要用它，不要用 `getFullText`** —— 后者返回的是**全文索引**",
+    "    的结果，两者不等价：扫描件（无文字层）有附件但索引是空的。",
+    "- `getAnnotations` args `{key, limit?}` —— 该条目 PDF 上的**高亮与批注**",
+    "  - 文献工作里这是最有价值的信号之一：**用户自己划的线就是他关心的重点**。",
+    "  - 返回 `类型`（highlight/note/underline…）/ `原文` / `批注` / `颜色` / `页码`。",
+    "- `exportCitation` args `{keys:[…], format}` —— 生成引用条目文本",
+    "  - `format` 取 `bibtex` / `ris` / `csljson` 之一。",
+    "  - 用户要「给我这几篇的 BibTeX」就用它 —— **不要自己凭字段拼**：字段名、作者",
+    "    格式、转义规则都由 Zotero 处理，自己拼容易出错。",
+    "- `listItemTypes` args `{detail?}` —— 可用条目类型清单",
+    "  - `detail` 默认 `false`（只列类型名）。传 `true` 会附上该类型的**字段清单**，",
+    "    并标出哪些是必填。",
+    "  - ⚠️ **`createItem` / `setFields` 之前不确定字段名就先调它** —— ",
+    "    「会议论文的会场叫什么字段」这类知识不该靠猜，猜错的代价是建出畸形条目。",
     "",
     "**写**（直接执行，进入 Zotero 撤销栈）：",
     "- `setTags` args `{key, tags:[…]}` —— 覆盖该条目的标签（`_` 开头的系统标签保留）",
@@ -294,14 +398,32 @@ export function describeOps(): string {
     "  - ⚠️ 正文**按纯文本处理**：HTML 标签会被**转义成字面量**（传 `<b>要点</b>`" +
       " 笔记里就显示 `<b>要点</b>`）。换行会保留。想强调就用 Markdown 记号或纯文字。",
     "- `addToCollection` args `{key, collectionKey}` —— 把条目加入分类",
+    "- `setFields` args `{key, fields:{…}}` —— **改条目元数据**（标题/期刊/会议/DOI/年份/卷期页…）",
+    "  - 这是「把查到的正式发表信息补进条目」的唯一途径。以前没有它，Agent 能查到",
+    "    正式版 DOI 却写不进去，于是去翻插件源码、去读数据库找别的路。",
+    "  - 字段名与 `createItem` 用的是**同一份**允许清单；该条目类型不支持的字段会被**跳过**",
+    "    并在返回值里列出（不会整条失败）。",
+    "  - **传空字符串表示清空该字段**（区别于 createItem：那里空串会被当作没给）。",
+    "    这是有意的：修正元数据时「把错误的年份清掉」是合法操作。",
+    "  - 值会被 trim；非字符串值会被拒（先自己转成字符串）。",
+    "- `updateNote` args `{key, html}` —— 改**已有笔记**的正文",
+    "  - `key` 是**笔记自己的 key**（用 `getNotes` 拿），不是父条目的 key。",
+    "  - 正文同样按纯文本处理（HTML 会被转义），与 `addNote` 一致。",
+    "- `removeFromCollection` args `{key, collectionKey}` —— 把条目**移出**分类",
+    "  - 只解除归属，**不删条目**。纠正误加用这个。",
+    "- `addRelated` args `{key, relatedKey}` —— 建立两条条目之间的**关联**（双向）",
+    "  - 适合「会议版 ↔ 期刊版」「正文 ↔ 被引综述」。比往笔记里写一行「另见 X」结构化。",
+    "  - 已关联时不报错，返回 `结果: 已存在`。",
     "",
     "**结构性改动**（不会立即执行，需用户确认）：",
     "",
-    "⚠️ **作用域（写与结构性改动都适用）**：`setTags` / `addNote` / `addToCollection` /",
-    "`createItem` / `attachPdf` 都**只作用于本会话范围内的条目**；越界的 key 会被拒。",
+    "⚠️ **作用域（写与结构性改动都适用）**：`setTags` / `setFields` / `addNote` /",
+    "`updateNote` / `addToCollection` / `removeFromCollection` / `addRelated` /",
+    "`createItem` / `attachPdf` / `deleteAttachment` 都**只作用于本会话范围内的条目**；",
+    "越界的 key 会被拒。",
     "**读操作（`search` / `getItem` / `getFullText` / `findPaper` …）不受此限，可跨库。**",
-    "⚠️ **例外：`deleteItems` / `deleteNote` 不做范围校验** —— 删除的防线是",
-    "**用户逐条确认**，不是作用域。整批 `keys` 只登记**一条**待确认项，",
+    "⚠️ **例外：`deleteItems` / `deleteNote` / 分类与标签类操作不做范围校验** ——",
+    "它们的防线是**用户逐条确认**，不是作用域。整批 `keys` 只登记**一条**待确认项，",
     "所以要逐条粒度就分多次调用。",
     "",
     "- `createItem` args `{itemType?, fields:{…}, creators?, collectionKey?, tags?, fetchPdf?, pdfUrl?}` —— **新建条目**",
@@ -345,6 +467,21 @@ export function describeOps(): string {
     "    ```",
     "- `deleteItems` args `{keys:[…]}`（也接受单个 `{key}`）—— 登记为待确认",
     "- `deleteNote` args `{key}` —— 同上",
+    "- `deleteAttachment` args `{key}` —— 删掉某个**附件**（不动条目本身）",
+    "  - 用于清理误挂的文件（例如把跳转页当正文存进去的那次）。",
+    `  - \`key\` 是**附件自己的 key**（用 \`listAttachments\` 拿），不是父条目的 key。`,
+    "- `createCollection` args `{name, parentKey?}` —— **新建分类**",
+    "  - 只建分类，不往里放条目。建完用 `addToCollection` 放入。",
+    "- `renameCollection` args `{collectionKey, name}` —— 分类**改名**",
+    "  - ⚠️ 改名会让用户笔记/引用里的旧名对不上，所以也要确认。",
+    "- `deleteCollection` args `{collectionKey, deleteItems?}` —— **删分类**",
+    "  - `deleteItems` 默认 `false`：**只删分类，条目留在库里**（变成未分类）。",
+    "    只有明确传 `true` 才会连分类内的条目一起删 —— 那是**不可逆**的，",
+    "    所以默认值必须是安全的那一侧。",
+    "- `deleteTag` args `{tag}` —— 删掉该标签在**全库**内的所有出现",
+    "  - ⚠️ 影响范围是全库，不是本会话。误删常用标签要逐条恢复。",
+    "  - 只想「给某些条目去掉这个标签」时，用 `setTags`（传去掉它之后的标签数组），",
+    "    那才是按条目生效的。",
     "- `attachPdf` args `{key?, keys?[], pdfUrl?}` —— **给已存在的条目取全文并挂成附件**",
     "  - ⚠️ **要给已存在的条目补全文，就用这个 op，不要用别的办法。**",
     "    真机事故：当时插件没有这个 op，Agent 便去调用 Zotero 自己的本地 HTTP API",

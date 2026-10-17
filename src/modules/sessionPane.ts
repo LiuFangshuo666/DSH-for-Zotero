@@ -63,6 +63,7 @@ import {
 } from "../notes/writeback";
 import { diffTags } from "../dsh/tagDiff";
 import {
+  ALLOWED_ITEM_FIELDS,
   ALLOWED_ITEM_TYPES,
   formatAnswersForSteer,
   normalizeItemType,
@@ -799,11 +800,22 @@ export function buildWorkspaceReadme(input: {
     ``,
     `| 类别 | 操作 | 说明 |`,
     `| --- | --- | --- |`,
-    `| 读 | \`search\` \`getItem\` \`listItems\` \`listCollections\` \`getNotes\` | 搜索、元数据、条目清单、分类树、笔记 |`,
+    `| 读 | \`search\` \`searchItems\` \`getItem\` \`listItems\` \`listCollections\` \`getNotes\` | 模糊/精确检索、元数据、条目清单、分类树、笔记 |`,
     `| **读正文** | \`getFullText\` | **读论文原文**（用 \`offset\` 分段）；返回值里的 \`有全文\` 直接告诉你这条有没有全文 |`,
-    `| **找论文** | \`findPaper\` | **在外部数据库检索**（Crossref），拿回标题/作者/年份/期刊/**DOI** |`,
-    `| 写 | \`setTags\` \`addNote\` \`addToCollection\` | 改标签、加笔记、加入分类 |`,
-    `| **需用户确认** | \`createItem\` \`attachPdf\` \`deleteItems\` \`deleteNote\` | 新建条目、**补全文**与删除**不会立即执行**，会登记为待确认 |`,
+    `| **看附件与批注** | \`listAttachments\` \`getAnnotations\` | 挂没挂 PDF（看它，不是看 \`getFullText\`）、PDF 上的**高亮与批注**（用户划的线就是重点） |`,
+    `| **标签与引用** | \`listTags\` \`exportCitation\` | 全库标签总览（含条目数）、生成 **BibTeX / RIS / CSL-JSON** |`,
+    `| **查字段名** | \`listItemTypes\` | 条目类型清单；\`detail:true\` 给出该类型的**字段名与必填项** —— 写字段前先查它，别猜 |`,
+    `| **找论文** | \`findPaper\` | **在外部数据库检索**（Crossref/DataCite），拿回标题/作者/年份/期刊/**DOI** |`,
+    `| 写 | \`setTags\` \`setFields\` \`addNote\` \`updateNote\` \`addToCollection\` \`removeFromCollection\` \`addRelated\` | 标签、**元数据字段**、笔记增改、分类增删、条目关联 |`,
+    `| **需用户确认** | \`createItem\` \`attachPdf\` \`deleteItems\` \`deleteNote\` \`deleteAttachment\` \`createCollection\` \`renameCollection\` \`deleteCollection\` \`deleteTag\` | 新建、补全文、删除、分类与标签的**结构性改动** —— 都**不会立即执行**，会登记为待确认 |`,
+    ``,
+    // ⚠️ 这一条是「功能没给够就守不住边界」的第二次教训：插件长期只能改**标签**
+    // 不能改字段，于是 Agent 能查到正式版 DOI 却写不进去，转而去翻插件源码、
+    // 去读 zotero.sqlite，想找一条能写的路。必须在这里明确指路。
+    `📌 **要把查到的元数据写进条目，就用 \`setFields\`**` +
+      `（字段名不确定先 \`listItemTypes\` 带 \`detail:true\` 查）。` +
+      `**不要去读 \`zotero.sqlite\`、解压 .xpi 或调用 Zotero 本地 HTTP API 找别的写库路径** —— ` +
+      `那些都绕过插件的确认与撤销栈。`,
     ``,
     // ⚠️ 真机事故：用户要"给分类下的条目逐一补全文"，而当时**没有** attachPdf，
     // Agent 于是去调 Zotero 自己的本地 HTTP API，在后台进程里绕过插件
@@ -1182,11 +1194,21 @@ const STALE_DIR = "_stale";
  * | 11 | `getFullText` 的"没有全文"改为返回 `有全文: false` 状态，**不再抛错** |
  * | 12 | 用户决定的**追加式回执** `confirm-log.json`（含拒绝与 `待确认剩余`） |
  * | 13 | `attachPdf` 的**作用域**说明；id 复用后果的修正（被跳过，而非重复执行） |
+ * | **14** | **工具面从 14 个 op 扩到 29 个**：新增 `setFields`（改元数据）、`searchItems`、`listTags`、`listAttachments`、`getAnnotations`、`exportCitation`、`listItemTypes`、`updateNote`、`removeFromCollection`、`addRelated`、`deleteAttachment`、`createCollection`、`renameCollection`、`deleteCollection`、`deleteTag`；`getItem` 改为返回 **`条目类型` + `全部字段`** |
+ *
+ * ⚠️ 第 14 版的两条**根因**（都不是"功能不够用"，而是"功能不够导致 Agent 绕路"）：
+ *
+ *  1. `getItem` 只把 `publicationTitle` 当"期刊"，而**会议论文的会场在
+ *     `proceedingsTitle` / `conferenceName`** —— Agent 因此断定"插件给不了发表信息"，
+ *     去**解压 .xpi 找源码、复制并读取 `zotero.sqlite`**。
+ *  2. 长期没有 `setFields`，于是"查到正式版 DOI 却写不进条目"，
+ *     同样导致绕路。这是本项目**第三次**验证同一句话：
+ *     **功能没给够，边界就守不住。**
  *
  * ⚠️ 这张表曾经漏掉 11 与 12（改材料却没记），于是后来者会以为"11 没动过材料"。
  * **改材料时必须同时补一行** —— 这张表是"改动材料要 bump"这条纪律的唯一记录点。
  */
-const MATERIALS_VERSION = 13;
+const MATERIALS_VERSION = 14;
 
 /** 材料版本标记的写法（写在 README 首行，便于解析与人工辨认） */
 function materialsStamp(version: number): string {
@@ -2686,6 +2708,84 @@ export class SessionPane {
           };
         }
 
+        // ── 分类与标签类结构性改动（各自不带 args.keys，必须排在删除兜底之前）──
+        //
+        // ⚠️ 顺序要求与 attachPdf 同理：下面的兜底分支会把任何带 key/keys 的
+        // 调用当成"待删除条目"。这些 op 的 `argString(args,"key")` 指的是
+        // **附件/分类**，若落到兜底里就会登记成"删除条目" —— 真会删用户的东西。
+        if (op === "deleteAttachment") {
+          const key = argString(args, "key");
+          if (!key) {
+            return {
+              id,
+              ok: false,
+              error:
+                "deleteAttachment 需要 args.key（附件自己的 key，用 listAttachments 拿）",
+            };
+          }
+          return this.registerPendingStructural(record, id, op, {
+            kind: "attachment",
+            key,
+          });
+        }
+        if (op === "deleteTag") {
+          const tag = argString(args, "tag");
+          if (!tag) {
+            return { id, ok: false, error: "deleteTag 需要 args.tag" };
+          }
+          return this.registerPendingStructural(record, id, op, {
+            kind: "tag",
+            tag,
+          });
+        }
+        if (op === "createCollection") {
+          const name = argString(args, "name");
+          if (!name) {
+            return { id, ok: false, error: "createCollection 需要 args.name" };
+          }
+          return this.registerPendingStructural(record, id, op, {
+            kind: "collection-create",
+            name,
+            parentKey: argString(args, "parentKey"),
+          });
+        }
+        if (op === "renameCollection") {
+          const collectionKey = argString(args, "collectionKey");
+          const name = argString(args, "name");
+          if (!collectionKey) {
+            return {
+              id,
+              ok: false,
+              error: "renameCollection 需要 args.collectionKey",
+            };
+          }
+          if (!name) {
+            return { id, ok: false, error: "renameCollection 需要 args.name" };
+          }
+          return this.registerPendingStructural(record, id, op, {
+            kind: "collection-rename",
+            collectionKey,
+            name,
+          });
+        }
+        if (op === "deleteCollection") {
+          const collectionKey = argString(args, "collectionKey");
+          if (!collectionKey) {
+            return {
+              id,
+              ok: false,
+              error: "deleteCollection 需要 args.collectionKey",
+            };
+          }
+          return this.registerPendingStructural(record, id, op, {
+            kind: "collection-delete",
+            collectionKey,
+            // ⚠️ 默认 false：只删分类、条目留在库里。
+            // 默认值必须落在安全的那一侧 —— 反过来一旦模型漏传就会删用户条目。
+            deleteItems: args.deleteItems === true,
+          });
+        }
+
         const keys = argStringArray(args, "keys") ?? [
           argString(args, "key") ?? "",
         ];
@@ -2734,8 +2834,36 @@ export class SessionPane {
       switch (op) {
         case "search":
           return { id, ok: true, data: await this.toolSearch(record, args) };
+        case "searchItems":
+          return {
+            id,
+            ok: true,
+            data: await this.toolSearchItems(record, args),
+          };
         case "listItems":
           return { id, ok: true, data: await this.toolListItems(record) };
+        case "listTags":
+          return { id, ok: true, data: this.toolListTags(record, args) };
+        case "listAttachments":
+          return {
+            id,
+            ok: true,
+            data: await this.toolListAttachments(record, args),
+          };
+        case "getAnnotations":
+          return {
+            id,
+            ok: true,
+            data: await this.toolGetAnnotations(record, args),
+          };
+        case "exportCitation":
+          return {
+            id,
+            ok: true,
+            data: await this.toolExportCitation(record, args),
+          };
+        case "listItemTypes":
+          return { id, ok: true, data: this.toolListItemTypes(args) };
         case "getItem":
           return { id, ok: true, data: await this.toolGetItem(record, args) };
         case "listCollections":
@@ -2748,8 +2876,28 @@ export class SessionPane {
           return { id, ok: true, data: await this.toolFindPaper(args) };
         case "setTags":
           return { id, ok: true, data: await this.toolSetTags(record, args) };
+        case "setFields":
+          return { id, ok: true, data: await this.toolSetFields(record, args) };
         case "addNote":
           return { id, ok: true, data: await this.toolAddNote(record, args) };
+        case "updateNote":
+          return {
+            id,
+            ok: true,
+            data: await this.toolUpdateNote(record, args),
+          };
+        case "removeFromCollection":
+          return {
+            id,
+            ok: true,
+            data: await this.toolRemoveFromCollection(record, args),
+          };
+        case "addRelated":
+          return {
+            id,
+            ok: true,
+            data: await this.toolAddRelated(record, args),
+          };
         case "addToCollection":
           return {
             id,
@@ -2844,6 +2992,59 @@ export class SessionPane {
     return { 范围: record.scopeTitle, 条目数: items.length, 条目: items };
   }
 
+  /**
+   * 取条目**该类型下所有非空字段**（字段名用 Zotero 自己的名字）。
+   *
+   * ## 为什么必须有这个（真机事故：Agent 因此去读了数据库）
+   *
+   * `toolGetItem` 先前只返回 `publicationTitle` 当"期刊"。而
+   * **`publicationTitle` 是期刊类字段** —— 会议论文的会场在
+   * `proceedingsTitle` / `conferenceName` 里，`itemType` 更是根本没返回。
+   *
+   * 后果（Agent 的推理原话）：
+   *
+   * > *"All 期刊 fields are empty — even for items whose DOI is an ACM/IEEE/ACL DOI."*
+   *
+   * 它因此判断"插件给不了发表信息"，于是去**解压 .xpi 找源码**、
+   * 去**复制并读取 `zotero.sqlite`** —— 只为了搞清楚条目到底有哪些字段。
+   *
+   * 所以这里改成**按条目类型遍历全部字段**：类型是什么、哪些字段有值，
+   * 一次调用全给到。字段清单由 `Zotero.ItemFields.getItemTypeFields()` 提供，
+   * 不维护硬编码表 —— 那种表一定会与 Zotero 的实际 schema 漂移。
+   */
+  private fieldsOf(item: Zotero.Item): Record<string, string> {
+    const out: Record<string, string> = {};
+    try {
+      const itemTypeID = (item as unknown as { itemTypeID?: number })
+        .itemTypeID;
+      if (!itemTypeID) return out;
+      const fields = (
+        Zotero as unknown as {
+          ItemFields?: {
+            getItemTypeFields?: (id: number) => number[];
+            getName?: (id: number) => string;
+          };
+        }
+      ).ItemFields;
+      const ids = fields?.getItemTypeFields?.(itemTypeID) ?? [];
+      for (const fieldID of ids) {
+        try {
+          const name = fields?.getName?.(fieldID);
+          // 第三个参数 true = 取**未格式化**的原始值（不要 Zotero 的显示格式）
+          const value = String(
+            item.getField(fieldID as never, false, true) ?? "",
+          ).trim();
+          if (name && value) out[name] = value;
+        } catch {
+          // 单个字段取不到不影响其余字段
+        }
+      }
+    } catch {
+      // 整个字段枚举失败就返回已取到的部分（调用方仍有 title 等核心字段）
+    }
+    return out;
+  }
+
   private async toolGetItem(
     record: SessionRecord,
     args: Record<string, unknown>,
@@ -2860,16 +3061,419 @@ export class SessionPane {
       姓: String(c.lastName ?? ""),
       类型: String(c.creatorTypeID ?? ""),
     }));
+    const all = this.fieldsOf(item);
     return {
       key,
-      标题: String(item.getField?.("title") ?? ""),
-      年份: String(item.getField?.("date") ?? ""),
-      期刊: String(item.getField?.("publicationTitle") ?? ""),
-      DOI: String(item.getField?.("DOI") ?? ""),
-      摘要: String(item.getField?.("abstractNote") ?? ""),
+      // ⚠️ 必须给：没有它就无法判断"期刊字段为什么是空的"
+      // （期刊文章用 publicationTitle，会议论文用 proceedingsTitle/conferenceName）
+      条目类型: String(
+        (item as unknown as { itemType?: string }).itemType ?? "",
+      ),
+      标题: all.title ?? "",
+      年份: all.date ?? "",
+      // 下面两个是**便利字段**（最常见），真实来源是 `全部字段`
+      期刊: all.publicationTitle ?? "",
+      会议: all.proceedingsTitle ?? all.conferenceName ?? "",
+      DOI: all.DOI ?? "",
+      摘要: all.abstractNote ?? "",
       作者: creators,
       现有标签: (item.getTags?.() ?? []).map((t) => t.tag),
       在会话范围内: this.scopeItems(record).has(key),
+      // ⚠️ 这一项是本 op 的核心：该条目类型下**所有非空字段**。
+      // 上面那些便利字段只是它的常用子集。
+      全部字段: all,
+    };
+  }
+
+  /**
+   * 精确检索（`search` 的补充）。
+   *
+   * `search` 只做"标题/作者/摘要里含关键词"的模糊匹配，而文献工作里大量查询是
+   * **精确**的（按 DOI 找、按期刊找、按条目类型找、按年份区间找）。
+   * 用模糊搜索兜精确需求，会让 Agent 反复换关键词试。
+   */
+  private async toolSearchItems(
+    record: SessionRecord,
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const limit = Math.min(argInt(args, "limit") ?? 50, 200);
+    const doi = argString(args, "doi");
+    const field = argString(args, "field");
+    const value = argString(args, "value");
+    const itemType = argString(args, "itemType");
+    const creator = argString(args, "creator");
+    const sinceYear = argInt(args, "sinceYear");
+    const untilYear = argInt(args, "untilYear");
+    // 默认只看本会话范围（与写操作一致），要全库搜显式传 false
+    const inScope = args.inScope !== false;
+
+    const pool: Array<[string, Zotero.Item]> = inScope
+      ? [...this.scopeItems(record)]
+      : this.allLibraryItems(record);
+
+    const needleDoi = doi?.toLowerCase();
+    const needleValue = value?.toLowerCase();
+    const needleCreator = creator?.toLowerCase();
+
+    const hits: Array<Record<string, unknown>> = [];
+    for (const [key, item] of pool) {
+      if (hits.length >= limit) break;
+      const all = this.fieldsOf(item);
+      if (needleDoi && (all.DOI ?? "").toLowerCase() !== needleDoi) continue;
+      if (field && needleValue) {
+        const got = String(
+          all[field] ?? item.getField?.(field as never) ?? "",
+        ).toLowerCase();
+        if (!got.includes(needleValue)) continue;
+      }
+      if (itemType) {
+        const type = String(
+          (item as unknown as { itemType?: string }).itemType ?? "",
+        );
+        if (type !== itemType) continue;
+      }
+      if (needleCreator) {
+        const names = (item.getCreators?.() ?? [])
+          .map((c) =>
+            `${String(c.lastName ?? "")} ${String(c.firstName ?? "")}`.toLowerCase(),
+          )
+          .join(" ");
+        if (!names.includes(needleCreator)) continue;
+      }
+      if (sinceYear || untilYear) {
+        const year = Number.parseInt(
+          String(all.date ?? "").match(/\d{4}/)?.[0] ?? "",
+          10,
+        );
+        if (!Number.isFinite(year)) continue;
+        if (sinceYear && year < sinceYear) continue;
+        if (untilYear && year > untilYear) continue;
+      }
+      hits.push({
+        key,
+        标题: all.title ?? "",
+        年份: all.date ?? "",
+        条目类型: String(
+          (item as unknown as { itemType?: string }).itemType ?? "",
+        ),
+        DOI: all.DOI ?? "",
+        期刊: all.publicationTitle ?? "",
+        会议: all.proceedingsTitle ?? all.conferenceName ?? "",
+      });
+    }
+    return {
+      条件: {
+        doi,
+        field,
+        value,
+        itemType,
+        creator,
+        sinceYear,
+        untilYear,
+        inScope,
+      },
+      命中数: hits.length,
+      是否被截断: hits.length >= limit,
+      结果: hits,
+    };
+  }
+
+  /** 文库内全部**正规条目**（`inScope:false` 时用；出错返回空，不抛） */
+  private allLibraryItems(record: SessionRecord): Array<[string, Zotero.Item]> {
+    const out: Array<[string, Zotero.Item]> = [];
+    try {
+      const api = Zotero as unknown as {
+        Items?: { getAll?: (libraryID: number) => number[] };
+      };
+      const ids = api.Items?.getAll?.(record.scopeLibraryID) ?? [];
+      for (const id of ids) {
+        try {
+          const item = Zotero.Items.get(id);
+          if (item?.isRegularItem?.()) out.push([item.key, item]);
+        } catch {
+          // 跳过异常条目
+        }
+      }
+    } catch {
+      // 取不到就当空 —— 调用方会看到命中数 0，而不是一个假错误
+    }
+    return out;
+  }
+
+  /**
+   * 标签总览（含条目数）。
+   *
+   * 治理标签、找同义标签、看用户既有命名习惯，都要先"看到有哪些标签"。
+   * 没有这个 op 时只能靠 `listItems` 逐条读再自己汇总 —— 53 条尚可，5000 条是灾难。
+   */
+  private toolListTags(
+    record: SessionRecord,
+    args: Record<string, unknown>,
+  ): unknown {
+    const limit = Math.min(argInt(args, "limit") ?? 200, 2000);
+    const inScope = args.inScope !== false;
+    const pool = inScope
+      ? [...this.scopeItems(record).values()]
+      : this.allLibraryItems(record).map(([, i]) => i);
+    const counts = new Map<string, number>();
+    for (const item of pool) {
+      try {
+        for (const t of item.getTags?.() ?? []) {
+          const name = String(t.tag ?? "").trim();
+          if (name) counts.set(name, (counts.get(name) ?? 0) + 1);
+        }
+      } catch {
+        // 跳过异常条目
+      }
+    }
+    const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    return {
+      范围: inScope ? record.scopeTitle : "全库",
+      条目数: pool.length,
+      标签种类: sorted.length,
+      标签: sorted
+        .slice(0, limit)
+        .map(([tag, count]) => ({ 标签: tag, 条目数: count })),
+      是否被截断: sorted.length > limit,
+    };
+  }
+
+  /**
+   * 某条目的附件清单。
+   *
+   * ⚠️ 判断「有没有 PDF」要用它，**不要用 `getFullText`** —— 后者返回的是
+   * **全文索引**的结果，两者不等价：扫描件（无文字层）有附件但索引是空的。
+   */
+  private async toolListAttachments(
+    record: SessionRecord,
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const key = argString(args, "key");
+    if (!key) throw new Error("listAttachments 需要 args.key");
+    const item = Zotero.Items.getByLibraryAndKey(record.scopeLibraryID, key);
+    if (!item) throw new Error(`找不到条目 key=${key}`);
+    const ids = (item.getAttachments?.() ?? []) as number[];
+    const out: Array<Record<string, unknown>> = [];
+    for (const id of ids) {
+      try {
+        const att = Zotero.Items.get(id) as Zotero.Item | undefined;
+        if (!att) continue;
+        const raw = att as unknown as {
+          attachmentFilename?: string;
+          attachmentContentType?: string;
+          fileSize?: number;
+          attachmentPath?: string;
+          attachmentLinkMode?: number;
+        };
+        out.push({
+          key: att.key ?? "",
+          文件名: raw.attachmentFilename ?? String(att.getField("title") ?? ""),
+          类型: raw.attachmentContentType ?? "",
+          大小: raw.fileSize ?? 0,
+          路径: raw.attachmentPath ?? "",
+          是否链接式: (raw.attachmentLinkMode ?? 0) !== 0,
+        });
+      } catch {
+        // 跳过取不到的附件
+      }
+    }
+    const pdfs = out.filter(
+      (a) =>
+        String(a.类型 ?? "").includes("pdf") ||
+        String(a.文件名 ?? "")
+          .toLowerCase()
+          .endsWith(".pdf"),
+    );
+    return {
+      key,
+      附件数: out.length,
+      PDF数: pdfs.length,
+      附件: out,
+      下一步:
+        out.length === 0
+          ? "这篇没有附件。要补全文用 attachPdf（需用户确认）。"
+          : pdfs.length === 0
+            ? "有附件但不是 PDF。要读正文请用 getFullText，并看它的 `有全文` 字段。"
+            : "读正文用 getFullText；读高亮与批注用 getAnnotations。",
+    };
+  }
+
+  /**
+   * 某条目 PDF 上的高亮与批注。
+   *
+   * 文献工作里这是最有价值的信号之一：**用户自己划的线就是他关心的重点**。
+   * `getFullText` 拿不到它 —— 批注不在 PDF 文字层里，是单独的 annotation 条目。
+   */
+  private async toolGetAnnotations(
+    record: SessionRecord,
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const key = argString(args, "key");
+    if (!key) throw new Error("getAnnotations 需要 args.key");
+    const limit = Math.min(argInt(args, "limit") ?? 200, 2000);
+    const item = Zotero.Items.getByLibraryAndKey(record.scopeLibraryID, key);
+    if (!item) throw new Error(`找不到条目 key=${key}`);
+    const attIDs = (item.getAttachments?.() ?? []) as number[];
+    const out: Array<Record<string, unknown>> = [];
+    for (const id of attIDs) {
+      try {
+        const att = Zotero.Items.get(id) as unknown as {
+          getAnnotations?: () => number[];
+        };
+        const annIDs = att?.getAnnotations?.() ?? [];
+        for (const annID of annIDs) {
+          if (out.length >= limit) break;
+          const ann = Zotero.Items.get(annID) as unknown as Record<
+            string,
+            unknown
+          > & { key?: string };
+          if (!ann) continue;
+          out.push({
+            key: ann.key ?? "",
+            类型: (ann.annotationType as string | undefined) ?? "",
+            原文: (ann.annotationText as string | undefined) ?? "",
+            批注: (ann.annotationComment as string | undefined) ?? "",
+            颜色: (ann.annotationColor as string | undefined) ?? "",
+            页码: (ann.annotationPageLabel as string | undefined) ?? "",
+          });
+        }
+      } catch {
+        // 跳过取不到的附件
+      }
+    }
+    return {
+      key,
+      批注数: out.length,
+      批注: out,
+      下一步:
+        out.length === 0
+          ? "这篇没有高亮或批注 —— 用户可能还没细读。可以基于正文（getFullText）分析。"
+          : "这些是用户亲手标记的重点，优先围绕它们组织回答（另可结合 getFullText 看上下文）。",
+    };
+  }
+
+  /** Zotero 内置导出翻译器的稳定 UUID（见 zotero.org 的 translators 仓库） */
+  private static readonly EXPORT_TRANSLATORS: Record<string, string> = {
+    // BibTeX
+    bibtex: "9cb70025-a888-4a29-a210-93ec52da40d4",
+    // RIS
+    ris: "32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7",
+    // CSL JSON
+    csljson: "bc03b4fe-436d-4a1f-ba59-de4d2d7a63f7",
+  };
+
+  /**
+   * 生成引用条目文本（BibTeX / RIS / CSL-JSON）。
+   *
+   * 为什么不自己拼：字段名、作者格式、`&` 与 Unicode 的转义、条目类型的映射，
+   * 都由 Zotero 的导出翻译器处理才正确。自己拼出来的 BibTeX 常常是
+   * 「看着像，导进 LaTeX 就报错」。
+   */
+  private async toolExportCitation(
+    record: SessionRecord,
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const keys = argStringArray(args, "keys") ?? [];
+    const format = (argString(args, "format") ?? "bibtex").toLowerCase();
+    if (keys.length === 0)
+      throw new Error("exportCitation 需要 args.keys（字符串数组）");
+    const translatorID = SessionPane.EXPORT_TRANSLATORS[format];
+    if (!translatorID) {
+      throw new Error(
+        `exportCitation 的 format 只支持 ${Object.keys(SessionPane.EXPORT_TRANSLATORS).join(" / ")}，收到 ${format}`,
+      );
+    }
+    const items: Zotero.Item[] = [];
+    for (const key of keys) {
+      // 先按会话所在文库找（组库场景），找不到再退回用户库
+      let found = Zotero.Items.getByLibraryAndKey(record.scopeLibraryID, key);
+      if (!found) {
+        found = Zotero.Items.getByLibraryAndKey(
+          Zotero.Libraries.userLibraryID,
+          key,
+        );
+      }
+      if (found) items.push(found as Zotero.Item);
+    }
+    if (items.length === 0) {
+      throw new Error(`这些 key 在文库内都找不到：${keys.join(", ")}`);
+    }
+    try {
+      const api = Zotero as unknown as {
+        Translate?: {
+          Export: new () => {
+            setItems: (items: unknown) => void;
+            setTranslator: (id: string) => Promise<unknown>;
+            translate: () => Promise<unknown>;
+          };
+        };
+      };
+      if (!api.Translate?.Export) {
+        throw new Error("Zotero.Translate.Export 不可用");
+      }
+      const translation = new api.Translate.Export();
+      translation.setItems(items);
+      await translation.setTranslator(translatorID);
+      const text = await translation.translate();
+      return {
+        格式: format,
+        条目数: items.length,
+        找不到的key: keys.filter((k) => !items.some((i) => i.key === k)),
+        引用文本: typeof text === "string" ? text : String(text),
+      };
+    } catch (error) {
+      throw new Error(
+        `导出失败（${format}）：${error instanceof Error ? error.message : String(error)}。` +
+          `可以改用 getItem 拿字段后自己组织，或让用户从 Zotero 界面导出。`,
+      );
+    }
+  }
+
+  /**
+   * 可用条目类型（可选附字段清单）。
+   *
+   * `createItem` / `setFields` 都要写 `itemType` 与字段名。而"会议论文的会场
+   * 叫什么字段"这类知识**不该让模型去猜** —— 猜错的代价是建出畸形条目，
+   * 比失败更难清理（真机：Agent 为此去解压 xpi、去读 zotero.sqlite）。
+   */
+  private toolListItemTypes(args: Record<string, unknown>): unknown {
+    const detail = args.detail === true;
+    const api = Zotero as unknown as {
+      ItemTypes?: {
+        getTypes?: () => Array<{ id: number; name: string }>;
+        getName?: (id: number) => string;
+      };
+      ItemFields?: {
+        getItemTypeFields?: (id: number) => number[];
+        getName?: (id: number) => string;
+      };
+    };
+    const types = api.ItemTypes?.getTypes?.() ?? [];
+    if (!detail) {
+      return {
+        条目类型数: types.length,
+        条目类型: types.map((t) => t.name),
+        提示: "要某个类型的具体字段名，传 detail:true。",
+      };
+    }
+    const out: Array<Record<string, unknown>> = [];
+    for (const t of types) {
+      try {
+        const ids = api.ItemFields?.getItemTypeFields?.(t.id) ?? [];
+        const fields = ids
+          .map((id) => api.ItemFields?.getName?.(id))
+          .filter((n): n is string => !!n);
+        out.push({ 类型: t.name, 字段数: fields.length, 字段: fields });
+      } catch {
+        out.push({ 类型: t.name, 字段: [], 错误: "字段枚举失败" });
+      }
+    }
+    return {
+      条目类型数: types.length,
+      类型与字段: out,
+      提示:
+        "字段名必须与这里列出的**完全一致**（大小写敏感）。" +
+        "某类型没有的字段会被跳过而不是报错，但写进去也不会生效。",
     };
   }
 
@@ -2951,6 +3555,507 @@ export class SessionPane {
       `工具写标签：${key} 新增 ${diff.add.join("、") || "无"}；删除 ${diff.remove.join("、") || "无"}`,
     );
     return { key, 新增: diff.add, 删除: diff.remove, 标签: diff.next };
+  }
+
+  /**
+   * **改条目元数据**（标题/期刊/会议/DOI/年份/卷期页…）。
+   *
+   * ## 这是此前最大的能力缺口（真机事故）
+   *
+   * 插件长期只能改**标签**，不能改字段。于是："这 52 篇其实是预印本，补上正式
+   * 发表信息" 这样的要求无法完成 —— Agent 能查到正式版 DOI，**却没有 op 能把
+   * 它写进条目**。
+   *
+   * 它的反应不是停下来问，而是**绕路**：解压 `.xpi` 找源码、复制并读取
+   * `zotero.sqlite`、想找一条能写的路径。这是本项目第三次验证同一句话：
+   * **功能没给够，边界就守不住。**
+   *
+   * ## 与 `createItem` 的两处**有意不同**
+   *
+   * | | `createItem` | `setFields` |
+   * | --- | --- | --- |
+   * | 空字符串 | 当作「没给」 | **表示清空该字段** |
+   * | 未知字段 | 跳过并列出 | 跳过并列出（相同） |
+   *
+   * 空串的含义必须不同：新建时传空串多半是模型填了个空，
+   * 而修正元数据时「把错误的年份清掉」是**合法且常见**的操作。
+   */
+  private async toolSetFields(
+    record: SessionRecord,
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const key = argString(args, "key");
+    if (!key) throw new Error("setFields 需要 args.key");
+    const rawFields = args.fields;
+    if (
+      !rawFields ||
+      typeof rawFields !== "object" ||
+      Array.isArray(rawFields)
+    ) {
+      throw new Error(
+        'setFields 需要 args.fields（对象，形如 {"DOI":"10.…","date":"2024"}）',
+      );
+    }
+    const item = this.scopeItems(record).get(key);
+    if (!item) {
+      throw new Error(
+        `条目 key=${key} 不在本会话范围内（${record.scopeTitle}）—— ` +
+          `写操作只允许作用于会话范围内的条目`,
+      );
+    }
+    const allowed = ALLOWED_ITEM_FIELDS as readonly string[];
+    const applied: Record<string, string> = {};
+    const skippedUnknown: string[] = [];
+    const skippedNotForType: string[] = [];
+    const skippedBadValue: string[] = [];
+
+    for (const [name, raw] of Object.entries(
+      rawFields as Record<string, unknown>,
+    )) {
+      if (!allowed.includes(name)) {
+        skippedUnknown.push(name);
+        continue;
+      }
+      if (typeof raw !== "string") {
+        skippedBadValue.push(`${name}（值必须是字符串）`);
+        continue;
+      }
+      const value = raw.trim();
+      try {
+        // 该条目类型是否支持这个字段（不支持就跳过，别整条失败）
+        const valid = (
+          Zotero as unknown as {
+            ItemFields?: {
+              isValidForType?: (field: string, type: string) => boolean;
+            };
+          }
+        ).ItemFields?.isValidForType?.(
+          name,
+          String((item as unknown as { itemType?: string }).itemType ?? ""),
+        );
+        if (valid === false) {
+          skippedNotForType.push(name);
+          continue;
+        }
+        item.setField(name as never, value);
+        applied[name] = value;
+      } catch (error) {
+        skippedNotForType.push(
+          `${name}（${error instanceof Error ? error.message : String(error)}）`,
+        );
+      }
+    }
+
+    if (Object.keys(applied).length === 0) {
+      return {
+        key,
+        结果: "没有可写入的字段",
+        已跳过_不在白名单: skippedUnknown,
+        已跳过_该类型不支持: skippedNotForType,
+        已跳过_值不合规: skippedBadValue,
+        下一步:
+          "先用 listItemTypes 传 detail:true 确认该条目类型的字段名，" +
+          "字段名必须完全一致（大小写敏感）。",
+      };
+    }
+
+    await item.saveTx({ undoAction: "undo-action-edit-item" } as never);
+    appendPanelLog(
+      "session",
+      `工具改字段：${key} 写入 ${Object.keys(applied).join("、")}`,
+    );
+    return {
+      key,
+      结果: "已写入（可用 Zotero 撤销）",
+      写入: applied,
+      已跳过_不在白名单: skippedUnknown,
+      已跳过_该类型不支持: skippedNotForType,
+      已跳过_值不合规: skippedBadValue,
+      说明: "空字符串表示**清空**该字段（与 createItem 不同）。",
+    };
+  }
+
+  /**
+   * 改**已有**笔记的正文。
+   *
+   * 为什么不是"再写一条正确的"就够了：那会在用户库里留下垃圾笔记。
+   * Agent 修自己写错的笔记是高频动作。
+   *
+   * ⚠️ `key` 是**笔记自己的 key**（用 `getNotes` 拿），不是父条目的。
+   */
+  private async toolUpdateNote(
+    record: SessionRecord,
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const key = argString(args, "key");
+    const html = argString(args, "html");
+    if (!key) throw new Error("updateNote 需要 args.key（笔记自己的 key）");
+    if (!html) throw new Error("updateNote 需要 args.html（笔记正文）");
+    const note = Zotero.Items.getByLibraryAndKey(record.scopeLibraryID, key);
+    if (!note) throw new Error(`找不到笔记 key=${key}`);
+    const isNote = (note as unknown as { isNote?: () => boolean }).isNote?.();
+    if (isNote === false) {
+      throw new Error(
+        `key=${key} 不是笔记。updateNote 只能改笔记；` +
+          `要改条目元数据用 setFields，要改标签用 setTags。`,
+      );
+    }
+    // 与 addNote 一致：正文按纯文本处理，避免 HTML 注入/转义混乱
+    const plain = html;
+    await (
+      note as unknown as {
+        setNote: (html: string) => Promise<unknown> | unknown;
+      }
+    ).setNote(
+      plain
+        .split("\n")
+        .map((line) => `<p>${line.replace(/[<>&]/g, "")}</p>`)
+        .join(""),
+    );
+    await note.saveTx({ undoAction: "undo-action-edit-note" } as never);
+    appendPanelLog("session", `工具改笔记：${key}`);
+    return {
+      key,
+      结果: "已更新（可用 Zotero 撤销）",
+      字数: plain.length,
+      说明: "正文按纯文本处理，HTML 标签不会生效。",
+    };
+  }
+
+  /**
+   * 把条目**移出**分类（不动条目本身）。
+   *
+   * `addToCollection` 只能加不能减，纠正误加此前只能靠用户手动。
+   */
+  private async toolRemoveFromCollection(
+    record: SessionRecord,
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const key = argString(args, "key");
+    const collectionKey = argString(args, "collectionKey");
+    if (!key) throw new Error("removeFromCollection 需要 args.key");
+    if (!collectionKey)
+      throw new Error("removeFromCollection 需要 args.collectionKey");
+    const item = this.scopeItems(record).get(key);
+    if (!item) {
+      throw new Error(
+        `条目 key=${key} 不在本会话范围内（${record.scopeTitle}）`,
+      );
+    }
+    const collection = this.collectionByKey(
+      record.scopeLibraryID,
+      collectionKey,
+    );
+    if (!collection) throw new Error(`找不到分类 key=${collectionKey}`);
+    const collectionID = (collection as unknown as { id: number }).id;
+    const members =
+      (
+        collection as unknown as { getChildItems?: () => number[] }
+      ).getChildItems?.() ?? [];
+    const itemID = (item as unknown as { id: number }).id;
+    if (!members.includes(itemID)) {
+      return {
+        key,
+        collectionKey,
+        结果: "该条目本来就不在这个分类里",
+      };
+    }
+    (
+      collection as unknown as {
+        removeItems?: (ids: number[]) => Promise<unknown> | unknown;
+      }
+    ).removeItems?.([itemID]);
+    await (
+      collection as unknown as { saveTx?: () => Promise<unknown> }
+    ).saveTx?.();
+    appendPanelLog("session", `工具移出分类：${key} ← ${collectionKey}`);
+    return {
+      key,
+      collectionKey,
+      结果: "已移出分类（条目本身仍在库里）",
+      说明: "要恢复归属用 addToCollection。",
+    };
+  }
+
+  /** 按 key 在指定文库内找分类（`Zotero.Collections.getByLibraryAndKey` 的薄封装） */
+  private collectionByKey(
+    libraryID: number,
+    collectionKey: string,
+  ): Zotero.Collection | undefined {
+    try {
+      const api = Zotero.Collections as unknown as {
+        getByLibraryAndKey?: (
+          libraryID: number,
+          key: string,
+        ) => Zotero.Collection | undefined;
+      };
+      return api.getByLibraryAndKey?.(libraryID, collectionKey);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * 建立两条条目之间的**关联**（Zotero 的 Related，双向）。
+   *
+   * 适合「会议版 ↔ 期刊版」「正文 ↔ 被引综述」。比往笔记里写一行「另见 X」
+   * 结构化 —— 关联是 Zotero 原生关系，能在界面里点开、能被导出保留。
+   */
+  private async toolAddRelated(
+    record: SessionRecord,
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const key = argString(args, "key");
+    const relatedKey = argString(args, "relatedKey");
+    if (!key) throw new Error("addRelated 需要 args.key");
+    if (!relatedKey) throw new Error("addRelated 需要 args.relatedKey");
+    if (key === relatedKey) throw new Error("不能把条目关联到它自己");
+    const item = this.scopeItems(record).get(key);
+    if (!item) {
+      throw new Error(
+        `条目 key=${key} 不在本会话范围内（${record.scopeTitle}）`,
+      );
+    }
+    const target = Zotero.Items.getByLibraryAndKey(
+      record.scopeLibraryID,
+      relatedKey,
+    );
+    if (!target) throw new Error(`找不到要关联的条目 key=${relatedKey}`);
+    const existing = (
+      item as unknown as { getRelations?: () => Record<string, string[]> }
+    ).getRelations?.();
+    const current = existing?.["dc:relation"] ?? [];
+    if (current.includes(relatedKey)) {
+      return { key, relatedKey, 结果: "已存在", 现有相关: current };
+    }
+    (
+      item as unknown as {
+        addRelatedItem?: (item: unknown) => void;
+      }
+    ).addRelatedItem?.(target);
+    await item.saveTx({ undoAction: "undo-action-edit-item" } as never);
+    appendPanelLog("session", `工具建关联：${key} ↔ ${relatedKey}`);
+    const after = (
+      item as unknown as { getRelations?: () => Record<string, string[]> }
+    ).getRelations?.();
+    return {
+      key,
+      relatedKey,
+      结果: "已建立关联（双向，可用 Zotero 撤销）",
+      现有相关: after?.["dc:relation"] ?? [relatedKey],
+    };
+  }
+
+  /**
+   * 登记一条**分类/标签类结构性改动**为待确认。
+   *
+   * 为什么这些也要确认（而不是像 `setFields` 那样直接执行）：
+   *
+   * | op | 为什么算结构性 |
+   * | --- | --- |
+   * | `deleteAttachment` | 删的是文件，`eraseTx` 之后**无法从撤销栈恢复** |
+   * | `deleteTag` | 影响**全库所有**带该标签的条目，不是一条 |
+   * | `createCollection` | 永久改动分类树（与 `createItem` 同性质） |
+   * | `renameCollection` | 改名后用户笔记/引用里的旧名对不上 |
+   * | `deleteCollection` | 可能连带删掉分类内的条目（不可逆） |
+   */
+  private registerPendingStructural(
+    record: SessionRecord,
+    id: string,
+    op: string,
+    payload: Record<string, unknown>,
+  ): ToolResult {
+    const kind = String(payload.kind ?? "");
+    const name = String(
+      payload.name ?? payload.collectionKey ?? payload.key ?? payload.tag ?? "",
+    );
+    const summary =
+      kind === "attachment"
+        ? `删除附件 ${name}`
+        : kind === "tag"
+          ? `删除标签「${name}」（全库所有条目）`
+          : kind === "collection-create"
+            ? `新建分类「${name}」`
+            : kind === "collection-rename"
+              ? `分类 ${String(payload.collectionKey)} 改名为「${name}」`
+              : kind === "collection-delete"
+                ? `删除分类 ${String(payload.collectionKey)}` +
+                  (payload.deleteItems === true
+                    ? "（**连同分类内的条目**）"
+                    : "（条目保留）")
+                : `结构性改动 ${op}`;
+    this.pendingDeletions.push({
+      uid: this.nextPendingUid(),
+      sessionId: record.sessionId,
+      op,
+      keys: [],
+      requestedAt: new Date().toISOString(),
+      payload,
+      summary,
+    });
+    appendPanelLog("session", `结构性改动待确认：${summary}`);
+    return {
+      id,
+      ok: true,
+      pending: true,
+      data: {
+        说明: `已登记为待确认：${summary}。这一步不可逆或影响面较大，需要用户在插件界面确认后才执行。`,
+        确认位置:
+          "会话页**顶部黄色角标**「⚠ 有 N 项改动等你确认（点这里展开/收起）」——点它**就地展开**确认区（不是跳到别处），逐条确认或忽略。",
+        待确认数: this.pendingDeletions.length,
+        将要执行: summary,
+        确认结果在哪:
+          "用户确认或拒绝后，结果会追加到 `zotero/confirm-log.json`" +
+          "（含 `决定`=已确认/已拒绝 与 `待确认剩余`）。" +
+          "**不要靠重复提交来试探**：读那个文件的最后一条即可。",
+        提示: "**不要为同一件事反复提交**。提交一次后告诉用户去顶部确认。",
+      },
+    };
+  }
+
+  /**
+   * 执行一条分类/标签类结构性改动（用户已确认）。
+   *
+   * 返回 `undefined` 表示**这不是我这一类 op** —— 调用方会落到删除兜底。
+   * 这个约定让"新增一类结构性操作"不必改动确认流程的主干。
+   */
+  private async executePendingStructural(request: {
+    op: string;
+    payload?: Record<string, unknown>;
+  }): Promise<{ ok: boolean; detail: string } | undefined> {
+    const payload = request.payload ?? {};
+    const kind = String(payload.kind ?? "");
+    if (!kind) return undefined;
+    try {
+      if (kind === "attachment") {
+        const key = String(payload.key ?? "");
+        const item = Zotero.Items.getByLibraryAndKey(
+          Zotero.Libraries.userLibraryID,
+          key,
+        );
+        if (!item) return { ok: false, detail: `${key}：找不到该附件` };
+        const isAttachment = (
+          item as unknown as { isAttachment?: () => boolean }
+        ).isAttachment?.();
+        if (isAttachment === false) {
+          return {
+            ok: false,
+            detail: `${key} 不是附件（它是条目）。要删条目请用 deleteItems。`,
+          };
+        }
+        await item.eraseTx();
+        return { ok: true, detail: `已删除附件 ${key}` };
+      }
+      if (kind === "tag") {
+        const tag = String(payload.tag ?? "");
+        const api = Zotero as unknown as {
+          Tags?: {
+            getID?: (name: string, libraryID?: number) => number | false;
+            erase?: (tagID: number) => Promise<unknown> | unknown;
+          };
+        };
+        const tagID = api.Tags?.getID?.(tag, Zotero.Libraries.userLibraryID);
+        if (!tagID) {
+          return { ok: false, detail: `标签「${tag}」在这个库里不存在` };
+        }
+        await api.Tags?.erase?.(tagID);
+        return { ok: true, detail: `已删除标签「${tag}」（全库）` };
+      }
+      if (kind === "collection-create") {
+        const name = String(payload.name ?? "");
+        const parentKey = payload.parentKey
+          ? String(payload.parentKey)
+          : undefined;
+        const Ctor = (
+          Zotero as unknown as { Collection: new () => Zotero.Collection }
+        ).Collection;
+        const collection = new Ctor();
+        (collection as unknown as { libraryID: number }).libraryID =
+          Zotero.Libraries.userLibraryID;
+        (collection as unknown as { name: string }).name = name;
+        if (parentKey) {
+          const parent = this.collectionByKey(
+            Zotero.Libraries.userLibraryID,
+            parentKey,
+          );
+          if (!parent) {
+            return { ok: false, detail: `找不到父分类 ${parentKey}` };
+          }
+          (collection as unknown as { parentID: number }).parentID = (
+            parent as unknown as { id: number }
+          ).id;
+        }
+        await collection.saveTx();
+        return {
+          ok: true,
+          detail: `已新建分类「${name}」（key=${collection.key}）`,
+        };
+      }
+      if (kind === "collection-rename") {
+        const collectionKey = String(payload.collectionKey ?? "");
+        const name = String(payload.name ?? "");
+        const collection = this.collectionByKey(
+          Zotero.Libraries.userLibraryID,
+          collectionKey,
+        );
+        if (!collection) {
+          return { ok: false, detail: `找不到分类 ${collectionKey}` };
+        }
+        (collection as unknown as { name: string }).name = name;
+        await (
+          collection as unknown as { saveTx?: () => Promise<unknown> }
+        ).saveTx?.();
+        return {
+          ok: true,
+          detail: `分类 ${collectionKey} 已改名为「${name}」`,
+        };
+      }
+      if (kind === "collection-delete") {
+        const collectionKey = String(payload.collectionKey ?? "");
+        const collection = this.collectionByKey(
+          Zotero.Libraries.userLibraryID,
+          collectionKey,
+        );
+        if (!collection) {
+          return { ok: false, detail: `找不到分类 ${collectionKey}` };
+        }
+        let removedItems = 0;
+        if (payload.deleteItems === true) {
+          const childIDs =
+            (
+              collection as unknown as { getChildItems?: () => number[] }
+            ).getChildItems?.() ?? [];
+          for (const id of childIDs) {
+            try {
+              const child = Zotero.Items.get(id);
+              if (child) {
+                await child.eraseTx();
+                removedItems++;
+              }
+            } catch {
+              // 单条失败不阻断其余
+            }
+          }
+        }
+        await (
+          collection as unknown as { eraseTx?: () => Promise<unknown> }
+        ).eraseTx?.();
+        return {
+          ok: true,
+          detail:
+            `已删除分类 ${collectionKey}` +
+            (payload.deleteItems === true
+              ? `，连同 ${removedItems} 个条目`
+              : "（条目保留在库中）"),
+        };
+      }
+      return undefined;
+    } catch (error) {
+      return {
+        ok: false,
+        detail: `${request.op} 执行失败：${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
   }
 
   /**
@@ -3144,28 +4249,7 @@ export class SessionPane {
     args: Record<string, unknown>,
   ): Promise<{ ok: boolean; detail: string }> {
     const ALLOWED_TYPES = ALLOWED_ITEM_TYPES as readonly string[];
-    const ALLOWED_FIELDS = [
-      "title",
-      "abstractNote",
-      "date",
-      "publicationTitle",
-      "proceedingsTitle",
-      "bookTitle",
-      "publisher",
-      "place",
-      "volume",
-      "issue",
-      "pages",
-      "DOI",
-      "ISBN",
-      "ISSN",
-      "url",
-      "language",
-      "extra",
-      "university",
-      "institution",
-      "reportNumber",
-    ];
+    const ALLOWED_FIELDS = ALLOWED_ITEM_FIELDS as readonly string[];
 
     const rawType = argString(args, "itemType");
     // 类型名规整（中文别名 / 大小写 / 分隔符）—— 逻辑在 askUser.ts，有单测
@@ -3744,6 +4828,21 @@ export class SessionPane {
       );
       appendPanelLog("session", `补全文结果：${detail}`);
       return detail;
+    }
+
+    // ── 分类与标签类结构性改动：确认后**在这里**真正执行 ────────────
+    //
+    // 与删除的兜底分支分开，因为它们不删条目（`keys` 是空的）。
+    const structural = await this.executePendingStructural(request);
+    if (structural !== undefined) {
+      this.pendingDeletions.splice(index, 1);
+      await this.writeDeletionOutcome(
+        request,
+        structural.ok ? [structural.detail] : [],
+        structural.ok ? [] : [structural.detail],
+      );
+      appendPanelLog("session", `结构性改动结果：${structural.detail}`);
+      return structural.detail;
     }
 
     const done: string[] = [];
