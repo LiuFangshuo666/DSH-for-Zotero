@@ -163,6 +163,49 @@ function encodePowerShellCommand(script: string): string {
   return btoa(binary);
 }
 
+/**
+ * 把宿主源码里写死的端口改成读环境变量的**纯函数**（可单测）。
+ *
+ * ## 为什么抽出来（真机事故：DSH 升级后插件完全跑不起来）
+ *
+ * 2026-10-17：用户升级桌面端 DSH，插件侧无法运行，日志只有
+ *
+ * ```text
+ *   准备结果：error —— 准备失败：宿主里找不到预期的端口字面量
+ *   （Harness 版本可能已变化）。为避免误改，已中止
+ * ```
+ *
+ * 旧版宿主写 `"--port", "19387"`，新版改成 `"--port", "0"`（0 = 系统分配）。
+ * 我原来的正则把 `"19387"` **写死**在里面，于是 DSH 一升级插件就死。
+ *
+ * 现在判据是「`--port` 后跟任意数字字面量」——那个**形状**比具体数字稳定得多。
+ * 抽成纯函数是为了让这条判据有测试：再遇到版本变化，测试会先红，
+ * 而不是等用户在真机上发现插件起不来。
+ *
+ * @param source 宿主入口源码
+ * @param envName 端口环境变量名
+ * @returns patched（含改后源码与原默认值）/ already（已打过）/ not-found（形状不符）
+ */
+export function patchHostPortInSource(
+  source: string,
+  envName: string,
+):
+  | { kind: "patched"; source: string; hostDefault: string }
+  | { kind: "already" }
+  | { kind: "not-found" } {
+  // 幂等：改过之后源码里就有环境变量名了
+  if (source.includes(envName)) return { kind: "already" };
+  const pattern = /("--port"\s*,\s*\n?\s*)"(\d+)"/;
+  const match = pattern.exec(source);
+  if (!match) return { kind: "not-found" };
+  const hostDefault = match[2];
+  const patched = source.replace(
+    pattern,
+    `$1String(process.env.${envName} ?? "${hostDefault}")`,
+  );
+  return { kind: "patched", source: patched, hostDefault };
+}
+
 export class RuntimeManager {
   private paths: RuntimePaths | undefined;
   private harness: HarnessLocation | undefined;
@@ -588,26 +631,59 @@ export class RuntimeManager {
     report(`原生模块合并完成：${copied} 个文件`);
   }
 
-  /** 把宿主里写死的端口改为读环境变量（只改我们的副本，且幂等） */
+  /**
+   * 把宿主里写死的端口改为读环境变量（只改我们的副本，且幂等）。
+   *
+   * ## ⚠️ 必须容忍**任意数字字面量**（真机事故：DSH 升级后插件跑不起来）
+   *
+   * 2026-10-17：用户升级桌面端 DSH 后，插件侧完全无法运行，日志只有
+   *
+   * ```text
+   *   准备结果：error —— 准备失败：宿主里找不到预期的端口字面量
+   *   （Harness 版本可能已变化）。为避免误改，已中止
+   * ```
+   *
+   * 根因：旧版宿主写的是 `"--port", "19387"`，新版改成了 `"--port", "0"`
+   * （0 = 让系统分配）。我原来的正则把 `"19387"` 写死在里面 ——
+   * 于是 DSH 一升级，插件就**完全起不来**。
+   *
+   * ## 现在的做法：捕获原值，并把它作为**兜底**
+   *
+   * ```ts
+   *   "--port", "0"   →   "--port", String(process.env.DSH_FOR_ZOTERO_PORT ?? "0")
+   * ```
+   *
+   * 兜底用**宿主原来的值**而不是我们写死的 19387：这样即使插件的环境变量
+   * 没传进来，宿主的行为也与它自己的默认一致（新版的"自动分配"不会被我们
+   * 悄悄改成固定端口）。
+   *
+   * ## 为什么仍然"找不到就中止"
+   *
+   * 不改比改错好。上一版中止得对 —— 只是**判据太窄**，把"版本演进了"
+   * 误判成"文件不认识"。现在判据是"`--port` 后面跟一个数字字面量"，
+   * 这个形状比具体的数字稳定得多。
+   */
   private async patchHostPort(paths: RuntimePaths): Promise<void> {
     if (!(await IOUtils.exists(paths.hostEntry))) {
       throw new Error("提取后仍找不到宿主入口，运行时可能不完整");
     }
     const source = await IOUtils.readUTF8(paths.hostEntry);
-    if (source.includes(PORT_ENV_NAME)) return; // 已打过
-
-    const pattern = /("--port"\s*,\s*\n?\s*)"19387"/;
-    if (!pattern.test(source)) {
+    // 判据与替换都在纯函数里（有单测）—— 这里只负责读写与报错
+    const outcome = patchHostPortInSource(source, PORT_ENV_NAME);
+    if (outcome.kind === "already") return;
+    if (outcome.kind === "not-found") {
       throw new Error(
-        "宿主里找不到预期的端口字面量（Harness 版本可能已变化）。为避免误改，已中止；" +
-          "请更新插件或手动指定端口策略。",
+        "宿主里找不到 `--port` 后的端口字面量（Harness 版本可能已变化）。" +
+          "为避免误改，已中止。" +
+          `\n排查：检查 ${paths.hostEntry} 里是否还有 "--port" 参数；` +
+          `若 Harness 改成用别的方式指定端口，请更新插件（这是插件与宿主的契约点）。`,
       );
     }
-    const patched = source.replace(
-      pattern,
-      `$1String(process.env.${PORT_ENV_NAME} ?? "19387")`,
+    await IOUtils.writeUTF8(paths.hostEntry, outcome.source);
+    appendPanelLog(
+      "runtime",
+      `已把宿主端口改为读 ${PORT_ENV_NAME}（宿主原默认 ${outcome.hostDefault}）`,
     );
-    await IOUtils.writeUTF8(paths.hostEntry, patched);
   }
 
   // ── 启动 / 停止 / 健康检查 ──────────────────────────────────
