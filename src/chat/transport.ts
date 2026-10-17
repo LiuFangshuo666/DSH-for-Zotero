@@ -1791,29 +1791,28 @@ export class ChatTransport {
   private async pollOnce(sessionId: string): Promise<void> {
     const client = this.client;
     if (!client) return;
-    // ⚠️ 超时**不再等于"这一轮结束了"**（真机反馈：长任务被误判为已完成）。
-    //
-    // `POLL_MAX_MS` 是"我们愿意盯着看多久"，不是"harness 干完了"。
-    // Agent 多步执行（并行调工具、反复验证）很容易超过 3 分钟 —— 而那时它**还在干活**。
-    // 早先直接 emit `assistant-end`，界面就显示这一轮结束了；
-    // 用户接着发下一句，得到的是错乱的结果（前一问还在跑）。
-    //
-    // 现在的做法：超时后问一次 `session/list` 的 `running` 字段。
-    //   - 仍在跑 → **继续盯**，只是把间隔放宽（省 RPC），并告知界面"仍在生成"；
-    //   - 已停下 → 才是真的结束（此时按 committed 处理，正文已经在上面的分支里发过）；
-    //   - 问不到（RPC 失败）→ 保守地**继续盯**，绝不在不确定时宣布结束。
-    if (Date.now() - this.pollStartedAt > POLL_MAX_MS) {
-      const state = await this.harnessRunning(client, sessionId);
-      if (state === false) {
-        // harness 明确说它不跑了 —— 这一轮确实结束了
-        this.stopPolling();
-        this.emitAssistantEnd("committed", "轮询超时且 harness 明确说停了");
-        return;
-      }
-      // true（仍在跑）或 undefined（问不到）：继续等，但要节流并让界面知道
-      this.extendPollingDeadline();
-      return;
-    }
+    /**
+     * ## ⚠️ **每次都要读 `turn/end`，超时也不例外**（真机缺陷：界面永远停在"生成中"）
+     *
+     * 早先的结构是：
+     *
+     * ```js
+     *   if (Date.now() - pollStartedAt > POLL_MAX_MS) {
+     *     const state = await harnessRunning(...);
+     *     if (state === false) { 结束; return; }
+     *     extendPollingDeadline(); return;      // ← 在这里就返回了
+     *   }
+     *   const turn = await readTurn(...);       // ← 超时后再也不执行
+     * ```
+     *
+     * 于是**一旦超过 `POLL_MAX_MS`，就再也不看 `turn/end` 了**，只剩
+     * "问 harness 还在不在跑"。而 `harnessRunning` 在两种情况下返回 `undefined`：
+     * 会话不在 `session/list` 里、或那次 RPC 失败 —— 代码选择"继续等"，
+     * 于是**界面永远停在"生成中…"**（用户实测：正文已经完整显示，状态还是生成中）。
+     *
+     * `turn/end` 是**权威结束信号**，与"盯了多久"无关。所以顺序反过来：
+     * 先读这一轮，`ended` 就结束；读不到或没结束，才用超时 + harness 兜底。
+     */
     try {
       const turn = await this.readTurn(client, sessionId);
       if (turn) {
@@ -1845,7 +1844,27 @@ export class ChatTransport {
         if (turn.ended) {
           this.stopPolling();
           this.emitAssistantEnd("committed", "轮询看到 turn.ended=true");
+          return;
         }
+      }
+      /**
+       * 只有**没读到结束**时才用"盯了多久"兜底。
+       *
+       * `POLL_MAX_MS` 是"我们愿意盯着看多久"，不是"harness 干完了" ——
+       * 多步任务（并行调工具、反复验证）很容易超过它。所以超时后问一次
+       * `session/list` 的 `running`：
+       *   - `false` → 确实停了，收尾；
+       *   - `true` → 还在跑，继续盯（节流省 RPC）；
+       *   - `undefined`（问不到）→ 保守继续盯，绝不在不确定时宣布结束。
+       */
+      if (Date.now() - this.pollStartedAt > POLL_MAX_MS) {
+        const state = await this.harnessRunning(client, sessionId);
+        if (state === false) {
+          this.stopPolling();
+          this.emitAssistantEnd("committed", "轮询超时且 harness 明确说停了");
+          return;
+        }
+        this.extendPollingDeadline();
       }
     } catch (error) {
       const code =
