@@ -159,5 +159,6 @@ export * from "../../src/dsh/zoteroPreset";
 export {
   patchHostPortInSource,
   asarDataStart,
+  parseExtractStamp,
   ASAR_LAYOUT_VERSION,
 } from "../../src/dsh/isolatedRuntime";

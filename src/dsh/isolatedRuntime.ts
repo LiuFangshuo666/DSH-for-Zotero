@@ -261,6 +261,43 @@ export function asarDataStart(headerSize: number): number {
   return 16 + aligned;
 }
 
+/**
+ * 解析提取戳（纯函数，可单测）。
+ *
+ * 格式：`<布局版本>|<asar 字节数>|<asar 完整路径>`。
+ *
+ * ## 为什么把**源 asar** 也记进去
+ *
+ * 布局版本只回答"提取**算法**变了吗"。用户**升级桌面端**时算法没变 ——
+ * 于是产物被判为"已就绪"，插件继续跑**旧版本**的副本，而用户以为升级生效了
+ * （真机：0.2.1-rc.1 → rc.2 就是这样）。
+ *
+ * 用**大小**而不是哈希：这是个 ~180 MB 的文件，`isPrepared()` 每次都要判断，
+ * 读全文不现实。大小对内容变化已足够敏感。
+ *
+ * @returns 解析结果；旧格式（只有版本号）或畸形内容返回 `undefined`（视为不一致）
+ */
+export function parseExtractStamp(
+  raw: string,
+): { layout: number; asarSize: number; asarPath: string } | undefined {
+  const parts = String(raw ?? "")
+    .trim()
+    .split("|");
+  if (parts.length < 3) return undefined;
+  // ⚠️ 必须用**严格数字**判据，不能用 Number()：`Number("")` 是 0（有限），
+  // 于是空版本号会被当成"布局版本 0"而通过 —— 而版本号是从 1 开始的。
+  if (!/^\d+$/.test(parts[0])) return undefined;
+  if (!/^\d+$/.test(parts[1])) return undefined;
+  // 路径里理论上可能含 `|`，所以从第 3 段起重新拼回
+  const asarPath = parts.slice(2).join("|");
+  if (!asarPath) return undefined;
+  return {
+    layout: Number(parts[0]),
+    asarSize: Number(parts[1]),
+    asarPath,
+  };
+}
+
 export class RuntimeManager {
   private paths: RuntimePaths | undefined;
   private harness: HarnessLocation | undefined;
@@ -357,13 +394,37 @@ export class RuntimeManager {
     }
   }
 
-  /** 提取布局戳是否与当前 `ASAR_LAYOUT_VERSION` 一致（缺戳视为不一致） */
+  /**
+   * 提取产物是否与**当前**的 `app.asar` 一致（布局版本 + 源文件指纹）。
+   *
+   * ## 为什么除了布局版本还要看源文件（真机场景：用户连着升级两次）
+   *
+   * 布局版本只回答"提取**算法**变了吗"。而用户**升级桌面端**时算法没变，
+   * 于是提取产物被判为"已就绪"→ 插件继续跑**旧版本**的副本，
+   * 而用户以为自己升级了（2026-10-17 用户从 0.2.1-rc.1 升到 rc.2 就是这样）。
+   *
+   * 所以把**源 asar 的大小与路径**也记进戳里：
+   *
+   * - 桌面端更新 → asar 大小变 → 重新提取（约 10–15 秒，一次性）；
+   * - 桌面端被卸载/搬走 → 路径不存在 → 也重新提取（会重新定位）。
+   *
+   * ⚠️ 用**大小**而不是逐字节哈希：这是一个 180 MB 的文件，每次 `isPrepared()`
+   * 都去读一遍是不现实的。大小对"内容变化"已经足够敏感（一个包变了大小就变）。
+   *
+   * 戳的格式：`<布局版本>|<asar 字节数>|<asar 完整路径>`。
+   * 旧版戳（只有 `2`）解析失败 → 视为不一致 → 重新提取一次，安全。
+   */
   private async isLayoutStampCurrent(paths: RuntimePaths): Promise<boolean> {
     try {
       const stamp = PathUtils.join(paths.runtime, ".extract-layout");
       if (!(await IOUtils.exists(stamp))) return false;
-      const seen = (await IOUtils.readUTF8(stamp)).trim();
-      return seen === String(ASAR_LAYOUT_VERSION);
+      const raw = (await IOUtils.readUTF8(stamp)).trim();
+      const parsed = parseExtractStamp(raw);
+      if (!parsed) return false; // 旧格式（无指纹）/ 畸形 → 重新提取
+      if (parsed.layout !== ASAR_LAYOUT_VERSION) return false;
+      const stat = await IOUtils.stat(parsed.asarPath);
+      if (stat.type !== "regular") return false;
+      return Number(stat.size) === parsed.asarSize;
     } catch {
       return false;
     }
@@ -658,11 +719,14 @@ export class RuntimeManager {
     let force = false;
     try {
       if (await IOUtils.exists(stampPath)) {
-        const seen = (await IOUtils.readUTF8(stampPath)).trim();
-        force = seen !== String(ASAR_LAYOUT_VERSION);
+        // 戳格式：`<布局版本>|<asar 字节数>|<asar 路径>`（见 isLayoutStampCurrent）
+        const seenLayout = (await IOUtils.readUTF8(stampPath))
+          .trim()
+          .split("|")[0];
+        force = seenLayout !== String(ASAR_LAYOUT_VERSION);
         if (force) {
           report(
-            `提取布局版本从 ${seen || "（空）"} 变为 ${ASAR_LAYOUT_VERSION}，将全量重写（旧文件可能已损坏）`,
+            `提取布局版本从 ${seenLayout || "（空）"} 变为 ${ASAR_LAYOUT_VERSION}，将全量重写（旧文件可能已损坏）`,
           );
         }
       } else {
@@ -707,11 +771,19 @@ export class RuntimeManager {
     report(
       `提取完成：写入 ${written} 个，跳过 ${skipped} 个（共 ${targets.length}）`,
     );
-    // 全量重写成功后才写戳 —— 中途失败时戳不更新，下次仍会全量重试
+    // 全量重写成功后才写戳 —— 中途失败时戳不更新，下次仍会全量重试。
+    //
+    // 戳里记 **源 asar 的大小与路径**（不只是布局版本）：用户升级桌面端时
+    // 提取算法没变，但源文件变了 —— 只看版本号会继续复用旧副本，
+    // 让用户以为"已经用上新版"（真机：rc.1 → rc.2 就是这样）。
     try {
-      await IOUtils.writeUTF8(stampPath, String(ASAR_LAYOUT_VERSION));
+      const asarStat = await IOUtils.stat(harness.asar);
+      await IOUtils.writeUTF8(
+        stampPath,
+        `${ASAR_LAYOUT_VERSION}|${Number(asarStat.size)}|${harness.asar}`,
+      );
     } catch {
-      // 戳写不进去只影响下次是否全量，不影响本次结果
+      // 戳写不进去只影响下次是否重新提取，不影响本次结果
     }
 
     /**
