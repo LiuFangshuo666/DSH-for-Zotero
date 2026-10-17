@@ -291,8 +291,18 @@
       selectForNextRequest，本来就对下一次请求生效，所以这里改完立刻作用于
       下一轮，不需要新建会话。
 
-      默认隐藏：老插件没有 getModelCatalog 时整条不显示（见 renderModelBar），
-      而不是显示一个点了报错的控件。
+      ⚠️ **这里刻意不用原生 `<select>`**（真机反馈：点箭头没反应/弹层不渲染）
+
+      会话页是 `chrome://` 里的 XHTML 文档，宿主容器是 `<browser>` 或对话框。
+      这种文档里原生 `<select>` 的**弹出层靠平台的匿名弹窗**渲染 —— 实测：
+        · 已有会话（侧栏容器）里点箭头**完全没反应**（灰底）；
+        · 新会话（标签页容器）里点箭头**列表出来了但没渲染成弹层**，
+          文字"悬浮在页面内"且点不中（白底）。
+      两种容器表现不同，说明问题在弹窗层而不是我们的数据。
+
+      所以改成**自绘下拉**：触发器和菜单都是普通 HTML 元素，用
+      `position: fixed` 定位。全部在本文档内渲染，不依赖平台弹窗 ——
+      行为可预测，样式也统一。
     -->
     <div
       id="model-bar"
@@ -309,14 +319,80 @@
       "
     >
       <span>模型</span>
-      <select
-        id="model-select"
-        style="max-width: 260px; font: inherit"
-      ></select>
+      <span
+        id="model-trigger"
+        class="dsh-picker"
+        tabindex="0"
+        role="button"
+        style="
+          min-width: 90px;
+          max-width: 260px;
+          padding: 2px 8px;
+          border: 1px solid #d1d5db;
+          border-radius: 3px;
+          background: #fff;
+          cursor: pointer;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        "
+        >选择模型 ▾</span
+      >
       <span style="margin-left: 8px">推理强度</span>
-      <select id="effort-select" style="font: inherit"></select>
+      <span
+        id="effort-trigger"
+        class="dsh-picker"
+        tabindex="0"
+        role="button"
+        style="
+          min-width: 60px;
+          padding: 2px 8px;
+          border: 1px solid #d1d5db;
+          border-radius: 3px;
+          background: #fff;
+          cursor: pointer;
+          white-space: nowrap;
+        "
+        >— ▾</span
+      >
       <span id="model-note" style="margin-left: 8px; color: #9ca3af"></span>
     </div>
+
+    <!-- 菜单容器：由 JS 填充、定位、显示/隐藏（固定定位，脱离父级裁剪） -->
+    <div
+      id="model-menu"
+      style="
+        display: none;
+        position: fixed;
+        z-index: 2147483000;
+        min-width: 180px;
+        max-height: 320px;
+        overflow-y: auto;
+        background: #fff;
+        border: 1px solid #d1d5db;
+        border-radius: 3px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        font-size: 12px;
+        padding: 2px 0;
+      "
+    ></div>
+    <div
+      id="effort-menu"
+      style="
+        display: none;
+        position: fixed;
+        z-index: 2147483000;
+        min-width: 140px;
+        max-height: 260px;
+        overflow-y: auto;
+        background: #fff;
+        border: 1px solid #d1d5db;
+        border-radius: 3px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        font-size: 12px;
+        padding: 2px 0;
+      "
+    ></div>
 
     <div
       id="composer"

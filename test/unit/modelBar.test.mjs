@@ -38,8 +38,10 @@ const xhtml = readFileSync(
 describe("会话页的模型 / 推理强度选择", function () {
   it("必须有一条模型栏，且默认隐藏（等目录到了再显示）", function () {
     assert.match(xhtml, /id="model-bar"/, "session.xhtml 必须有模型栏");
-    assert.match(xhtml, /id="model-select"/, "必须有模型下拉");
-    assert.match(xhtml, /id="effort-select"/, "必须有推理强度下拉");
+    assert.match(xhtml, /id="model-trigger"/, "必须有模型触发器");
+    assert.match(xhtml, /id="model-menu"/, "必须有模型菜单容器");
+    assert.match(xhtml, /id="effort-trigger"/, "必须有推理强度触发器");
+    assert.match(xhtml, /id="effort-menu"/, "必须有推理强度菜单容器");
     // 默认 display:none —— 目录取不到（或老插件）时不该露出一个空控件
     const bar = xhtml.slice(xhtml.indexOf('id="model-bar"'));
     assert.match(
@@ -98,6 +100,50 @@ describe("会话页的模型 / 推理强度选择", function () {
       page,
       /下一轮起|下一轮生效/,
       "必须告诉用户改动何时生效 —— dsh 的 selectForNextRequest 是对下一次请求生效",
+    );
+  });
+
+  /**
+   * ## ⚠️ 会话页**不得**用原生 `<select>`（真机反馈：点箭头没反应）
+   *
+   * 会话页是 `chrome://` 里的 XHTML 文档，宿主容器是 `<browser>` 或对话框。
+   * 原生 `<select>` 的弹出层靠**平台匿名弹窗**渲染，在这种文档里实测：
+   *
+   * ```text
+   *   已有会话（侧栏容器）：点箭头完全没反应（灰底）
+   *   新建会话（标签页容器）：列表出来了但没渲染成弹层，
+   *                          文字悬浮在页面内、点不中（白底）
+   * ```
+   *
+   * 两种容器表现不同 ⇒ 问题在**弹窗层**，不是数据。所以改用自绘下拉：
+   * 触发器与菜单都是普通 HTML 元素 + `position: fixed`，
+   * 全部在本文档内渲染，不依赖平台弹窗。
+   *
+   * 这条守卫防的是"以后有人觉得原生 select 更简单，又改回去"。
+   */
+  it("**不得**使用原生 `<select>`（chrome 文档里弹层不渲染）", function () {
+    // ⚠️ 必须先剥掉注释：这条守卫的说明文字里就提到了 `<select>`，
+    // 而本项目已经因为"守卫把文档当成违规"误报过好几次。
+    const markup = xhtml.replace(/<!--[\s\S]*?-->/g, "");
+    assert.ok(
+      !/<select[\s>]/.test(markup),
+      "session.xhtml 里不能有原生 <select>。会话页在 chrome:// 文档里渲染，" +
+        "原生 select 的弹出层不工作（真机：点箭头没反应 / 列表悬浮在页面内）。" +
+        "用 model-trigger + model-menu 那套自绘下拉。",
+    );
+    // 自绘下拉必须真的用固定定位，否则会被父级 overflow 裁掉
+    const menuAt = xhtml.indexOf('id="model-menu"');
+    assert.ok(menuAt > 0, "必须有模型菜单容器");
+    assert.match(
+      xhtml.slice(menuAt, menuAt + 500),
+      /position:\s*fixed/,
+      "菜单必须用 position:fixed —— absolute 会被父容器的 overflow 裁掉",
+    );
+    // 点别处要能关掉，否则菜单会一直挂着
+    assert.match(
+      page,
+      /document\.addEventListener\("mousedown"/,
+      "必须有点击外部关闭菜单的逻辑",
     );
   });
 });

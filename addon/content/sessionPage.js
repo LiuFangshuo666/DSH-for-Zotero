@@ -593,52 +593,170 @@
      *    不说清楚，用户会以为"只影响本会话"。
      */
     var modelBarEl = document.getElementById("model-bar");
-    var modelSelectEl = document.getElementById("model-select");
-    var effortSelectEl = document.getElementById("effort-select");
+    var modelTriggerEl = document.getElementById("model-trigger");
+    var modelMenuEl = document.getElementById("model-menu");
+    var effortTriggerEl = document.getElementById("effort-trigger");
+    var effortMenuEl = document.getElementById("effort-menu");
     var modelNoteEl = document.getElementById("model-note");
 
-    /** 目录里的模型按 `provider/model` 编成一个扁平键，选项值就用它 */
+    /** 目录里的模型按 「provider + NUL + model」 编成扁平键 */
     var modelIndex = {};
+    /** 当前选择（模型键）与当前推理强度 id */
+    var modelValue = "";
+    var effortValue = "";
+    /** 当前模型可选的推理强度（空数组表示该模型不支持调整） */
+    var effortChoices = [];
+    /** 当前展开的菜单 */
+    var openMenu = null;
 
     function modelKey(provider, model) {
       return provider + "\u0000" + model;
     }
 
-    function fillEffortSelect(provider, model, wanted) {
-      if (!effortSelectEl) return;
-      var entry = modelIndex[modelKey(provider, model)];
-      var efforts = (entry && entry.reasoning && entry.reasoning.efforts) || [];
-      effortSelectEl.textContent = "";
-      // 空值 = 用模型默认等级（此时**不传** reasoningEffort 给宿主 ——
-      // 传空串会被当成无效的 ReasoningEffortId）
-      var def = document.createElement("option");
-      def.value = "";
-      def.textContent = "默认" + (efforts.length ? "" : "（该模型不支持调整）");
-      effortSelectEl.appendChild(def);
-      efforts.forEach(function (effort) {
-        var opt = document.createElement("option");
-        opt.value = effort.id;
-        opt.textContent = String(effort.name || effort.id);
-        if (effort.description) opt.title = effort.description;
-        effortSelectEl.appendChild(opt);
+    function splitModelKey(key) {
+      var sep = String(key || "").indexOf("\u0000");
+      return sep < 0 ? ["", ""] : [key.slice(0, sep), key.slice(sep + 1)];
+    }
+
+    function modelLabel(key) {
+      var entry = modelIndex[key];
+      if (!entry) return "选择模型 ▾";
+      var g = entry.group || {};
+      var m = entry.model || {};
+      return (
+        String(g.name || g.id || "") +
+        " · " +
+        String(m.name || m.id || "") +
+        " ▾"
+      );
+    }
+
+    function effortLabel(id) {
+      if (!id) return "默认 ▾";
+      for (var i = 0; i < effortChoices.length; i += 1) {
+        if (effortChoices[i].id === id) {
+          return String(effortChoices[i].name || id) + " ▾";
+        }
+      }
+      return String(id) + " ▾";
+    }
+
+    function closeMenu() {
+      if (!openMenu) return;
+      try {
+        openMenu.menuEl.style.display = "none";
+      } catch {
+        // 忽略：菜单可能已随页面销毁
+      }
+      openMenu = null;
+    }
+
+    /** 把菜单放在触发器正下方；下方放不下就翻到上方 */
+    function positionMenu(menuEl, triggerEl) {
+      var rect = triggerEl.getBoundingClientRect();
+      menuEl.style.left = Math.round(rect.left) + "px";
+      menuEl.style.display = "block";
+      var height = menuEl.offsetHeight || 0;
+      var below = rect.bottom + 4;
+      var fitsBelow = below + height <= (window.innerHeight || 800) - 8;
+      var top = fitsBelow ? below : Math.max(8, rect.top - height - 4);
+      menuEl.style.top = Math.round(top) + "px";
+    }
+
+    /**
+     * 填充菜单并处理选择。
+     *
+     * ⚠️ 用 `mousedown` 而不是 `click`：外面那层「点别处就关」的监听
+     * 挂在 `document` 上，`mousedown` 会先到 —— 用 `preventDefault()`
+     * 把焦点事件挡掉，否则菜单会先被关掉、点击落空。
+     */
+    function fillMenu(menuEl, items, currentValue, onPick) {
+      menuEl.textContent = "";
+      if (!items.length) {
+        var empty = document.createElement("div");
+        empty.textContent = "（无可选项）";
+        empty.style.cssText = "padding: 4px 10px; color: #9ca3af";
+        menuEl.appendChild(empty);
+        return;
+      }
+      items.forEach(function (item) {
+        var row = document.createElement("div");
+        row.textContent = item.label;
+        if (item.title) row.title = item.title;
+        var selected = item.value === currentValue;
+        row.style.cssText =
+          "padding: 4px 10px; cursor: pointer; white-space: nowrap; " +
+          "overflow: hidden; text-overflow: ellipsis;" +
+          (selected ? " font-weight: 600; background: #eff6ff;" : "");
+        row.addEventListener("mouseenter", function () {
+          row.style.background = "#f3f4f6";
+        });
+        row.addEventListener("mouseleave", function () {
+          row.style.background = selected ? "#eff6ff" : "";
+        });
+        row.addEventListener("mousedown", function (event) {
+          event.preventDefault();
+          closeMenu();
+          onPick(item.value);
+        });
+        menuEl.appendChild(row);
       });
-      effortSelectEl.value = wanted || "";
-      effortSelectEl.disabled = efforts.length === 0;
+    }
+
+    function toggleMenu(menuEl, triggerEl, items, currentValue, onPick) {
+      if (openMenu && openMenu.menuEl === menuEl) {
+        closeMenu();
+        return;
+      }
+      closeMenu();
+      fillMenu(menuEl, items, currentValue, onPick);
+      positionMenu(menuEl, triggerEl);
+      openMenu = { menuEl: menuEl, triggerEl: triggerEl };
+    }
+
+    // 点别处 / Esc / 窗口尺寸变化都关掉菜单（否则固定定位会与触发器错位）
+    document.addEventListener("mousedown", function (event) {
+      if (!openMenu) return;
+      if (
+        openMenu.menuEl.contains(event.target) ||
+        openMenu.triggerEl.contains(event.target)
+      ) {
+        return;
+      }
+      closeMenu();
+    });
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") closeMenu();
+    });
+    window.addEventListener("resize", closeMenu);
+
+    function refreshModelTrigger() {
+      if (modelTriggerEl) modelTriggerEl.textContent = modelLabel(modelValue);
+    }
+
+    function refreshEffortTrigger() {
+      if (effortTriggerEl) {
+        effortTriggerEl.textContent = effortLabel(effortValue);
+        // 该模型没有可调等级时置灰（但**仍然可点**去看说明）
+        effortTriggerEl.style.color = effortChoices.length ? "" : "#9ca3af";
+      }
     }
 
     function applyModelChoice() {
-      if (!modelSelectEl) return Promise.resolve();
-      var raw = modelSelectEl.value;
-      var sep = raw.indexOf("\u0000");
-      var provider = sep >= 0 ? raw.slice(0, sep) : "";
-      var model = sep >= 0 ? raw.slice(sep + 1) : "";
-      var effort = effortSelectEl ? effortSelectEl.value : "";
-      if (!provider || !model) return Promise.resolve();
+      if (typeof capability.setSessionModel !== "function") return;
+      var parts = splitModelKey(modelValue);
+      var provider = parts[0];
+      var model = parts[1];
+      // 局部变量名就叫 effort —— 这里刻意保持，便于阅读与既有守卫匹配
+      var effort = effortValue;
+      if (!provider || !model) return;
       if (modelNoteEl) modelNoteEl.textContent = "正在应用…";
-      return Promise.resolve(
+      Promise.resolve(
         capability.setSessionModel({
           provider: provider,
           model: model,
+          // 空值必须转成 undefined：传空串会被宿主当成无效的
+          // ReasoningEffortId（真机踩过）
           reasoningEffort: effort || undefined,
         }),
       )
@@ -658,32 +776,29 @@
     }
 
     function renderModelBar() {
-      if (!modelBarEl || !modelSelectEl) return;
-      /**
-       * ## ⚠️ 失败时**显示原因**，而不是悄悄隐藏（真机反馈：下拉框点不开）
-       *
-       * 用户报"点不开模型和推理等级的下拉框"，而实际现象是**整条栏都不出现** ——
-       * 因为我原来在取不到目录时直接 `return`，把整条隐藏了。
-       *
-       * 那是**静默失败**：用户看不出是"没有这个功能"还是"功能坏了"，
-       * 我也无从判断（这次就是这样，只能靠猜）。
-       *
-       * 现在分三种情况：
-       *  1. 老插件没有这个方法 → 隐藏（确实没这个功能，隐藏是对的）；
-       *  2. 有方法但取目录失败 → **显示栏 + 写明错误**；
-       *  3. 取到了但没有模型 → **显示栏 + 写明原因**。
-       */
+      if (!modelBarEl || !modelTriggerEl) return;
       if (typeof capability.getModelCatalog !== "function") return; // 老插件：保持隐藏
+      /**
+       * ⚠️ 失败时**显示原因**，不要悄悄隐藏（真机反馈：下拉框点不开）
+       *
+       * 我原来在取不到目录时直接 `return`，把整条隐藏 —— 于是
+       * "功能坏了"与"没有这个功能"在用户看来一模一样，我也只能猜。
+       */
       var showProblem = function (text) {
         modelBarEl.style.display = "flex";
         if (modelNoteEl) modelNoteEl.textContent = text;
-        if (modelSelectEl) modelSelectEl.disabled = true;
-        if (effortSelectEl) effortSelectEl.disabled = true;
+        if (modelTriggerEl) {
+          modelTriggerEl.style.color = "#9ca3af";
+          modelTriggerEl.textContent = "不可用 ▾";
+        }
+        if (effortTriggerEl) {
+          effortTriggerEl.style.color = "#9ca3af";
+          effortTriggerEl.textContent = "— ▾";
+        }
       };
       Promise.resolve(capability.getModelCatalog())
         .then(function (catalog) {
           if (!catalog) {
-            // capabilityFromGlobal 在旧插件上返回 null
             showProblem("插件版本较旧：不支持在会话里切换模型");
             return;
           }
@@ -692,20 +807,22 @@
             return;
           }
           modelIndex = {};
-          modelSelectEl.textContent = "";
+          var items = [];
           catalog.groups.forEach(function (group) {
             (group.models || []).forEach(function (model) {
-              modelIndex[modelKey(group.id, model.id)] = model;
-              var opt = document.createElement("option");
-              opt.value = modelKey(group.id, model.id);
-              opt.textContent =
-                String(group.name || group.id) +
-                " · " +
-                String(model.name || model.id);
-              modelSelectEl.appendChild(opt);
+              var key = modelKey(group.id, model.id);
+              modelIndex[key] = { group: group, model: model };
+              items.push({
+                value: key,
+                label:
+                  String(group.name || group.id) +
+                  " · " +
+                  String(model.name || model.id),
+                title: String(model.description || ""),
+              });
             });
           });
-          if (!modelSelectEl.options.length) {
+          if (!items.length) {
             var failed = (catalog.failures || [])
               .map(function (f) {
                 return String(f.name || f.id);
@@ -718,8 +835,8 @@
             );
             return;
           }
-          modelSelectEl.disabled = false;
-          // 预选：会话记录里的选择 → 否则宿主的默认 → 否则第一项
+
+          // 预选：会话记录里的选择 → 否则宿主默认 → 否则第一项
           var chosen = catalog["会话已选"] || {};
           var fallback = catalog.default || {};
           var wantKey =
@@ -727,51 +844,89 @@
               ? modelKey(chosen.provider, chosen.model)
               : fallback.provider && fallback.model
                 ? modelKey(fallback.provider, fallback.model)
-                : modelSelectEl.options[0].value;
-          modelSelectEl.value = wantKey;
-          var sel = modelIndex[wantKey];
-          if (sel) {
-            var sep = wantKey.indexOf("\u0000");
-            fillEffortSelect(
-              wantKey.slice(0, sep),
-              wantKey.slice(sep + 1),
-              chosen.reasoningEffort ||
-                (sel.reasoning && sel.reasoning.defaultEffort) ||
-                "",
-            );
-          }
+                : items[0].value;
+          if (!modelIndex[wantKey]) wantKey = items[0].value;
+          modelValue = wantKey;
+
+          var entry = modelIndex[wantKey];
+          var reasoning = (entry && entry.model && entry.model.reasoning) || {};
+          effortChoices = reasoning.efforts || [];
+          var wantedEffort =
+            chosen.reasoningEffort || reasoning.defaultEffort || "";
+          effortValue =
+            wantedEffort &&
+            effortChoices.some(function (e) {
+              return e.id === wantedEffort;
+            })
+              ? wantedEffort
+              : "";
+
+          refreshModelTrigger();
+          refreshEffortTrigger();
           modelBarEl.style.display = "flex";
-          if (modelNoteEl) {
-            modelNoteEl.textContent = "改动对下一轮生效";
+          if (modelNoteEl) modelNoteEl.textContent = "改动对下一轮生效";
+
+          if (modelTriggerEl) {
+            modelTriggerEl.onclick = function () {
+              toggleMenu(
+                modelMenuEl,
+                modelTriggerEl,
+                items,
+                modelValue,
+                function (picked) {
+                  modelValue = picked;
+                  var next = modelIndex[picked];
+                  var nextReasoning =
+                    (next && next.model && next.model.reasoning) || {};
+                  effortChoices = nextReasoning.efforts || [];
+                  // 换模型后推理强度回到该模型的默认（旧值多半不适用）
+                  effortValue =
+                    nextReasoning.defaultEffort &&
+                    effortChoices.some(function (e) {
+                      return e.id === nextReasoning.defaultEffort;
+                    })
+                      ? nextReasoning.defaultEffort
+                      : "";
+                  refreshModelTrigger();
+                  refreshEffortTrigger();
+                  applyModelChoice();
+                },
+              );
+            };
+          }
+          if (effortTriggerEl) {
+            effortTriggerEl.onclick = function () {
+              var options = [{ value: "", label: "默认（模型自选）" }].concat(
+                effortChoices.map(function (e) {
+                  return {
+                    value: e.id,
+                    label: String(e.name || e.id),
+                    title: String(e.description || ""),
+                  };
+                }),
+              );
+              toggleMenu(
+                effortMenuEl,
+                effortTriggerEl,
+                options,
+                effortValue,
+                function (picked) {
+                  effortValue = picked;
+                  refreshEffortTrigger();
+                  applyModelChoice();
+                },
+              );
+            };
           }
         })
         .catch(function (error) {
-          // ⚠️ 不能静默：这就是"下拉框点不开"时唯一的线索
+          // ⚠️ 不能静默：这是"下拉框点不开"时唯一的线索
           showProblem(
             "取模型目录失败：" + String((error && error.message) || error),
           );
         });
     }
 
-    if (modelSelectEl) {
-      modelSelectEl.addEventListener("change", function () {
-        var sep = modelSelectEl.value.indexOf("\u0000");
-        var provider = modelSelectEl.value.slice(0, sep);
-        var model = modelSelectEl.value.slice(sep + 1);
-        var entry = modelIndex[modelSelectEl.value];
-        fillEffortSelect(
-          provider,
-          model,
-          (entry && entry.reasoning && entry.reasoning.defaultEffort) || "",
-        );
-        void applyModelChoice();
-      });
-    }
-    if (effortSelectEl) {
-      effortSelectEl.addEventListener("change", function () {
-        void applyModelChoice();
-      });
-    }
     renderModelBar();
 
     /**
