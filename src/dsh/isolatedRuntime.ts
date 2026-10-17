@@ -206,6 +206,61 @@ export function patchHostPortInSource(
   return { kind: "patched", source: patched, hostDefault };
 }
 
+/**
+ * ## asar 数据区的起点：**必须按 Pickle 的 4 字节对齐**
+ *
+ * asar 的头部不是裸 JSON，而是 Electron `Pickle` 编码：
+ *
+ * ```text
+ *   [0]  uint32 = 4                          （下面那个 uint32 的长度）
+ *   [4]  uint32 = 头部字符串块的总长
+ *   [8]  uint32 = 字符串块的 payload 长度     （= 4 + jsonLen + padding）
+ *   [12] uint32 = JSON 字节数 jsonLen
+ *   [16] JSON（jsonLen 字节）
+ *   [16+jsonLen ... 16+align4(jsonLen))      ← **NUL 填充**
+ *   [16+align4(jsonLen)) 起是文件数据
+ * ```
+ *
+ * ## ⚠️ 真机事故：漏掉 padding 会**静默写坏每一个文件**
+ *
+ * 2026-10-17 用户升级桌面端 DSH 后，插件提取出的运行时里
+ * **255 / 313 个 `package.json` 都不是合法 JSON**，宿主启动即退出：
+ *
+ * ```text
+ *   Error: Invalid package config ...\@deepseek-ai\dsh-app-boot\package.json
+ * ```
+ *
+ * 实测那一版的 `jsonLen = 4775822`（`% 4 = 2`），于是数据区实际从
+ * `16 + 4775824` 开始 —— 比"`16 + jsonLen`"晚 **2 字节**。
+ * 结果每个文件 = 前一个文件的最后 2 字节 + 真实内容的前 N-2 字节：
+ * 开头多垃圾、结尾被截短，JSON 必然解析失败。
+ *
+ * **这个 bug 潜伏了很久**：旧版 DSH 的 `jsonLen` 恰好是 4 的倍数，
+ * padding 为 0，于是"少算 padding"与"正确"结果相同。新版的长度不是 4 的倍数，
+ * 才把它暴露出来。这类"条件成立时看起来正确"的算式最容易长期存活。
+ *
+ * @param headerSize 头部声明（`view.getUint32(12, true)`）的 JSON 字节数
+ * @returns 文件数据区的起始字节偏移
+ */
+/**
+ * 提取布局的版本号。**改动提取逻辑时必须 +1。**
+ *
+ * 为什么需要：提取是增量的（大小一致即跳过），而"写坏的文件大小也是对的" ——
+ * 真机上漏算 Pickle padding 导致每个文件错位 2 字节，大小不变，于是修好源码后
+ * 那些坏文件仍被跳过，宿主继续起不来。这个戳让"逻辑变了"能作废已有产物。
+ *
+ * 版本历史：
+ *  - 1（隐式，无戳）：漏算 Pickle 4 字节对齐 → 文件整体错位
+ *  - 2：补上对齐；引入戳，作废版本 1 的全部产物
+ */
+export const ASAR_LAYOUT_VERSION = 2;
+
+export function asarDataStart(headerSize: number): number {
+  // Pickle 把字符串 payload 补齐到 4 字节边界
+  const aligned = (headerSize + 3) & ~3;
+  return 16 + aligned;
+}
+
 export class RuntimeManager {
   private paths: RuntimePaths | undefined;
   private harness: HarnessLocation | undefined;
@@ -284,7 +339,31 @@ export class RuntimeManager {
       if ((hostStat.size ?? 0) <= 0) return false;
 
       // ② 端口补丁必须在
-      return await this.isPortPatchApplied(paths);
+      if (!(await this.isPortPatchApplied(paths))) return false;
+
+      /**
+       * ③ **提取布局版本必须匹配**（真机事故：修好算式却等于没修）
+       *
+       * 提取是增量的（大小一致即跳过）。而"漏算 Pickle padding"写坏的文件
+       * **大小完全正确** —— 于是修好算式后，`extractFromAsar` 会把它们
+       * 全判为"已完成"而跳过，宿主继续报 `Invalid package config`。
+       *
+       * 所以布局版本也是"已准备好"的一部分：戳不对就必须重跑提取。
+       * ⚠️ 这里**不能**用"宿主入口存在"代替 —— 它就是存在且非空（只是内容错位）。
+       */
+      return await this.isLayoutStampCurrent(paths);
+    } catch {
+      return false;
+    }
+  }
+
+  /** 提取布局戳是否与当前 `ASAR_LAYOUT_VERSION` 一致（缺戳视为不一致） */
+  private async isLayoutStampCurrent(paths: RuntimePaths): Promise<boolean> {
+    try {
+      const stamp = PathUtils.join(paths.runtime, ".extract-layout");
+      if (!(await IOUtils.exists(stamp))) return false;
+      const seen = (await IOUtils.readUTF8(stamp)).trim();
+      return seen === String(ASAR_LAYOUT_VERSION);
     } catch {
       return false;
     }
@@ -513,7 +592,7 @@ export class RuntimeManager {
     ) as {
       files?: Record<string, AsarNode>;
     };
-    const dataStart = 16 + headerSize;
+    const dataStart = asarDataStart(headerSize);
 
     const targets: Array<{ path: string; offset: number; size: number }> = [];
     const walk = (node: AsarNode, prefix: string) => {
@@ -539,22 +618,56 @@ export class RuntimeManager {
     };
     walk({ files: tree.files }, "");
 
+    /**
+     * ## 布局版本戳：让"提取逻辑变了"能**作废**已有文件
+     *
+     * "大小一致就跳过"是续跑的关键，但它有个致命副作用：
+     * **写坏的文件大小也是对的**，于是会被永久跳过。
+     *
+     * 真机事故（2026-10-17）：因为漏算 Pickle padding，每个文件都错位 2 字节 ——
+     * 大小完全不变。修好 `dataStart` 后，那 255 个坏 `package.json` 仍会被
+     * 判为"已完成"而留着，宿主继续起不来。**修了等于没修。**
+     *
+     * 所以把布局版本写进一个戳文件：戳不匹配就**强制全量重写**。
+     * 以后只要改动提取逻辑（对齐、prefix、offset 语义），就把版本 +1。
+     */
+    const stampPath = PathUtils.join(paths.runtime, ".extract-layout");
+    let force = false;
+    try {
+      if (await IOUtils.exists(stampPath)) {
+        const seen = (await IOUtils.readUTF8(stampPath)).trim();
+        force = seen !== String(ASAR_LAYOUT_VERSION);
+        if (force) {
+          report(
+            `提取布局版本从 ${seen || "（空）"} 变为 ${ASAR_LAYOUT_VERSION}，将全量重写（旧文件可能已损坏）`,
+          );
+        }
+      } else {
+        // 没有戳：可能是从没提过，也可能是旧版本提的（那时还没有戳）
+        force = true;
+      }
+    } catch {
+      force = true;
+    }
+
     let written = 0;
     let skipped = 0;
     for (const file of targets) {
       const rel = file.path.slice(ASAR_PREFIX.length);
       const dest = PathUtils.join(paths.runtime, ...rel.split("/"));
-      // 幂等：大小一致就跳过，支持中断后续跑
-      try {
-        if (await IOUtils.exists(dest)) {
-          const stat = await IOUtils.stat(dest);
-          if (stat.size === file.size) {
-            skipped++;
-            continue;
+      // 幂等：大小一致就跳过，支持中断后续跑（**除非**布局版本变了）
+      if (!force) {
+        try {
+          if (await IOUtils.exists(dest)) {
+            const stat = await IOUtils.stat(dest);
+            if (stat.size === file.size) {
+              skipped++;
+              continue;
+            }
           }
+        } catch {
+          // 取不到大小就覆盖写
         }
-      } catch {
-        // 覆盖写
       }
       await IOUtils.makeDirectory(parentDir(dest), { ignoreExisting: true });
       await IOUtils.write(
@@ -570,6 +683,52 @@ export class RuntimeManager {
     }
     report(
       `提取完成：写入 ${written} 个，跳过 ${skipped} 个（共 ${targets.length}）`,
+    );
+    // 全量重写成功后才写戳 —— 中途失败时戳不更新，下次仍会全量重试
+    try {
+      await IOUtils.writeUTF8(stampPath, String(ASAR_LAYOUT_VERSION));
+    } catch {
+      // 戳写不进去只影响下次是否全量，不影响本次结果
+    }
+
+    /**
+     * ## 提取后自检：抽几个 `package.json` 验证 JSON 合法
+     *
+     * 为什么值得这一步（真机事故的教训）：漏算 Pickle padding 时，
+     * 每个文件都错位 2 字节 —— **大小完全正确、提取"成功"、日志全绿**，
+     * 直到宿主启动才报 `Invalid package config`，而那时离根因已经很远。
+     *
+     * 这一小段把"半小时排查"变成**一行日志**。
+     * 不 fail-fast：自检失败也继续（可能只是抽样文件恰好缺失），
+     * 但日志里会有明确线索。
+     */
+    const probes = [
+      "@deepseek-ai/dsh-app-boot",
+      "@deepseek-ai/dsh-desktop-host",
+      "@deepseek-ai/dsh-agent",
+    ];
+    let probeOk = 0;
+    const probeFail: string[] = [];
+    for (const pkg of probes) {
+      const p = PathUtils.join(
+        paths.runtime,
+        "node_modules",
+        ...pkg.split("/"),
+        "package.json",
+      );
+      try {
+        if (!(await IOUtils.exists(p))) continue;
+        JSON.parse(await IOUtils.readUTF8(p));
+        probeOk += 1;
+      } catch {
+        probeFail.push(pkg);
+      }
+    }
+    report(
+      `提取自检：${probeOk} 个关键 package.json 合法` +
+        (probeFail.length
+          ? `；**${probeFail.join("、")} 不是合法 JSON** —— 提取可能错位（对齐/偏移问题）`
+          : ""),
     );
   }
 
