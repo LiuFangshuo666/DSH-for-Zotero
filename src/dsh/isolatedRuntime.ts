@@ -477,8 +477,31 @@ export class RuntimeManager {
       // 检测"上次提取产出的全是空文件"的污染状态：此时增量提取会把空文件当成
       // "已有一致"而永远跳过，必须整体重建才能自愈（见 resetRuntimeDir 注释）。
       const polluted = await this.isRuntimePolluted(paths);
-      if (polluted) {
-        report("检测到上次提取的文件为空，正在重建运行时…");
+      /**
+       * ## 提取布局版本变了 → **整目录重建**（不只覆盖）
+       *
+       * 真机事故（2026-10-17）暴露了两件事：
+       *
+       * 1. 漏算 Pickle padding 让每个文件错位 2 字节，而**大小完全正确** ——
+       *    增量提取会把它们判为"已完成"永久跳过，修了算式等于没修；
+       * 2. 用户**升级 DSH** 时，运行时会变成**两个版本的混合体**：
+       *    新 asar 里有的文件被覆盖（`写入 6946`），
+       *    而尺寸恰好相同的旧文件被跳过（`跳过 8718`）——
+       *    于是 `dsh-desktop-host/package.json` 还报着**旧版本号**。
+       *
+       * 只"强制覆盖"解决不了第 2 点：**旧版本独有的文件不会被删**。
+       * 所以版本不匹配时**整个 runtime 目录清掉重来** —— 这是唯一能保证
+       * "目录内容与当前 asar 严格一致"的做法。
+       *
+       * 代价：一次约 10–15 秒的全量提取。只在首次安装与布局/版本变化时发生。
+       */
+      const layoutStale = !(await this.isLayoutStampCurrent(paths));
+      if (polluted || layoutStale) {
+        report(
+          polluted
+            ? "检测到上次提取的文件为空，正在重建运行时…"
+            : "提取布局版本已更新，正在重建运行时（清除旧版本残留，约 10–15 秒）…",
+        );
         await this.resetRuntimeDir(paths);
       }
 

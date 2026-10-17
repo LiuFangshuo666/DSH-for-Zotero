@@ -75,6 +75,20 @@ import { isPresetNotFound, presetRequest } from "../dsh/zoteroPreset";
  * 记一次就够（不刷屏）。
  *
  * ⚠️ 升级插件时若确认新格式已支持，把这个数字改掉。
+ *
+ * ## 已核实的版本事实（2026-10-17）
+ *
+ * | 桌面端 DSH | `SESSION_FORMAT_VERSION` | 结论 |
+ * | --- | --- | --- |
+ * | 0.2.0-rc.2 | **4** | 与本常量一致 → **不会误报** |
+ * | 0.2.1-rc.1 | **4** | 同上 |
+ *
+ * dsh 自带 `session-format-v0-to-v1` / `v1-to-v2` / `v2-to-v3` / `v3-to-v4`
+ * 四个迁移包 —— 说明格式**确实逐版演进过**，只是最近两版都停在 4。
+ *
+ * 📌 这两个版本的数值是**实测**的（读 0.2.0-rc.2 副本的
+ * `@deepseek-ai/dsh-session/lib/index.js`），不是推测。
+ * 若将来 dsh 升到 5 而这里不改，插件的探针会明确告警而不是静默出错 —— 这是有意的。
  */
 const EXPECTED_SESSION_FORMAT_VERSION = 4;
 
