@@ -48,6 +48,7 @@ import {
 import { nativeSeparators } from "../dsh/paths";
 import { ChatTransport } from "../chat/transport";
 import { appendPanelLog } from "../dsh/runLog";
+import { pendingStore } from "../dsh/pendingStore";
 import { refreshInstalledDshSide } from "../dsh/install";
 import { requireRuntimeConfig } from "../dsh/config";
 import { resolvePaperRef } from "../papers/prepare";
@@ -2624,7 +2625,7 @@ export class SessionPane {
             args,
             effectiveCollectionKey(record, args),
           );
-          this.pendingDeletions.push({
+          this.addPending({
             uid: this.nextPendingUid(),
             sessionId: record.sessionId,
             op,
@@ -2702,7 +2703,7 @@ export class SessionPane {
               )?.getField?.("title") ?? "",
             ).slice(0, 60);
             const already = findPdfAttachment(item as Zotero.Item);
-            this.pendingDeletions.push({
+            this.addPending({
               uid: this.nextPendingUid(),
               sessionId: record.sessionId,
               op,
@@ -2835,7 +2836,7 @@ export class SessionPane {
             error: "删除类操作需要 args.keys（或 args.key）",
           };
         }
-        this.pendingDeletions.push({
+        this.addPending({
           uid: this.nextPendingUid(),
           sessionId: record.sessionId,
           op,
@@ -3922,7 +3923,7 @@ export class SessionPane {
                     ? "（**连同分类内的条目**）"
                     : "（条目保留）")
                 : `结构性改动 ${op}`;
-    this.pendingDeletions.push({
+    this.addPending({
       uid: this.nextPendingUid(),
       sessionId: record.sessionId,
       op,
@@ -4574,6 +4575,75 @@ export class SessionPane {
    * 而新建条目会**永久改动文库结构**，建错（重复条目、错误类型）比改错标签难清理得多，
    * 所以与删除同等对待 —— 登记、由用户确认后执行。
    */
+  /**
+   * ## 待确认项的**唯一改动入口**（`addPending` / `dropPending`）
+   *
+   * 真机事故（2026-10-17）：批量确认 28 条，卡在第 7 条的 PDF 下载约 8 分钟。
+   * 用户重启 Zotero 解卡后，**剩下 22 条全部消失** —— 因为 `pendingDeletions`
+   * 只是进程内数组，没有任何持久化。
+   *
+   * 那 22 条是 Agent 花 10 分钟查好的 DOI / 字段 / 作者 / 分类，
+   * 重建它们的成本是**一次完整检索**。用户已经批准的意图不该因为重启而蒸发。
+   *
+   * 修法：把"增删"收口成这两个方法，落盘写在里面 —— 这样以后无论谁在哪里
+   * 改动待确认列表，都会自动持久化，不会出现"某条路径忘了存"。
+   *
+   * ⚠️ **不要直接 `this.pendingDeletions.push/splice`** —— 那会绕过落盘。
+   */
+  private addPending(item: {
+    uid: string;
+    sessionId: string;
+    op: string;
+    keys: string[];
+    requestedAt: string;
+    payload?: Record<string, unknown>;
+    summary?: string;
+  }): void {
+    this.pendingDeletions.push(item);
+    void this.persistPending();
+  }
+
+  /** 见 `addPending` —— 删除也必须走这里，否则落盘会留下已处理的项（恢复后重复确认） */
+  private dropPending(index: number): void {
+    this.pendingDeletions.splice(index, 1);
+    void this.persistPending();
+  }
+
+  /**
+   * 把当前待确认列表落到磁盘。
+   *
+   * 失败**不抛**（`PendingStore.save` 内部记日志）—— 落不了盘是可惜，
+   * 但"确认按钮点了没反应"更糟：恢复能力属于"更好"，可用性属于"必须有"。
+   */
+  private async persistPending(): Promise<void> {
+    await pendingStore().save(this.pendingDeletions.map((p) => ({ ...p })));
+  }
+
+  /**
+   * 启动时把上次没确认完的项**接回来**。
+   *
+   * ⚠️ 不校验会话是否还在：会话可能被用户删了，但待确认项仍是用户真实表达过的
+   * 意图。让它出现在列表里（可确认可忽略）比静默丢弃好；执行时找不到会话
+   * 会给出明确原因。
+   */
+  private async restorePending(): Promise<void> {
+    try {
+      const saved = await pendingStore().load();
+      if (saved.length === 0) return;
+      const existing = new Set(this.pendingDeletions.map((p) => p.uid));
+      const add = saved.filter((p) => !existing.has(p.uid));
+      this.pendingDeletions.push(...add);
+      appendPanelLog(
+        "session",
+        `已恢复 ${add.length} 条未完成的待确认项（重启前未处理）`,
+      );
+    } catch (error) {
+      // 恢复失败不能让启动失败 —— 待确认列表是增强，不是主流程
+      const message = error instanceof Error ? error.message : String(error);
+      appendPanelLog("session", `恢复待确认项失败（忽略）：${message}`);
+    }
+  }
+
   pendingDeletions: Array<{
     /**
      * **永不变的身份**。
@@ -4782,7 +4852,7 @@ export class SessionPane {
         request.sessionId,
         request.payload ?? {},
       );
-      this.pendingDeletions.splice(index, 1);
+      this.dropPending(index);
       await this.writeDeletionOutcome(
         request,
         outcome.ok ? [outcome.detail] : [],
@@ -4820,7 +4890,7 @@ export class SessionPane {
         record?.scopeLibraryID ?? Zotero.Libraries.userLibraryID;
       const item = Zotero.Items.getByLibraryAndKey(libraryID, key);
       if (!item) {
-        this.pendingDeletions.splice(index, 1);
+        this.dropPending(index);
         const detail = `${key}：找不到条目（可能已被删除）`;
         await this.writeDeletionOutcome(request, [], [detail]);
         return detail;
@@ -4833,7 +4903,7 @@ export class SessionPane {
 
       // ① 已有 PDF 就跳过：重复挂只会让用户多出一串要清理的附件
       if (findPdfAttachment(item as Zotero.Item)) {
-        this.pendingDeletions.splice(index, 1);
+        this.dropPending(index);
         const detail = `「${title || key}」已有 PDF 附件，**跳过**（未重复挂载）`;
         await this.writeDeletionOutcome(request, [detail], []);
         appendPanelLog("session", `补全文跳过：${detail}`);
@@ -4855,7 +4925,7 @@ export class SessionPane {
         doi: doiField || undefined,
         pdfUrl,
       });
-      this.pendingDeletions.splice(index, 1);
+      this.dropPending(index);
       const detail = outcome.ok
         ? `「${title || key}」：${outcome.detail}`
         : `「${title || key}」：⚠️ ${outcome.detail}`;
@@ -4873,7 +4943,7 @@ export class SessionPane {
     // 与删除的兜底分支分开，因为它们不删条目（`keys` 是空的）。
     const structural = await this.executePendingStructural(request);
     if (structural !== undefined) {
-      this.pendingDeletions.splice(index, 1);
+      this.dropPending(index);
       await this.writeDeletionOutcome(
         request,
         structural.ok ? [structural.detail] : [],
@@ -4904,7 +4974,7 @@ export class SessionPane {
         );
       }
     }
-    this.pendingDeletions.splice(index, 1);
+    this.dropPending(index);
     // 把结果写回工作区：Agent 下一轮就能看到"删了哪些、哪些失败"
     await this.writeDeletionOutcome(request, done, failed);
     appendPanelLog(
@@ -4975,7 +5045,7 @@ export class SessionPane {
   dismissPendingDeletion(index: number): string {
     const request = this.pendingDeletions[index];
     if (!request) return "该待确认项已不存在。";
-    this.pendingDeletions.splice(index, 1);
+    this.dropPending(index);
     /**
      * ⚠️ **拒绝也必须写回执**（真机反馈："确认完条目后 Agent 无法直观地知道"）。
      *
@@ -5595,6 +5665,14 @@ export class SessionPane {
       void this.ensureToolReadmes(records);
       void this.refreshSessionPages(records);
       void this.repairCollectionMembership(records);
+      /**
+       * 把上次没确认完的待确认项接回来（真机事故：重启丢掉 22 条）。
+       *
+       * ⚠️ 放在 `maintain()` 而不是构造函数里：它要读盘，而构造函数不能是 async。
+       * 这也正是"插件启动时跑、早于界面打开"的那个时机 —— 界面一打开就能看到
+       * 恢复出来的条目，而不是先看到空列表再突然冒出来。
+       */
+      await this.restorePending();
     } catch (error) {
       appendPanelLog(
         "session",

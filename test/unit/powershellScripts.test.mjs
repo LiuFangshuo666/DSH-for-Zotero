@@ -135,23 +135,50 @@ describe("Gecko 路径拼接（模板串拼文件路径会整段失败）", func
     //   · 写给 agent 的说明文字（`见 ${TOOL_DIR}/README.md`）—— 那是文本，不是路径；
     //   · 包了一层的辅助函数（`readOr(`${dir}/package.json`)`）—— 它最终交给
     //     IOUtils 的是**完整字符串**，在 Windows 上能被正确解析。
+    //
+    // ⚠️ 第三类误报（2026-10-17，`pendingStore.ts`）：**内容参数**里的 `\n`。
+    //
+    // ```ts
+    //   IOUtils.writeUTF8(path, `${JSON.stringify(file, null, 2)}\n`);
+    // ```
+    //
+    // 这里的模板串是**第二个实参（文件内容）**，而 `\n` 是转义序列 —— 旧判据
+    // 看到"`${…}` 后面跟一个反斜杠"就当成路径分隔符了。
+    //
+    // 所以现在的判据是：**模板串必须出现在第一个实参的位置**（也就是路径位）。
+    // 多行调用（`IOUtils.exists(` 换行后才是反引号）单独判断。
     // 误报会让这条测试被无视，比没有测试更糟。
     const offenders = [];
+    // 路径位是模板串：`IOUtils.xxx(` 之后（允许换行与空白）紧跟反引号
+    const templateIsFirstArg =
+      /IOUtils\.(exists|readUTF8|writeUTF8|makeDirectory)\s*\(\s*`/;
+    const pathSeparator = /\$\{[^}]*\}\s*[/\\]\s*[A-Za-z0-9_.-]+/;
     for (const f of filesUnder(srcDir, ".ts")) {
       const text = readFileSync(f, "utf8");
-      // 跨行匹配：IOUtils.exists(\n  `...`,\n)
-      text.split("\n").forEach((line, i) => {
+      const lines = text.split("\n");
+      for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i];
         if (
           !/IOUtils\.(exists|readUTF8|writeUTF8|makeDirectory)\s*\(/.test(line)
-        )
-          return;
-        // 同一行里有模板串路径就算（多行调用时模板串在下一行，另行判断）
-        if (/\$\{[^}]*\}\s*[/\\]\s*[A-Za-z0-9_.-]+/.test(line)) {
+        ) {
+          continue;
+        }
+        // 同一行就是路径位模板串 → 检查分隔符
+        const sameLine = templateIsFirstArg.test(line);
+        // 多行：本行只有 `IOUtils.xxx(`，下一行以反引号开头
+        const nextLine = lines[i + 1] ?? "";
+        const continued =
+          /IOUtils\.(exists|readUTF8|writeUTF8|makeDirectory)\s*\(\s*$/.test(
+            line,
+          ) && /^\s*`/.test(nextLine);
+        if (!sameLine && !continued) continue;
+        const probe = sameLine ? line : nextLine;
+        if (pathSeparator.test(probe)) {
           offenders.push(
             `${f.replace(root, "").replace(/\\/g, "/")}:${i + 1}  ${line.trim()}`,
           );
         }
-      });
+      }
     }
     assert.deepEqual(
       offenders,
