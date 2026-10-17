@@ -57,7 +57,8 @@ const parsePatch = () =>
     schema: yaml.DEFAULT_SCHEMA.extend([jsTag]),
   });
 /** patch 里唯一那一行 preset 声明 */
-const presetRow = () => parsePatch().find((r) => r.id === "preset-zotero");
+const presetRow = () =>
+  parsePatch()[0].insert.find((r) => r.id === "preset-zotero");
 /** 展开组内的子插件（cordis:group 的 config 是数组） */
 const pluginsOf = (row) =>
   row.config.plugins.flatMap((p) =>
@@ -66,13 +67,13 @@ const pluginsOf = (row) =>
 
 describe("Zotero 专用 preset", function () {
   it("**不得**再写 agent-preset-registry 行（那会让所有会话建不出来）", function () {
-    const parsed = parsePatch();
+    const parsed = parsePatch()[0].insert;
     assert.ok(
       !parsed.some((r) => r.id === "agent-preset-registry"),
       "patch 里不能出现 agent-preset-registry：它已由 dsh-web-app 注册，" +
         "覆盖它的 default 会导致 preset 尚未挂载时**所有会话都建不出来**（真机事故）",
     );
-    assert.equal(parsed.length, 1, "patch 里应当只有 preset 声明这一行");
+    assert.equal(parsed.length, 1, "insert 里应当只有 preset 声明这一行");
     assert.equal(parsed[0].id, "preset-zotero");
   });
 
@@ -172,8 +173,13 @@ describe("preset 的 YAML 可解析性", function () {
   it("必须是单行声明，且 id 正确", function () {
     const parsed = parsePatch();
     assert.ok(Array.isArray(parsed), "顶层必须是插件行列表");
-    assert.equal(parsed[0].id, "preset-zotero");
-    assert.equal(parsed[0].config.id, ZOTERO_PRESET_ID);
+    assert.deepEqual(
+      Object.keys(parsed[0]),
+      ["insert"],
+      "必须用 - insert: 包裹",
+    );
+    assert.equal(parsed[0].insert[0].id, "preset-zotero");
+    assert.equal(parsed[0].insert[0].config.id, ZOTERO_PRESET_ID);
   });
 
   it("tool-ask-user 的配置要能解析出 timed", function () {
