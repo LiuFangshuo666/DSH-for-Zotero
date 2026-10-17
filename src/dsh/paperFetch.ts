@@ -53,6 +53,64 @@ const OPENALEX_API = "https://api.openalex.org/works/doi:";
 /** 单次网络请求超时 */
 const REQUEST_TIMEOUT_MS = 20000;
 
+/**
+ * Zotero **全文解析器**（`addAvailableFile`）的超时。
+ *
+ * ## ⚠️ 为什么必须有（真机事故：整批确认卡死 7 分钟）
+ *
+ * `addAvailableFile` 是 Zotero 自己的"帮我找 PDF"入口，对**需要机构登录**的
+ * 出版商（Elsevier / Wiley / Springer）它会：
+ *
+ *  - 打开**隐藏浏览器**去走机构的登录/代理流程；
+ *  - 等一个可能永远不来的跳转。
+ *
+ * 实测：28 条批量确认，第 7 条（DOI `10.1016/j.aiopen.2022.10.001`）在
+ * 「开始取全文」之后**再也没有下文**，日志停在那里 6 分 13 秒，
+ * 而界面显示「正在全部确认…（6/28）」—— **剩下 21 条全被这一条堵住**。
+ *
+ * 界面上看不出任何原因，因为这不是"失败"，是**没有返回**。
+ * 而批量确认是**串行**的：一条挂住，后面全部停摆。
+ *
+ * ## 为什么是"超时后继续"而不是"重试"
+ *
+ * 拿不到全文是**常态**（没有开放获取版、机构未订阅），不是错误。
+ * 超时后应当**照常建条目**（条目已经建好了，只是没挂上 PDF），
+ * 然后继续下一条 —— 用户的目的是"这批文献进库"，不是"必须先有 PDF"。
+ */
+const FULLTEXT_RESOLVER_TIMEOUT_MS = 45000;
+
+/**
+ * 给 Promise 加超时；超时返回 `undefined`（**不抛**）。
+ *
+ * ⚠️ 底层操作**无法取消** —— `addAvailableFile` 没有取消入口。
+ * 所以超时后我们只是"不再等它"，它若稍后真的成功，附件仍会落盘（那是意外之喜）；
+ * 但它若稍后抛错，不能让那个 rejection 变成未处理异常。
+ * 这就是 `.catch()` 存在的原因，不是多余的防御。
+ */
+export async function withTimeout<T>(
+  work: Promise<T>,
+  ms: number,
+  label: string,
+): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => {
+      appendPanelLog(
+        "session",
+        `${label} 超时（${Math.round(ms / 1000)} 秒），不再等待，继续下一步`,
+      );
+      resolve(undefined);
+    }, ms);
+  });
+  // 超时后底层仍可能 reject —— 吞掉，避免未处理 rejection 打断后续流程
+  void work.catch(() => undefined);
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 /** 给 Crossref 一个可识别的 UA（公开 API 的礼貌要求，也便于对方限流时区分） */
 const USER_AGENT =
   "DSH-for-Zotero (Zotero plugin; mailto:noreply@example.invalid)";
@@ -293,10 +351,26 @@ export async function attachBestPdf(
   if (typeof att?.addAvailableFile === "function") {
     tried.push("Zotero 解析器");
     try {
-      const created = await att.addAvailableFile(item, {
-        methods: ["doi", "url", "oa", "custom"],
-      });
-      const key = (created as { key?: unknown })?.key;
+      /**
+       * ⚠️ **必须加超时**（真机事故：整批确认卡死 7 分钟）。
+       *
+       * 对需要机构登录的出版商，`addAvailableFile` 会开隐藏浏览器走登录流程，
+       * 可能**永远不返回**。而批量确认是串行的 —— 实测 28 条里第 7 条挂在
+       * 「开始取全文」之后 6 分 13 秒，界面停在「正在全部确认…（6/28）」，
+       * 剩下 21 条全部停摆，用户完全看不出原因（它是"没返回"，不是"失败"）。
+       *
+       * 超时后**照常建条目**（条目本身已经建好），只是没挂上 PDF —— 这是常态。
+       */
+      const created = await withTimeout(
+        Promise.resolve(
+          att.addAvailableFile(item, {
+            methods: ["doi", "url", "oa", "custom"],
+          }),
+        ),
+        FULLTEXT_RESOLVER_TIMEOUT_MS,
+        "Zotero 全文解析器",
+      );
+      const key = (created as { key?: unknown } | undefined)?.key;
       if (typeof key === "string" && key) {
         return {
           ok: true,
@@ -305,10 +379,19 @@ export async function attachBestPdf(
           detail: `已通过 Zotero 的全文解析器取得附件（key=${key}）`,
         };
       }
-      appendPanelLog(
-        "session",
-        "Zotero 全文解析器未找到可用 PDF（该文可能没有开放获取版或机构未订阅）",
-      );
+      if (created === undefined) {
+        // 超时：不是"没找到"，是"没等到"。说清区别，否则用户以为这篇没 OA 版。
+        tried.push("解析器超时");
+        appendPanelLog(
+          "session",
+          "Zotero 全文解析器超时未返回（通常是出版商要求机构登录）—— 条目已建好，只是没挂 PDF",
+        );
+      } else {
+        appendPanelLog(
+          "session",
+          "Zotero 全文解析器未找到可用 PDF（该文可能没有开放获取版或机构未订阅）",
+        );
+      }
     } catch (error) {
       appendPanelLog(
         "session",
