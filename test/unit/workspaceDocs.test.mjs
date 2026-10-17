@@ -248,6 +248,60 @@ describe("工作区 README 的能力索引", function () {
     assert.match(readme, /撤销栈/, "必须说明原因（会绕过撤销栈）");
   });
 
+  /**
+   * ## 「不要绕路」一节必须存在，且覆盖**真机上真实发生过**的每一条
+   *
+   * 这一节是 v15 新增的，起因是一次 10 分钟 / 56 次工具调用的回合：
+   * 因为 `getItem` 只把 `publicationTitle` 当"期刊"（会议论文因此全空），
+   * Agent 断定"插件给不了发表信息"，于是**复制并读取 `zotero.sqlite`**、
+   * **解压 `.xpi` 读源码**，只为搞清楚条目有哪些字段。
+   *
+   * ⚠️ 这些警告此前**散在三条不同 op 的说明里** —— Agent 只有读到那一条
+   * 说明时才知道那条路被禁止。所以这条守卫要求它们**收口在一节**里，
+   * 并且每条都给出**替代的 op**（只写"禁止"没用，这个项目验证过三次）。
+   */
+  it("「不要绕路」一节必须覆盖每一条真实发生过的绕路，且各给替代 op", function () {
+    const readme = buildWorkspaceReadme({
+      kind: "collection",
+      scopeTitle: "测试分类",
+    });
+    assert.match(readme, /不要绕路/, "必须有「不要绕路」一节");
+
+    // [绕路的关键词, 替代做法的关键词]
+    const routes = [
+      ["zotero.sqlite", "getItem"],
+      [".xpi", "listItemTypes"],
+      ["127.0.0.1", "setFields"],
+      ["Crossref", "findPaper"],
+      ["反复提交", "confirm-log.json"],
+      ["BibTeX", "exportCitation"],
+      ["grep", "README.md"],
+    ];
+    for (const [bad, good] of routes) {
+      assert.ok(
+        readme.includes(bad),
+        `必须点名绕路行为「${bad}」—— 不写出来，Agent 不知道它被禁止`,
+      );
+      assert.ok(
+        readme.includes(good),
+        `必须为「${bad}」给出替代做法「${good}」（只禁止不给替代没用）`,
+      );
+    }
+  });
+
+  it("「不要绕路」也必须在**每次都加载**的 AGENTS.md 常驻块里", function () {
+    // 工作区 README 只有打开会话才读得到；AGENTS.md 是常驻的。
+    // 绕路决策可能发生在任何一轮，所以两处都要有。
+    const block = bundle.buildAgentsBlock();
+    assert.match(block, /不要绕路/, "AGENTS.md 常驻块必须有「不要绕路」");
+    for (const bad of ["zotero.sqlite", ".xpi", "127.0.0.1"]) {
+      assert.ok(block.includes(bad), `常驻块必须点名「${bad}」`);
+    }
+    for (const good of ["getItem", "setFields", "findPaper"]) {
+      assert.ok(block.includes(good), `常驻块必须给出替代 op「${good}」`);
+    }
+  });
+
   it("首行必须带材料版本号（老会话靠它自动刷新）", function () {
     const readme = buildWorkspaceReadme({
       kind: "item",

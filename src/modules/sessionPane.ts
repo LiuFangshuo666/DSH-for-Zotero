@@ -804,18 +804,51 @@ export function buildWorkspaceReadme(input: {
     `| **读正文** | \`getFullText\` | **读论文原文**（用 \`offset\` 分段）；返回值里的 \`有全文\` 直接告诉你这条有没有全文 |`,
     `| **看附件与批注** | \`listAttachments\` \`getAnnotations\` | 挂没挂 PDF（看它，不是看 \`getFullText\`）、PDF 上的**高亮与批注**（用户划的线就是重点） |`,
     `| **标签与引用** | \`listTags\` \`exportCitation\` | 全库标签总览（含条目数）、生成 **BibTeX / RIS / CSL-JSON** |`,
-    `| **查字段名** | \`listItemTypes\` | 条目类型清单；\`detail:true\` 给出该类型的**字段名与必填项** —— 写字段前先查它，别猜 |`,
+    `| **查字段名** | \`listItemTypes\` | 条目类型清单；\`detail:true\` 给出该类型的**全部字段名** —— 写字段前先查它，别猜 |`,
     `| **找论文** | \`findPaper\` | **在外部数据库检索**（Crossref/DataCite），拿回标题/作者/年份/期刊/**DOI** |`,
     `| 写 | \`setTags\` \`setFields\` \`addNote\` \`updateNote\` \`addToCollection\` \`removeFromCollection\` \`addRelated\` | 标签、**元数据字段**、笔记增改、分类增删、条目关联 |`,
     `| **需用户确认** | \`createItem\` \`attachPdf\` \`deleteItems\` \`deleteNote\` \`deleteAttachment\` \`createCollection\` \`renameCollection\` \`deleteCollection\` \`deleteTag\` | 新建、补全文、删除、分类与标签的**结构性改动** —— 都**不会立即执行**，会登记为待确认 |`,
     ``,
-    // ⚠️ 这一条是「功能没给够就守不住边界」的第二次教训：插件长期只能改**标签**
-    // 不能改字段，于是 Agent 能查到正式版 DOI 却写不进去，转而去翻插件源码、
-    // 去读 zotero.sqlite，想找一条能写的路。必须在这里明确指路。
-    `📌 **要把查到的元数据写进条目，就用 \`setFields\`**` +
-      `（字段名不确定先 \`listItemTypes\` 带 \`detail:true\` 查）。` +
-      `**不要去读 \`zotero.sqlite\`、解压 .xpi 或调用 Zotero 本地 HTTP API 找别的写库路径** —— ` +
-      `那些都绕过插件的确认与撤销栈。`,
+    // ══════════════════════════════════════════════════════════════════
+    // ⚠️ 「不要绕路」清单 —— 这是本 README 最重要的一节
+    // ══════════════════════════════════════════════════════════════════
+    //
+    // ## 为什么单独立一节，而不是散在各条 op 下面
+    //
+    // 下面每一条都是**真机上真实发生过的绕路**（不是假设）。它们此前分散在
+    // 不同 op 的说明里，结果是：Agent 只有读到那一条说明时才知道那条路被禁止。
+    //
+    // 真机证据（2026-10-17，一个 10 分钟 / 56 次工具调用的回合）：
+    //   - 因为 `getItem` 只返回 `publicationTitle` 当"期刊"，会议论文全空 →
+    //     它断定"插件给不了发表信息"，于是**复制并读取 `zotero.sqlite`**、
+    //     **解压 `.xpi` 读插件源码**，只为搞清楚条目到底有哪些字段。
+    //   - 它还用 PowerShell / curl **直连 Crossref**（TLS 失败），
+    //     而插件的 `findPaper` 一直是好的。
+    //
+    // ## 措辞为什么是「用 X」而不是「禁止 Y」
+    //
+    // 这个项目验证过三次：**只写"禁止"没用，要给替代品**。
+    // 所以每一条都先给正确做法，再说那条错路为什么错 ——
+    // 「错」的理由都是**具体的**（绕过撤销栈 / 用户看不到 / 会写坏数据），
+    // 不是"不允许"。
+    `## ⚠️ 不要绕路：这件事已经有工具了`,
+    ``,
+    `下表左列都是**真机上确实发生过**的做法。它们要么绕过用户的确认与撤销栈，`,
+    `要么让用户看不见你在做什么，要么干脆不可靠。**右列才是该走的路。**`,
+    ``,
+    `| 你可能想去做的 | 请改用 | 为什么那条路不行 |`,
+    `| --- | --- | --- |`,
+    `| 读取/复制 \`zotero.sqlite\` 查条目字段 | \`getItem\`（返回 \`条目类型\` 与 \`全部字段\`）、\`listItemTypes\` | 库被 Zotero 独占，拷出来的副本可能**是旧的**；而且你不需要它 —— 字段在 \`getItem\` 里 |`,
+    `| 解压 \`.xpi\` 读插件源码看有哪些 op | 直接读 \`${TOOL_DIR}/README.md\` | 说明与实现**同源生成**，源码里反而是编译产物、字段名可能已变 |`,
+    `| \`grep\`/\`glob\` 整个 runtime 目录找工具实现 | 同上 | 那是 100 MB 的依赖树，翻它既慢又不会告诉你 op 的参数 |`,
+    `| 调 Zotero 本地 HTTP API（\`127.0.0.1:…/api/\`）写库 | \`setFields\` / \`setTags\` / \`createItem\` / \`attachPdf\` | 那条路**绕过用户确认**、**不进撤销栈** —— 真机上已因此在你不知情时写进 75 个附件 |`,
+    `| 用 PowerShell / curl 直连 Crossref、DataCite | \`findPaper\` | 直连在本机 TLS 会失败，而且**看不到用户的机构订阅**；\`findPaper\` 走用户网络 |`,
+    `| 反复提交同一件事来试探结果 | 读 \`${TOOL_DIR}/confirm-log.json\` 的最后一条 | 重复提交会让用户在确认区看到多条相同项，且不会更快 |`,
+    `| 自己拼 BibTeX / RIS 文本 | \`exportCitation\` | 字段名、作者格式、转义规则由 Zotero 的导出器处理才正确 |`,
+    ``,
+    `📌 **一条通用判据**：当你想"自己动手拿到某个信息"时，先问一句`,
+    `「**这是不是已经有 op 了？**」—— 有 29 个 op，覆盖读元数据、读正文、读批注、`,
+    `查标签、生成引用、写字段、管分类。**先查 \`${TOOL_DIR}/README.md\` 再决定绕不绕。**`,
     ``,
     // ⚠️ 真机事故：用户要"给分类下的条目逐一补全文"，而当时**没有** attachPdf，
     // Agent 于是去调 Zotero 自己的本地 HTTP API，在后台进程里绕过插件
@@ -1195,6 +1228,7 @@ const STALE_DIR = "_stale";
  * | 12 | 用户决定的**追加式回执** `confirm-log.json`（含拒绝与 `待确认剩余`） |
  * | 13 | `attachPdf` 的**作用域**说明；id 复用后果的修正（被跳过，而非重复执行） |
  * | **14** | **工具面从 14 个 op 扩到 29 个**：新增 `setFields`（改元数据）、`searchItems`、`listTags`、`listAttachments`、`getAnnotations`、`exportCitation`、`listItemTypes`、`updateNote`、`removeFromCollection`、`addRelated`、`deleteAttachment`、`createCollection`、`renameCollection`、`deleteCollection`、`deleteTag`；`getItem` 改为返回 **`条目类型` + `全部字段`** |
+ * | **15** | **新增「不要绕路」一节**（工作区 README 与 `AGENTS.md` 常驻块各一份）：把真机上发生过的 7 种绕路与正确 op 列成对照表 |
  *
  * ⚠️ 第 14 版的两条**根因**（都不是"功能不够用"，而是"功能不够导致 Agent 绕路"）：
  *
@@ -1205,10 +1239,14 @@ const STALE_DIR = "_stale";
  *     同样导致绕路。这是本项目**第三次**验证同一句话：
  *     **功能没给够，边界就守不住。**
  *
+ * ⚠️ 第 15 版的教训：绕路的**警告此前散在三条不同 op 的说明里**，
+ * 而 Agent 只有读到那一条说明时才知道那条路被禁止。
+ * 现在**收口成一节对照表**，并同时写进 `AGENTS.md`（那是每次都加载的位置）。
+ *
  * ⚠️ 这张表曾经漏掉 11 与 12（改材料却没记），于是后来者会以为"11 没动过材料"。
  * **改材料时必须同时补一行** —— 这张表是"改动材料要 bump"这条纪律的唯一记录点。
  */
-const MATERIALS_VERSION = 14;
+const MATERIALS_VERSION = 15;
 
 /** 材料版本标记的写法（写在 README 首行，便于解析与人工辨认） */
 function materialsStamp(version: number): string {
