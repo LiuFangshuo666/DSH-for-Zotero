@@ -260,9 +260,26 @@
     推理等级的候选值**不写死**：由 `onPrefsEvent` 从 `session/modelCatalog`
     动态填充（模型自己声明有哪些等级）。写死一份的话，模型换了就会给出
     宿主不接受的取值，而失败是静默的（用户只看到"没生效"）。
+
+    ── 与「会话页」的分工（v0.20.0）──────────────────
+
+    ⚠️ 这里的模型/推理强度是**新会话的默认值**，不是"唯一能选的地方"。
+
+    会话页顶部另有一条「模型 / 推理强度」，可以**逐会话、逐轮次**改
+    （dsh 的 `session/selectModel` 内部是 `selectForNextRequest`，
+    对下一次请求生效，所以不必新建会话）。
+
+    两者为什么都留着：会话页的选择**同时会被宿主存成全局默认**
+    （`agentDefaultModel.saveSelection`），所以设置页这里看到的其实就是
+    "上一次在会话页选的那个"。删掉这一节并不能让选择变成"只影响本会话"
+    —— 那是宿主行为，不是插件能改的；留着它至少让"当前默认是什么"可见。
   -->
   <label><html:h3 data-l10n-id="pref-model"></html:h3></label>
   <description data-l10n-id="pref-model-desc"></description>
+  <description>
+    这里的模型与推理强度是<b>新会话的起点</b>；要改某一轮用哪个模型，
+    直接在<b>会话页顶部</b>的「模型 / 推理强度」里改（对下一轮生效）。
+  </description>
 
   <hbox align="center">
     <html:label

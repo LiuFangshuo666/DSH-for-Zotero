@@ -283,6 +283,41 @@
       "
     ></div>
 
+    <!--
+      「模型 / 推理强度」——**每个会话、每个轮次**都能换。
+
+      为什么不在设置页：设置页只有一个全局值，而实际使用里"这篇要精细推理、
+      那篇只要概览"很常见。dsh 的 session/selectModel 内部是
+      selectForNextRequest，本来就对下一次请求生效，所以这里改完立刻作用于
+      下一轮，不需要新建会话。
+
+      默认隐藏：老插件没有 getModelCatalog 时整条不显示（见 renderModelBar），
+      而不是显示一个点了报错的控件。
+    -->
+    <div
+      id="model-bar"
+      style="
+        display: none;
+        border-top: 1px solid #eee;
+        background: #fafafa;
+        padding: 4px 8px;
+        gap: 6px;
+        align-items: center;
+        font-size: 12px;
+        color: #4b5563;
+        flex-shrink: 0;
+      "
+    >
+      <span>模型</span>
+      <select
+        id="model-select"
+        style="max-width: 260px; font: inherit"
+      ></select>
+      <span style="margin-left: 8px">推理强度</span>
+      <select id="effort-select" style="font: inherit"></select>
+      <span id="model-note" style="margin-left: 8px; color: #9ca3af"></span>
+    </div>
+
     <div
       id="composer"
       style="

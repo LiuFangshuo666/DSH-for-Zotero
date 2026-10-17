@@ -481,6 +481,29 @@
       answerQuestions: function (questions, answers) {
         return api.answerQuestions(sessionId, questions, answers);
       },
+      /**
+       * 模型目录与"为这个会话选模型"。
+       *
+       * ## 为什么从设置页搬到这里
+       *
+       * 设置页只有**一个全局模型**，而实际使用里"这篇要精细推理、那篇只要
+       * 概览"很常见。dsh 侧本来就支持逐会话选择（`session/selectModel`，
+       * 内部 `selectForNextRequest` —— **对下一次请求生效**），
+       * 所以同一个会话里也能逐轮次换。
+       *
+       * ⚠️ 两个都做**版本探测**：老插件没有这两个方法时，模型条整条不显示
+       * （见 `renderModelBar`），而不是弹一个"能力不可用"。
+       */
+      getModelCatalog: function () {
+        return typeof api.getModelCatalog === "function"
+          ? api.getModelCatalog(sessionId)
+          : null;
+      },
+      setSessionModel: function (choice) {
+        return typeof api.setSessionModel === "function"
+          ? api.setSessionModel(sessionId, choice)
+          : null;
+      },
     };
   }
 
@@ -549,6 +572,163 @@
     if (steerBtn) steerBtn.addEventListener("click", submitSteer);
     /** 待确认删除区（默认隐藏，有请求时才显示） */
     var pendingEl = document.getElementById("pending-deletions");
+
+    /**
+     * 「模型 / 推理强度」条。
+     *
+     * ## 为什么在会话页而不是设置页
+     *
+     * 设置页只有一个全局值，而"这篇要精细推理、那篇只要概览"很常见。
+     * dsh 的 `session/selectModel` 内部是 `selectForNextRequest` ——
+     * **对下一次请求生效**，所以这里改完立刻作用于下一轮，不必新建会话。
+     *
+     * ## 三条实现纪律
+     *
+     * 1. **老插件整条隐藏**：没有 `getModelCatalog` 就 `display:none`，
+     *    而不是显示一个点了报"能力不可用"的控件（真机上那种控件很误导）。
+     * 2. **选项只来自宿主目录**：写死的选项会在模型/等级变化后给出宿主
+     *    根本不接受的取值，而失败是**静默的**。
+     * 3. **改完要说清影响面**：宿主还会把这次选择存成**全局默认**
+     *    （`agentDefaultModel.saveSelection`），所以之后新建的会话也用它。
+     *    不说清楚，用户会以为"只影响本会话"。
+     */
+    var modelBarEl = document.getElementById("model-bar");
+    var modelSelectEl = document.getElementById("model-select");
+    var effortSelectEl = document.getElementById("effort-select");
+    var modelNoteEl = document.getElementById("model-note");
+
+    /** 目录里的模型按 `provider/model` 编成一个扁平键，选项值就用它 */
+    var modelIndex = {};
+
+    function modelKey(provider, model) {
+      return provider + "\u0000" + model;
+    }
+
+    function fillEffortSelect(provider, model, wanted) {
+      if (!effortSelectEl) return;
+      var entry = modelIndex[modelKey(provider, model)];
+      var efforts = (entry && entry.reasoning && entry.reasoning.efforts) || [];
+      effortSelectEl.textContent = "";
+      // 空值 = 用模型默认等级（此时**不传** reasoningEffort 给宿主 ——
+      // 传空串会被当成无效的 ReasoningEffortId）
+      var def = document.createElement("option");
+      def.value = "";
+      def.textContent = "默认" + (efforts.length ? "" : "（该模型不支持调整）");
+      effortSelectEl.appendChild(def);
+      efforts.forEach(function (effort) {
+        var opt = document.createElement("option");
+        opt.value = effort.id;
+        opt.textContent = String(effort.name || effort.id);
+        if (effort.description) opt.title = effort.description;
+        effortSelectEl.appendChild(opt);
+      });
+      effortSelectEl.value = wanted || "";
+      effortSelectEl.disabled = efforts.length === 0;
+    }
+
+    function applyModelChoice() {
+      if (!modelSelectEl) return Promise.resolve();
+      var raw = modelSelectEl.value;
+      var sep = raw.indexOf("\u0000");
+      var provider = sep >= 0 ? raw.slice(0, sep) : "";
+      var model = sep >= 0 ? raw.slice(sep + 1) : "";
+      var effort = effortSelectEl ? effortSelectEl.value : "";
+      if (!provider || !model) return Promise.resolve();
+      if (modelNoteEl) modelNoteEl.textContent = "正在应用…";
+      return Promise.resolve(
+        capability.setSessionModel({
+          provider: provider,
+          model: model,
+          reasoningEffort: effort || undefined,
+        }),
+      )
+        .then(function (result) {
+          if (modelNoteEl) {
+            modelNoteEl.textContent = result
+              ? "已生效（下一轮起）"
+              : "插件版本较旧，未能应用";
+          }
+        })
+        .catch(function (error) {
+          if (modelNoteEl) {
+            modelNoteEl.textContent =
+              "应用失败：" + String((error && error.message) || error);
+          }
+        });
+    }
+
+    function renderModelBar() {
+      if (!modelBarEl || !modelSelectEl) return;
+      if (typeof capability.getModelCatalog !== "function") return; // 老插件：保持隐藏
+      Promise.resolve(capability.getModelCatalog())
+        .then(function (catalog) {
+          if (!catalog || !catalog.groups) return; // 拿不到就保持隐藏
+          modelIndex = {};
+          modelSelectEl.textContent = "";
+          catalog.groups.forEach(function (group) {
+            (group.models || []).forEach(function (model) {
+              modelIndex[modelKey(group.id, model.id)] = model;
+              var opt = document.createElement("option");
+              opt.value = modelKey(group.id, model.id);
+              opt.textContent =
+                String(group.name || group.id) +
+                " · " +
+                String(model.name || model.id);
+              modelSelectEl.appendChild(opt);
+            });
+          });
+          if (!modelSelectEl.options.length) return;
+          // 预选：会话记录里的选择 → 否则宿主的默认 → 否则第一项
+          var chosen = catalog["会话已选"] || {};
+          var fallback = catalog.default || {};
+          var wantKey =
+            chosen.provider && chosen.model
+              ? modelKey(chosen.provider, chosen.model)
+              : fallback.provider && fallback.model
+                ? modelKey(fallback.provider, fallback.model)
+                : modelSelectEl.options[0].value;
+          modelSelectEl.value = wantKey;
+          var sel = modelIndex[wantKey];
+          if (sel) {
+            var sep = wantKey.indexOf("\u0000");
+            fillEffortSelect(
+              wantKey.slice(0, sep),
+              wantKey.slice(sep + 1),
+              chosen.reasoningEffort ||
+                (sel.reasoning && sel.reasoning.defaultEffort) ||
+                "",
+            );
+          }
+          modelBarEl.style.display = "flex";
+          if (modelNoteEl) {
+            modelNoteEl.textContent = "改动对下一轮生效";
+          }
+        })
+        .catch(function () {
+          // 取不到目录就保持隐藏 —— 这是增强，不是主流程
+        });
+    }
+
+    if (modelSelectEl) {
+      modelSelectEl.addEventListener("change", function () {
+        var sep = modelSelectEl.value.indexOf("\u0000");
+        var provider = modelSelectEl.value.slice(0, sep);
+        var model = modelSelectEl.value.slice(sep + 1);
+        var entry = modelIndex[modelSelectEl.value];
+        fillEffortSelect(
+          provider,
+          model,
+          (entry && entry.reasoning && entry.reasoning.defaultEffort) || "",
+        );
+        void applyModelChoice();
+      });
+    }
+    if (effortSelectEl) {
+      effortSelectEl.addEventListener("change", function () {
+        void applyModelChoice();
+      });
+    }
+    renderModelBar();
 
     /**
      * ⚠️ **一键确认的进行状态（真机缺陷：按钮提前恢复可点→条目被操作两次）**

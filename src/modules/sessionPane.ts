@@ -49,6 +49,7 @@ import { nativeSeparators } from "../dsh/paths";
 import { ChatTransport } from "../chat/transport";
 import { appendPanelLog } from "../dsh/runLog";
 import { pendingStore } from "../dsh/pendingStore";
+import { fetchModelCatalog, selectSessionModel } from "../dsh/rpc";
 import { refreshInstalledDshSide } from "../dsh/install";
 import { requireRuntimeConfig } from "../dsh/config";
 import { resolvePaperRef } from "../papers/prepare";
@@ -528,6 +529,38 @@ function registerGlobalApi(pane: SessionPane): void {
      */
     isSessionRunning: async (sessionId: string) =>
       pane.isSessionRunning(sessionId),
+    /**
+     * 模型目录（供会话页填充"模型 / 推理强度"下拉框）。
+     *
+     * ## 为什么从设置页搬到会话页
+     *
+     * 设置页只能选**一个全局模型**，而实际使用里"这篇要精细推理、那篇只要概览"
+     * 很常见。dsh 侧本来支持**每会话**选择（`session/selectModel`），
+     * 而且它内部是 `selectForNextRequest` —— **对下一次请求生效**，
+     * 所以同一会话里也能逐轮次换。
+     *
+     * 目录来自宿主（`session/modelCatalog`），不在插件里写死：
+     * 写死的选项会在模型/等级变化后给出宿主根本不接受的取值，且失败是**静默的**。
+     */
+    getModelCatalog: async (sessionId: string) => pane.modelCatalog(sessionId),
+    /**
+     * 为某个会话选定模型与推理强度（**对下一次请求生效**）。
+     *
+     * 选择同时写进会话记录 —— 重启后打开这个会话，下拉框显示的是上次选的，
+     * 而不是悄悄回到全局默认。
+     *
+     * ⚠️ 宿主在 `selectModel` 里还会把这次选择**存成全局默认**
+     * （`agentDefaultModel.saveSelection`）。也就是说在会话页改一次，
+     * 之后新建的会话也用它。这是 dsh 的行为，插件不覆盖它，但要在返回值里说明。
+     */
+    setSessionModel: async (
+      sessionId: string,
+      choice: {
+        provider: string;
+        model: string;
+        reasoningEffort?: string;
+      },
+    ) => pane.setSessionModelInRecord(sessionId, choice),
     /** 用当前版本重写工作区材料（老会话里可能留着旧说明） */
     refreshWorkspace: async (sessionId: string) => {
       const record = await sessionStore().get(sessionId);
@@ -2127,6 +2160,13 @@ export class SessionPane {
         questions: AskUserQuestion[],
         answers: Record<string, { selected: string[]; custom?: string }>,
       ) => this.answerQuestionsInRecord(record.sessionId, questions, answers),
+      // 与全局 API 一致：窗口路径也要能选模型（能力契约测试会抓到漏项）
+      getModelCatalog: () => this.modelCatalog(record.sessionId),
+      setSessionModel: (choice: {
+        provider: string;
+        model: string;
+        reasoningEffort?: string;
+      }) => this.setSessionModelInRecord(record.sessionId, choice),
     };
 
     try {
@@ -5309,6 +5349,77 @@ export class SessionPane {
       );
       return undefined;
     }
+  }
+
+  /**
+   * 取宿主的**模型目录**（会话页据此填两个下拉框）。
+   *
+   * 目录来自 `session/modelCatalog`，**不在插件里写死** —— 写死的选项会在
+   * 模型或推理等级变化后给出宿主根本不接受的取值，而那种失败是**静默的**
+   * （`selectModel` 抛错，用户只看到"没生效"）。
+   */
+  async modelCatalog(sessionId: string): Promise<unknown> {
+    const client = await this.ensureTransport().connect();
+    if (!client) throw new Error("无法连接 dsh（运行时可能未就绪）");
+    const result = await fetchModelCatalog(client);
+    // 把该会话记录里的选择一并带回去，页面据此预选。
+    // 页面自己不知道记录里存了什么 —— 它只有 URL 里的 sessionId。
+    const record = await sessionStore().get(sessionId);
+    return { ...result.value, 会话已选: record?.model };
+  }
+
+  /**
+   * 为某个会话选定模型与推理强度（**对下一次请求生效**）。
+   *
+   * ## 两件事同时做
+   *
+   * 1. **告诉宿主** —— `session/selectModel`，其内部是 `selectForNextRequest`，
+   *    所以同一会话里也能逐轮换；
+   * 2. **写进会话记录** —— 否则重启后下拉框显示全局默认，而宿主仍按上次的跑，
+   *    界面与真实状态不一致（这类不一致最难查）。
+   *
+   * ⚠️ 宿主还会把这次选择**存成全局默认**（`agentDefaultModel.saveSelection`）。
+   * 那是 dsh 的行为，插件不覆盖；返回值里如实说明，免得用户以为只影响本会话。
+   */
+  async setSessionModelInRecord(
+    sessionId: string,
+    choice: { provider: string; model: string; reasoningEffort?: string },
+  ): Promise<unknown> {
+    const record = await sessionStore().get(sessionId);
+    if (!record) throw new Error(`找不到会话记录：${sessionId}`);
+    const client = await this.ensureTransport().connect();
+    if (!client) throw new Error("无法连接 dsh（运行时可能未就绪）");
+    // 空串表示"用模型默认等级"，此时**不要**传这个字段 ——
+    // 传空串会被宿主当成无效的 ReasoningEffortId（真机踩过）。
+    const reasoningEffort = choice.reasoningEffort?.trim() || undefined;
+    await selectSessionModel(client, {
+      sessionId: record.sessionId,
+      provider: choice.provider,
+      model: choice.model,
+      ...(reasoningEffort ? { reasoningEffort } : {}),
+    });
+    await sessionStore().upsert({
+      ...record,
+      model: {
+        provider: choice.provider,
+        model: choice.model,
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+      },
+    });
+    appendPanelLog(
+      "session",
+      `会话 ${sessionId} 选定模型 ${choice.provider}/${choice.model}` +
+        (reasoningEffort ? `（推理强度 ${reasoningEffort}）` : "") +
+        "（对下一次请求生效）",
+    );
+    return {
+      结果: "已生效（下一次请求起）",
+      模型: `${choice.provider}/${choice.model}`,
+      推理强度: reasoningEffort ?? "（模型默认）",
+      注意:
+        "宿主会同时把它存成**全局默认**，所以之后新建的会话也会用它。" +
+        "想只影响本会话，目前 dsh 做不到 —— 这是宿主行为，不是插件加的。",
+    };
   }
 
   async askInRecord(

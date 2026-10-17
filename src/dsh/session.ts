@@ -75,6 +75,28 @@ export interface SessionRecord {
    * 会话正文仍由 dsh 保存，笔记只是"在 Zotero 里可见可点"的入口。
    */
   noteID?: number;
+  /**
+   * 该会话在上次使用的**模型与推理强度**（会话页可选，逐轮次可改）。
+   *
+   * ## 为什么存在会话记录里，而不是设置页的一个全局值
+   *
+   * 设置页只能选一个全局模型，而实际使用里"这篇要精细推理、那篇只要概览"
+   * 很常见。dsh 侧本来支持逐会话选择（`session/selectModel`，内部走
+   * `selectForNextRequest` —— **对下一次请求生效**，所以同会话内也能逐轮换）。
+   *
+   * ## 为什么要记下来
+   *
+   * 不记的话，重启后打开这个会话，下拉框会显示全局默认值，
+   * 而宿主实际仍按上次选的跑 —— **界面与真实状态不一致**是这类问题里最难查的。
+   *
+   * ⚠️ 这是**可选的**：没选过就没有这个字段，此时一切走宿主默认。
+   */
+  model?: {
+    provider: string;
+    model: string;
+    /** 省略表示用该模型的默认等级 */
+    reasoningEffort?: string;
+  };
 }
 
 interface SessionFile {

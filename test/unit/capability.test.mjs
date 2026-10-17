@@ -75,6 +75,13 @@ const OPTIONAL_METHODS = [
   "isSessionRunning",
   // 回答 ask_user_question 的提问（选项在工具参数里，必须回传）
   "answerQuestions",
+  // ⚠️ 模型 / 推理强度选择（从设置页搬到会话页：逐会话、逐轮次可换）
+  //
+  // 两条路径都提供；页面**有守卫**（`typeof … === "function"`），
+  // 老插件没有这两个方法时整条模型栏隐藏 —— 而不是显示一个点了报错的控件。
+  // 之所以归"可选"而不是"必需"：它是增强，缺了不影响问答。
+  "getModelCatalog",
+  "setSessionModel",
 ];
 
 describe("会话能力对象的完整性", function () {
