@@ -252,8 +252,11 @@ export function patchHostPortInSource(
  * 版本历史：
  *  - 1（隐式，无戳）：漏算 Pickle 4 字节对齐 → 文件整体错位
  *  - 2：补上对齐；引入戳，作废版本 1 的全部产物
+ *  - 3：支持 `unpacked: true` 外置条目。版本 2 会**漏掉 1583 个文件**
+ *       （`koffi`、`@swc/helpers`、`libreoffice-kit-win32-x64` 等）—— 真机表现是
+ *       切换模型时报 "Cannot find package 'koffi'"，而提取日志全绿。
  */
-export const ASAR_LAYOUT_VERSION = 2;
+export const ASAR_LAYOUT_VERSION = 3;
 
 export function asarDataStart(headerSize: number): number {
   // Pickle 把字符串 payload 补齐到 4 字节边界
@@ -296,6 +299,72 @@ export function parseExtractStamp(
     asarSize: Number(parts[1]),
     asarPath,
   };
+}
+
+/**
+ * 从 asar 头部树里收集要提取的文件（纯函数，可单测）。
+ *
+ * ## ⚠️ `unpacked: true` 的条目**不在 asar 数据区里**
+ *
+ * 真机事故（2026-10-17，用户报"应用失败：Cannot find package 'koffi'"）：
+ *
+ * asar 可以把文件**外置**到 `app.asar.unpacked/`（原生模块或体积大时）。
+ * 这类条目在头部里**只有 `size`、没有 `offset`**：
+ *
+ * ```json
+ *   {"size":206,"unpacked":true}
+ * ```
+ *
+ * 我原来的判据是 `offset !== undefined`，于是 0.2.1-rc.2 的 **1583 个外置文件
+ * 全部被跳过，而且毫无报错** —— 提取照常"成功"：
+ *
+ * - `koffi`、`@koromix/koffi-win32-x64`（会话持久化要用）→ 整个包不存在
+ * - `@swc/helpers`、`libreoffice-kit-win32-x64`、`fontkit` 等同样缺失
+ *
+ * `mergeNativeModules` 也救不了：它只复制 `.node/.dll/.exe/...` 与关键词命中的
+ * 文件，而 `koffi` 缺的正是 `index.js` 与 `package.json`（纯 JS）。
+ *
+ * 所以外置条目也要收集，标记 `unpacked: true`，由调用方从
+ * `app.asar.unpacked/<去掉开头斜杠的路径>` 复制。
+ *
+ * @param tree asar 头部里的 `files` 树
+ * @param prefix 只收集此前缀下的文件（默认 `/dsh/`）
+ */
+export function collectAsarTargets(
+  tree: { files?: Record<string, AsarNode> },
+  prefix: string = ASAR_PREFIX,
+): Array<{ path: string; offset: number; size: number; unpacked: boolean }> {
+  const targets: Array<{
+    path: string;
+    offset: number;
+    size: number;
+    unpacked: boolean;
+  }> = [];
+  const walk = (node: AsarNode, at: string) => {
+    for (const [name, value] of Object.entries(node.files ?? {})) {
+      const p = `${at}/${name}`;
+      if (value.files) {
+        walk(value, p);
+        continue;
+      }
+      // 目录条目没有 size；文件一定有
+      if (value.size === undefined) continue;
+      if (!p.startsWith(prefix)) continue;
+      // 无 offset 也算外置：头部里外置条目就只有 size
+      const isUnpacked = value.unpacked === true || value.offset === undefined;
+      targets.push({
+        path: p,
+        // ⚠️ 必须 Number()：头部里 **offset 是字符串**（`"44669811"`）。
+        // 直接参与运算会做字符串拼接，subarray 被强转成巨大索引 → 切片为空，
+        // 于是"提取成功"却得到上万个 0 字节文件。这个坑真实发生过一次。
+        offset: isUnpacked ? -1 : Number(value.offset),
+        size: Number(value.size),
+        unpacked: isUnpacked,
+      });
+    }
+  };
+  walk({ files: tree.files }, "");
+  return targets;
 }
 
 export class RuntimeManager {
@@ -678,29 +747,7 @@ export class RuntimeManager {
     };
     const dataStart = asarDataStart(headerSize);
 
-    const targets: Array<{ path: string; offset: number; size: number }> = [];
-    const walk = (node: AsarNode, prefix: string) => {
-      for (const [name, value] of Object.entries(node.files ?? {})) {
-        const p = `${prefix}/${name}`;
-        if (value.files) walk(value, p);
-        else if (value.offset !== undefined && value.size !== undefined) {
-          if (p.startsWith(ASAR_PREFIX)) {
-            // ⚠️ 必须 Number()：asar 头部里 **offset 是字符串**（大偏移量如此存储），
-            // 实测 `{"size":13773,"offset":"44669811"}`。若直接参与运算，
-            // `dataStart + offset` 会做**字符串拼接**（"3392064" + "44669811"），
-            // 传给 subarray 被强转成巨大索引 → **切片为空**，
-            // 于是"提取成功"却得到 11376 个 0 字节文件，端口补丁随之找不到字面量。
-            // 这个坑真实发生过一次，改这里时请勿删掉 Number()。
-            targets.push({
-              path: p,
-              offset: Number(value.offset),
-              size: Number(value.size),
-            });
-          }
-        }
-      }
-    };
-    walk({ files: tree.files }, "");
+    const targets = collectAsarTargets(tree);
 
     /**
      * ## 布局版本戳：让"提取逻辑变了"能**作废**已有文件
@@ -739,6 +786,8 @@ export class RuntimeManager {
 
     let written = 0;
     let skipped = 0;
+    /** 外置条目在 `app.asar.unpacked` 里缺失的数量（正常应为 0） */
+    let unpackedMissing = 0;
     for (const file of targets) {
       const rel = file.path.slice(ASAR_PREFIX.length);
       const dest = PathUtils.join(paths.runtime, ...rel.split("/"));
@@ -757,19 +806,39 @@ export class RuntimeManager {
         }
       }
       await IOUtils.makeDirectory(parentDir(dest), { ignoreExisting: true });
-      await IOUtils.write(
-        dest,
-        bytes.subarray(
-          dataStart + file.offset,
-          dataStart + file.offset + file.size,
-        ),
-      );
+      if (file.unpacked) {
+        // 外置文件不在 asar 数据区里，只能从 `app.asar.unpacked` 复制。
+        // `file.path` 形如 `/dsh/node_modules/koffi/index.js`，
+        // 对应 `<unpacked>/dsh/node_modules/koffi/index.js`（去掉开头斜杠）。
+        const source = PathUtils.join(
+          harness.unpackedDir,
+          ...file.path.slice(1).split("/"),
+        );
+        try {
+          await IOUtils.copy(source, dest);
+        } catch {
+          unpackedMissing++;
+          continue;
+        }
+      } else {
+        await IOUtils.write(
+          dest,
+          bytes.subarray(
+            dataStart + file.offset,
+            dataStart + file.offset + file.size,
+          ),
+        );
+      }
       written++;
       if (written % 2000 === 0)
         report(`已提取 ${written} / ${targets.length} 个文件…`);
     }
     report(
-      `提取完成：写入 ${written} 个，跳过 ${skipped} 个（共 ${targets.length}）`,
+      `提取完成：写入 ${written} 个，跳过 ${skipped} 个（共 ${targets.length}）` +
+        (unpackedMissing
+          ? `；⚠️ 有 ${unpackedMissing} 个外置文件在 app.asar.unpacked 里缺失` +
+            "（原生模块或大文件不在 asar 内，缺了会在运行时导入失败）"
+          : ""),
     );
     // 全量重写成功后才写戳 —— 中途失败时戳不更新，下次仍会全量重试。
     //
@@ -1590,6 +1659,15 @@ interface AsarNode {
    */
   offset?: number | string;
   size?: number | string;
+  /**
+   * 该文件**不在 asar 数据区**里，实体在 `app.asar.unpacked/` 下。
+   *
+   * 这类条目在头部里**只有 `size`、没有 `offset`**。实测 0.2.1-rc.2 有
+   * 1583 个（`koffi`、`@koromix/koffi-win32-x64`、`@swc/helpers`、
+   * `libreoffice-kit-win32-x64` 等）。忽略它会导致这些包**整个缺失**，
+   * 且提取过程中毫无报错 —— 真机表现是切换模型时 "Cannot find package 'koffi'"。
+   */
+  unpacked?: boolean;
 }
 
 /** 供自检/设置页显示的一句话摘要 */

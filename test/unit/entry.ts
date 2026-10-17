@@ -160,5 +160,6 @@ export {
   patchHostPortInSource,
   asarDataStart,
   parseExtractStamp,
+  collectAsarTargets,
   ASAR_LAYOUT_VERSION,
 } from "../../src/dsh/isolatedRuntime";

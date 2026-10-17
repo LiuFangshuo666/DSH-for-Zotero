@@ -800,16 +800,30 @@ describe("构建产物结构", function () {
     // 真实故障：asar 头部里 offset 是**字符串**（如 "44669811"），
     // 直接参与运算会变成字符串拼接，subarray 切片为空 ——
     // 表现是"提取成功"却得到 11376 个 0 字节文件，端口补丁随之失败。
+    //
+    // ⚠️ 判据用 `Number(value.offset)` 而不是 `offset: Number(`：
+    // 后来为支持外置条目（`unpacked: true`）写成了三元表达式
+    // `offset: isUnpacked ? -1 : Number(value.offset)`，形态变了但**转换仍在**。
+    // 这正是本项目反复出现的"守卫盯着形态、而不是它要保护的性质"。
     const source = readFileSync(
       join(srcDir, "dsh", "isolatedRuntime.ts"),
       "utf8",
     );
     assert.match(
       source,
-      /offset:\s*Number\(/,
+      /Number\(value\.offset\)/,
       "offset 必须经 Number() 转换（asar 头里它是字符串）",
     );
-    assert.match(source, /size:\s*Number\(/, "size 也必须经 Number() 转换");
+    assert.match(
+      source,
+      /Number\(value\.size\)/,
+      "size 也必须经 Number() 转换",
+    );
+    // 反向守卫：不许出现**未转换**的裸用法
+    assert.ok(
+      !/offset:\s*value\.offset\b/.test(source),
+      "不得把 offset 原样塞进 targets —— 它是字符串，会变成字符串拼接",
+    );
   });
 
   it("Subprocess 的环境变量必须放在 environment 上（environmentAppend 只是布尔开关）", function () {
