@@ -1,28 +1,36 @@
 /**
- * ## Zotero 专用 preset：**只改 `tool-ask-user` 一行**
+ * ## Zotero 专用 preset
  *
- * 真机缺陷：用户报告"会话页面已经认为它的回答结束了（没有「停止生成」），
- * 于是我又往里敲了个 `1`…"。查下来是架构性的：
+ * ## 真机事故：**不能**把本 preset 设成全局 `default`
  *
- * - `ask_user_question` 默认**阻塞等待**；
- * - 回答它的唯一合法通道是 dsh 的 answerer waterfall —— 也就是
- *   **原生 dsh 客户端的提问卡片**（它的 `return` 成为工具返回值）；
- * - 本插件的会话页**不在**那条瀑布里，它的"回答"只能经 `session/prompt`
- *   进 turn 的 inbox，而 inbox 的 `next-step` 要等当前步结束才被读 ——
- *   当前步却正卡在等这个工具。**死锁**（实测 14 分钟，直到用户点停止）。
+ * 我最初的写法是让 patch 覆盖 `agent-preset-registry` 的 `default: zotero`。
+ * 后果：**所有会话都建不出来** ——
  *
- * 修法：自建 preset 把 `tool-ask-user` 设成 `mode: timed` + 极短超时，
- * 于是工具立刻返回 `{ pending: true, callId }`，Agent 继续下一步。
+ * ```json
+ * {"code":"agent-preset/not-found","message":"Unknown agent preset: zotero",
+ *  "details":{"available":["standard","ptc","minimal","cordis"]}}
+ * ```
  *
- * ⚠️ 这个 preset 是上游 `standard.patch.yml` 的**完整镜像**，
- * 只改那一行 —— registry 的已知限制是"用户覆盖不会自动合并内置更新"，
- * 所以把差异压到最小，才好在上游变更时对照。
+ * 两层原因：
+ *
+ * 1. `agent-preset-registry` 已经由 `dsh-web-app` 的 patch 注册过（`default: standard`）。
+ *    再写一行同名注册是**覆盖别人的行**，而那个 default 是**全局**的；
+ * 2. preset 的挂载**只在宿主启动时**发生，而 default 立刻生效 ——
+ *    必然出现「默认指向一个还没注册的 preset」的窗口。
+ *
+ * 现在：patch 里**只有** preset 声明一行；插件建会话时**显式请求**它，
+ * 拿不到就回退（见 `createSessionPreferringPreset`）。
+ *
+ * ## 配置事实（每个都核实过源码）
+ *
+ * - `plan-mode` 的 `section` 是**必填、无默认** —— 我漏过一次，加载即失败。
+ * - `@deepseek-ai/dsh-tool-schedule` 在**实际运行时里不存在**。
  */
 import assert from "node:assert/strict";
-import yaml from "js-yaml";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import yaml from "js-yaml";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const bundle = await import(
@@ -30,8 +38,13 @@ const bundle = await import(
     `file://${join(here, ".build", "unit-entry.mjs").replace(/\\/g, "/")}`,
   ).href
 );
-const { buildZoteroPresetPatch, ASK_USER_TIMEOUT_SECONDS, ZOTERO_PRESET_ID } =
-  bundle;
+const {
+  buildZoteroPresetPatch,
+  ASK_USER_TIMEOUT_SECONDS,
+  ZOTERO_PRESET_ID,
+  presetRequest,
+  isPresetNotFound,
+} = bundle;
 
 /** Cordis 的 entry-list 方言带 `!!js` 标签（上游也用），普通解析器会报 unknown tag */
 const jsTag = new yaml.Type("tag:yaml.org,2002:js", {
@@ -39,64 +52,83 @@ const jsTag = new yaml.Type("tag:yaml.org,2002:js", {
   resolve: () => true,
   construct: (value) => ({ js: value }),
 });
+const parsePatch = () =>
+  yaml.load(buildZoteroPresetPatch(), {
+    schema: yaml.DEFAULT_SCHEMA.extend([jsTag]),
+  });
+/** patch 里唯一那一行 preset 声明 */
+const presetRow = () => parsePatch().find((r) => r.id === "preset-zotero");
+/** 展开组内的子插件（cordis:group 的 config 是数组） */
+const pluginsOf = (row) =>
+  row.config.plugins.flatMap((p) =>
+    Array.isArray(p.config) ? [p, ...p.config] : [p],
+  );
 
 describe("Zotero 专用 preset", function () {
-  const patch = buildZoteroPresetPatch();
+  it("**不得**再写 agent-preset-registry 行（那会让所有会话建不出来）", function () {
+    const parsed = parsePatch();
+    assert.ok(
+      !parsed.some((r) => r.id === "agent-preset-registry"),
+      "patch 里不能出现 agent-preset-registry：它已由 dsh-web-app 注册，" +
+        "覆盖它的 default 会导致 preset 尚未挂载时**所有会话都建不出来**（真机事故）",
+    );
+    assert.equal(parsed.length, 1, "patch 里应当只有 preset 声明这一行");
+    assert.equal(parsed[0].id, "preset-zotero");
+  });
 
-  it("必须把 registry 的 default 指向本 preset", function () {
-    assert.match(
-      patch,
-      /- id: agent-preset-registry\n {2}name: '@deepseek-ai\/dsh-agent-preset-registry'\n {2}config:\n {4}default: zotero/,
-      "新会话要默认用 Zotero 这一套 —— 否则改了 preset 也没人用",
+  it("应当是**显式请求 + 可回退**，而不是改全局默认", function () {
+    assert.deepEqual(
+      presetRequest(),
+      { agentPreset: ZOTERO_PRESET_ID },
+      "建会话时要显式带上 agentPreset",
     );
     assert.equal(ZOTERO_PRESET_ID, "zotero");
   });
 
-  it("**`tool-ask-user` 必须是 timed，且窗口很短**", function () {
-    assert.match(
-      patch,
-      /- id: tool-ask-user\n {8}name: '@deepseek-ai\/dsh-tool-ask-user'\n {8}config:\n {10}mode: timed/,
-      "阻塞式下插件无法回答提问，Agent 会卡到用户点停止",
+  it("回退判据只认 not-found，其它错误不得被掩盖", function () {
+    assert.equal(
+      isPresetNotFound({ code: "agent-preset/not-found" }),
+      true,
+      "preset 未挂载应当回退",
     );
-    assert.match(
-      patch,
-      new RegExp(`timeout: ${ASK_USER_TIMEOUT_SECONDS}\\b`),
+    assert.equal(isPresetNotFound({ code: "gateway/internal" }), false);
+    assert.equal(isPresetNotFound(new Error("disk full")), false);
+    assert.equal(isPresetNotFound(undefined), false);
+    assert.equal(isPresetNotFound(null), false);
+    assert.equal(isPresetNotFound("agent-preset/not-found"), false);
+  });
+
+  it("**`tool-ask-user` 必须是 timed，且窗口很短**", function () {
+    const ask = pluginsOf(presetRow()).find((p) => p.id === "tool-ask-user");
+    assert.ok(ask, "应当挂载 tool-ask-user");
+    assert.equal(ask.config?.mode, "timed");
+    /**
+     * ⚠️ 上界守卫。我在这个数字上错了两次，方向相反：
+     * 阻塞 → 死锁（真机 14 分钟）；改 120 秒 → 无谓长卡顿。
+     *
+     * 关键在 `timed-wait.ts:36`：定时器**只在没人 claim 时跑**，
+     * 而 `claims` 只由 `attach` 填充 —— 本插件从不调用它，
+     * 所以窗口**不可能提前结束**，只能等到期。而「等人」不靠窗口
+     * （`pending` 之后插件仍在轮询 `session/page`）。
+     */
+    assert.equal(
+      ask.config.timeout,
+      ASK_USER_TIMEOUT_SECONDS,
       "超时值必须真的写进 patch",
     );
-    /**
-     * ## ⚠️ 区间是**上界为主**的，而我在这个数字上错了两次（方向相反）
-     *
-     * | 窗口 | 结果 |
-     * | --- | --- |
-     * | 阻塞（无限） | **死锁** —— 真机卡 14 分钟 |
-     * | 很长（我先改成 120 秒） | **无谓的长卡顿**：回答早到也要等窗口到期 |
-     * | 很短 | 工具几乎立刻返回 `pending` → 当前步结束 → **下一步立刻读到回答** |
-     *
-     * 关键在 `user-questions/src/timed-wait.ts:36`：定时器**只在没人 claim 时跑**，
-     * 而 `claims` 只由 `attach` 填充 —— **本插件从不调用它**，所以窗口不可能提前结束。
-     * 而「等人」根本不靠这个窗口：`pending` 之后插件仍在轮询 `session/page`。
-     *
-     * ⚠️ 所以这条守卫要挡的是**上界**。曾经写成「不能短于 30 秒」，
-     * 那个断言基于我一次错误的推理，方向正好反了。
-     */
     assert.ok(
       ASK_USER_TIMEOUT_SECONDS <= 10,
-      "窗口必须很短（≤10 秒）：它只是「多久才告诉 Agent 没人答」，" +
-        "长了就是无谓的卡顿 —— 回答早到也要等窗口到期（我先改成 120 秒就是这么错的）",
+      "窗口必须很短（≤10 秒）：它只是「多久才告诉 Agent 没人答」",
     );
     assert.ok(
       ASK_USER_TIMEOUT_SECONDS >= 1,
-      "也不该是 0：留一点余地给「原生客户端在场」那种情形（它会 claim，答案直接成为工具返回值）",
-    );
-    assert.ok(
-      ASK_USER_TIMEOUT_SECONDS <= 600,
-      "也不该超过 10 分钟：用户不在桌前时这段时间是纯白等，Agent 什么都不做",
+      "也不该是 0：留余地给「原生客户端在场」那种情形（它会 claim）",
     );
   });
 
-  it("其余工具必须与上游镜像（差异只有那一行）", function () {
-    // 这些是上游 standard.patch.yml 里的条目 —— 少一个都说明镜像漏了
-    const must = [
+  it("其余工具必须与上游镜像（差异只有那几处有意的）", function () {
+    const ids = new Set(pluginsOf(presetRow()).map((p) => p.id));
+    for (const id of [
       "persona",
       "agent-instructions",
       "time-context",
@@ -104,7 +136,6 @@ describe("Zotero 专用 preset", function () {
       "tool-fs",
       "tool-fs-search",
       "tool-jobs",
-      "tool-schedule",
       "skill-filesystem",
       "tool-skill",
       "tool-todo",
@@ -114,40 +145,19 @@ describe("Zotero 专用 preset", function () {
       "planning",
       "compaction",
       "delegation",
-    ];
-    for (const id of must) {
-      assert.ok(
-        patch.includes(`- id: ${id}\n`) || patch.includes(`- id: ${id}\r\n`),
-        "镜像里缺少 " + id + " —— 用户选的是「完整镜像」，不能顺手精简",
-      );
+      "compaction-basic",
+      "tool-subagent",
+      "tool-workflow",
+    ]) {
+      assert.ok(ids.has(id), `镜像里缺少 ${id} —— 用户选的是「完整镜像」`);
     }
   });
 
-  it("`disallowed` 平台分支必须保留 `!!js` 表达式（那是上游的写法）", function () {
-    assert.match(
-      patch,
-      /disabled: !!js process\.platform === 'win32'/,
-      "tool-bash 在 Windows 上要禁用 —— 这是上游一行不改搬过来的",
-    );
-    assert.match(patch, /disabled: !!js process\.platform !== 'win32'/);
-  });
-
-  it("必须写明'不自动跟随上游更新'的代价与对照提醒", function () {
-    assert.match(
-      patch,
-      /不会.*自动跟随|不自动合并/,
-      "注释里要留下这个已知代价，否则升级 dsh 时没人会去对照上游",
-    );
-  });
-
-  it("**空 provider 时 preset 仍然要写**（这是接线的关键）", function () {
-    // 接线处若写成 `defs.length === 0` 就 return，最常见的配置下 preset 不会被写。
-    // 这里用源码断言钉住"两块都要拼进去"。
-    const src = bundle.__sourceOfProviders ?? undefined;
-    void src;
+  it("`!!js` 平台条件必须被保留（不能被我写成字符串）", function () {
+    const bash = pluginsOf(presetRow()).find((p) => p.id === "tool-bash");
     assert.ok(
-      patch.length > 500,
-      "patch 内容不能是空的 —— 它必须包含完整的 preset 声明",
+      bash && typeof bash.disabled === "object",
+      "tool-bash 的 disabled 应是 !!js 表达式；写成普通字符串就不会按平台生效",
     );
   });
 });
@@ -155,72 +165,53 @@ describe("Zotero 专用 preset", function () {
 /**
  * ## 生成的 YAML 必须真的能被解析
  *
- * 这不是形式主义：这段文本会被写进 `cordis.patch.yml`，**宿主启动时读它**。
- * 一个缩进错误 = 组合失败 = 整个隔离实例起不来，而那时的表现是
- * "插件装了但什么都不工作"，极难定位。
- *
- * ⚠️ 要用**注册了 `!!js` 标签**的 schema —— `disabled: !!js process.platform === 'win32'`
- * 是 Cordis 的 entry-list 方言，普通解析器会直接报 `unknown tag`。
- * （这正是上游 `standard.patch.yml` 的写法，我们一行不改地搬了过来。）
+ * 它会写进 `cordis.patch.yml` 并被宿主读取。一个缩进错误 = 组合失败，
+ * 而那时的表现是「插件装了但什么都不工作」，极难定位。
  */
 describe("preset 的 YAML 可解析性", function () {
-  const patch = buildZoteroPresetPatch();
-
-  it("必须能解析成两行：registry 与 preset 声明", function () {
-    const parsed = yaml.load(patch, {
-      schema: yaml.DEFAULT_SCHEMA.extend([jsTag]),
-    });
+  it("必须是单行声明，且 id 正确", function () {
+    const parsed = parsePatch();
     assert.ok(Array.isArray(parsed), "顶层必须是插件行列表");
-    assert.equal(parsed.length, 2, "应当是 registry + preset 两行");
-    assert.equal(parsed[0].id, "agent-preset-registry");
-    assert.equal(parsed[0].config.default, ZOTERO_PRESET_ID);
-    assert.equal(parsed[1].id, "preset-zotero");
-    assert.equal(parsed[1].config.id, ZOTERO_PRESET_ID);
+    assert.equal(parsed[0].id, "preset-zotero");
+    assert.equal(parsed[0].config.id, ZOTERO_PRESET_ID);
   });
 
   it("tool-ask-user 的配置要能解析出 timed", function () {
-    const parsed = yaml.load(patch, {
-      schema: yaml.DEFAULT_SCHEMA.extend([jsTag]),
+    const ask = pluginsOf(presetRow()).find((p) => p.id === "tool-ask-user");
+    assert.deepEqual(ask.config, {
+      mode: "timed",
+      timeout: ASK_USER_TIMEOUT_SECONDS,
     });
-    const ask = parsed[1].config.plugins.find((p) => p.id === "tool-ask-user");
-    assert.deepEqual(
-      ask.config,
-      { mode: "timed", timeout: ASK_USER_TIMEOUT_SECONDS },
-      "解析出来的必须是 timed + 超时，而不是靠字符串匹配碰巧对上",
-    );
   });
 
-  it("`!!js` 条件表达式必须被保留（不能被我写成字符串）", function () {
-    const parsed = yaml.load(patch, {
-      schema: yaml.DEFAULT_SCHEMA.extend([jsTag]),
-    });
-    const bash = parsed[1].config.plugins.find((p) => p.id === "tool-bash");
+  it("必填的 config 字段不能漏（plan-mode.section）", function () {
+    const plan = pluginsOf(presetRow()).find((p) => p.id === "plan-mode");
+    assert.ok(plan, "应当挂载 plan-mode");
     assert.ok(
-      bash.disabled !== undefined && typeof bash.disabled === "object",
-      "tool-bash 的 disabled 应是 !!js 表达式；写成普通字符串就不会按平台生效",
+      typeof plan.config?.section === "string" &&
+        plan.config.section.trim().length > 0,
+      "plan-mode 的 section 是**必填**：缺失或空白都会让插件加载失败（真机踩过）",
+    );
+    assert.match(
+      plan.config.section,
+      /exit_plan_mode/,
+      "这段引导必须提到 exit_plan_mode",
     );
   });
 });
 
 /**
- * ## 参考的包**必须真的装得上**（真机缺陷）
+ * ## 引用的包必须真的装得上
  *
- * 我把上游 `standard.patch.yml` 当成权威清单来镜像，但**上游的包集合与本插件实际提取的运行时不同步**：
+ * 我把上游 `standard.patch.yml` 当成权威清单来镜像，但上游的包集合与本插件
+ * 实际提取的运行时**不同步**：上游有 `@deepseek-ai/dsh-tool-schedule`，
+ * 而运行时里没有。引用不存在的包 → preset 声明加载失败。
  *
- * ```text
- *   standard.patch.yml 里有 @deepseek-ai/dsh-tool-schedule
- *   而实际运行时（0.2.0-rc.2）里【没有这个包】
- *   → 引用不存在的包 → preset 声明加载失败
- * ```
- *
- * 而失败的表现是「插件装了但什么都不工作」，极难定位。
- * 同样的道理适用于**必填的 config 字段**：`plan-mode` 的 `section`
- * 是必填，我漏掉它时也是“加载即报错”。
+ * 判据是「**启用了**却不存在的行」；确实要保留的必须显式 `disabled: true`。
  *
  * ⚠️ 这条守卫依赖本机的运行时目录：找不到就**跳过**（而不是假绿）。
  */
 describe("参考的包必须真的装得上", function () {
-  const patch = buildZoteroPresetPatch();
   const runtimeRoot = join(
     process.env.USERPROFILE ?? "",
     "Zotero",
@@ -229,36 +220,13 @@ describe("参考的包必须真的装得上", function () {
     "node_modules",
     "@deepseek-ai",
   );
-  const available = existsSync(runtimeRoot);
 
-  it("每个引用的包都要在实际运行时里存在", function () {
-    if (!available) {
+  it("启用中的行，其包必须在运行时里存在", function () {
+    if (!existsSync(runtimeRoot)) {
       this.skip();
       return;
     }
-    /**
-     * ⚠️ 判据是「**引用了不存在的包、又没有显式 `disabled: true`**」。
-     *
-     * 为什么不是"名字都不能出现"：上游 `standard.patch.yml` 里有一行
-     * `@deepseek-ai/dsh-tool-schedule`，而这个插件实际提取的运行时
-     * （0.2.0-rc.2）**没有那个包** —— 引用它会加载失败，所以本 preset 必须关掉它。
-     * 保留那一行并显式禁用，是为了记下「它为何不在」与「何时该启回来」。
-     *
-     * 所以真正危险的是**被启用**却装不上的行。
-     */
-    const rows = [];
-    const walk = (list) => {
-      for (const r of list) {
-        rows.push(r);
-        if (Array.isArray(r.config)) walk(r.config);
-      }
-    };
-    walk(
-      yaml.load(patch, { schema: yaml.DEFAULT_SCHEMA.extend([jsTag]) })[1]
-        .config.plugins,
-    );
-
-    const unresolved = rows.filter((r) => {
+    const unresolved = pluginsOf(presetRow()).filter((r) => {
       const name = typeof r.name === "string" ? r.name : "";
       if (!name.startsWith("@deepseek-ai/")) return false;
       const dir = name.replace("@deepseek-ai/", "").split("/")[0];
@@ -269,39 +237,18 @@ describe("参考的包必须真的装得上", function () {
       notDisabled.map((r) => r.id),
       [],
       "这些行引用了实际运行时里**不存在**的包，会让整份 preset 加载失败：" +
-        notDisabled.map((r) => r.id).join(", ") +
-        "（确实要保留就必须 `disabled: true`）",
+        `${notDisabled.map((r) => r.id).join(", ")}（要保留就必须 disabled: true）`,
     );
   });
 
-  it("必填的 config 字段不能漏（plan-mode.section）", function () {
-    const parsed = yaml.load(patch, {
-      schema: yaml.DEFAULT_SCHEMA.extend([jsTag]),
-    });
-    const find = (id) => {
-      const walk = (rows) => {
-        for (const r of rows) {
-          if (r.id === id) return r;
-          if (Array.isArray(r.config)) {
-            const hit = walk(r.config);
-            if (hit) return hit;
-          }
-        }
-        return undefined;
-      };
-      return walk(parsed[1].config.plugins);
-    };
-    const plan = find("plan-mode");
-    assert.ok(plan, "应当挂载 plan-mode");
-    assert.ok(
-      typeof plan.config?.section === "string" &&
-        plan.config.section.trim().length > 0,
-      "plan-mode 的 section 是**必填**：缺失或空白都会让插件加载失败（真机踩过）",
-    );
-    assert.match(
-      plan.config.section,
-      /exit_plan_mode/,
-      "这段引导必须提到 exit_plan_mode：否则模型不知道怎么退出计划模式",
+  it("tool-schedule 必须被显式禁用（该包在本运行时不存在）", function () {
+    const row = pluginsOf(presetRow()).find((r) => r.id === "tool-schedule");
+    assert.ok(row, "这一行应保留（记下它为何不在）");
+    assert.equal(
+      row.disabled,
+      true,
+      "@deepseek-ai/dsh-tool-schedule 在实际运行时里不存在，" +
+        "启用它会让整份 preset 加载失败",
     );
   });
 });

@@ -115,6 +115,55 @@ export const ASK_USER_TIMEOUT_SECONDS = 3;
 export const ZOTERO_PRESET_ID = "zotero";
 
 /**
+ * ## ⚠️ 为什么**不**把本 preset 设成全局 `default`（真机事故）
+ *
+ * 我最初的写法是让 patch 覆盖 `agent-preset-registry` 的 `default: zotero`。
+ * 后果：**所有会话都建不出来** ——
+ *
+ * ```json
+ * {"code":"agent-preset/not-found","message":"Unknown agent preset: zotero",
+ *  "details":{"available":["standard","ptc","minimal","cordis"]}}
+ * ```
+ *
+ * 原因有两层：
+ *
+ * 1. `agent-preset-registry` 已经由 `dsh-web-app` 的 patch 注册过了
+ *    （`default: standard`）。我再写一行同名注册，是**在覆盖别人的行**，
+ *    而 registry 的默认值是**全局**的 —— 一旦指向的 preset 没挂载成功，
+ *    就连「用默认值建会话」这条最基础的路都断了。
+ * 2. preset 的挂载只在**宿主启动**时发生。那个 `default` 立刻生效、
+ *    而 `preset-zotero` 还没注册 —— **两者不同步**，必然失败。
+ *
+ * 正确的做法是**插件自己显式指定**：建会话时带 `agentPreset: "zotero"`，
+ * 失败就回退到不指定（用全局默认）。这样：
+ *
+ * - preset 没挂载成功 → 会话照建，只是用不上它（**降级而非崩溃**）；
+ * - 挂载成功 → 自动用上，不需要改任何全局配置。
+ *
+ * ## ⚠️ 它是否真的挂载成功，**只能在宿主重启后验证**
+ *
+ * 插件无法查询 preset 列表（`agent-preset/list` 等 RPC 都是 404），
+ * 所以唯一判据就是 `session/create` 的返回码 —— 这正是兜底存在的理由。
+ */
+export function presetRequest(): { agentPreset: string } {
+  return { agentPreset: ZOTERO_PRESET_ID };
+}
+
+/**
+ * 判断失败是否属于「本 preset 没挂载」（可安全回退）。
+ *
+ * 只认 `agent-preset/not-found` —— 其它错误（磁盘、权限、模型配置）
+ * 不该被回退掩盖，否则会变成「静默用错组合」。
+ *
+ * ⚠️ 入参是 `unknown`：它来自 `catch`，而 TS 的 catch 变量就是 unknown。
+ * 收在这里判定，而不是让每个调用点各写一遍 code 比较。
+ */
+export function isPresetNotFound(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  return (error as { code?: unknown }).code === "agent-preset/not-found";
+}
+
+/**
  * 生成 `cordis.patch.yml` 里声明 Zotero preset 的那一段（entry-list YAML）。
  *
  * ## 结构
@@ -146,10 +195,14 @@ export function buildZoteroPresetPatch(): string {
     "#",
     "# ⚠️ 这份清单**不会**自动跟随 dsh 的更新（registry 的已知限制），",
     "#    升级 dsh 时请对照上游 standard.patch.yml 重新核对一次。",
-    "- id: agent-preset-registry",
-    "  name: '@deepseek-ai/dsh-agent-preset-registry'",
-    "  config:",
-    `    default: ${ZOTERO_PRESET_ID}`,
+    "# ⚠️ **不要**写 agent-preset-registry 这一行！",
+    "#",
+    "# 它已经由 dsh-web-app 的 patch 注册过了（`default: standard`）。",
+    "# 再写一行同名注册 = 覆盖别人的行，而那个 default 是**全局**的：",
+    "# 一旦指向的 preset 没挂载成功，连「用默认值建会话」都会断掉。",
+    "# （真机事故：这么写之后所有会话都建不出来，报 agent-preset/not-found）",
+    "#",
+    "# 本插件改为**建会话时显式指定** agentPreset，失败就回退（见 zoteroPreset.ts 的 presetRequest）。",
     "- id: preset-zotero",
     "  name: '@deepseek-ai/dsh-agent-preset'",
     "  config:",

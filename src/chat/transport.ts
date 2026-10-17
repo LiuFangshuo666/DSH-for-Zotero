@@ -52,6 +52,44 @@ import type { ChatEvent } from "../chat/state";
 import { mergeResponseText } from "../chat/mergeText";
 import { appendPanelLog } from "../dsh/runLog";
 import { parseAskUserQuestions, type AskUserQuestion } from "../dsh/askUser";
+import { isPresetNotFound, presetRequest } from "../dsh/zoteroPreset";
+
+/**
+ * ## 建会话时**显式请求 Zotero preset，失败则回退**（真机事故的教训）
+ *
+ * 我一度在 patch 里把 `agent-preset-registry` 的 `default` 改成 `zotero`，
+ * 结果**所有会话都建不出来**：
+ *
+ * ```json
+ * {"code":"agent-preset/not-found","message":"Unknown agent preset: zotero",
+ *  "details":{"available":["standard","ptc","minimal","cordis"]}}
+ * ```
+ *
+ * 原因是 preset 的挂载**只在宿主启动时**发生，而那个 `default` 立刻生效 ——
+ * 两者不同步，必然出现"默认指向一个还没注册的 preset"的窗口。
+ *
+ * 所以改成请求 + 降级：**只对 `agent-preset/not-found` 回退**到默认组合。
+ * 其它错误照常抛出 —— 回退不能掩盖真问题，否则会变成"静默用错组合"，
+ * 比直接失败更难查。
+ *
+ * ⚠️ 所有新建/恢复路径都走这里，漏一处就会出现"有的会话用 preset、有的不用"。
+ */
+async function createSessionPreferringPreset(
+  client: DshClient,
+  request: { cwd?: string; sessionId?: string; workspaceId?: string },
+): Promise<Awaited<ReturnType<typeof createSession>>> {
+  try {
+    return await createSession(client, { ...request, ...presetRequest() });
+  } catch (error) {
+    if (!isPresetNotFound(error)) throw error;
+
+    appendPanelLog(
+      "session",
+      `Zotero preset 尚未挂载，回退到默认组合（宿主重启后才会加载 preset）`,
+    );
+    return createSession(client, request);
+  }
+}
 
 export interface ChatTransportDeps {
   /** 事件出口（交给状态机） */
@@ -497,7 +535,7 @@ export class ChatTransport {
     if (existing) {
       try {
         // 显式 sessionId 即"恢复"；cwd 必须与会话记录一致，否则 dsh 抛 ApiSessionCwdConflict
-        const restored = await createSession(client, {
+        const restored = await createSessionPreferringPreset(client, {
           sessionId: existing,
           cwd,
         });
@@ -520,7 +558,7 @@ export class ChatTransport {
     }
 
     try {
-      const created = await createSession(client, { cwd });
+      const created = await createSessionPreferringPreset(client, { cwd });
       this.sessionId = created.value.sessionId;
       this.deps.rememberSession(itemKey, this.sessionId);
       this.setStatus({
@@ -572,7 +610,10 @@ export class ChatTransport {
     if (!client) return false;
     const cwd = this.deps.workspaceDir(itemKey);
     try {
-      const restored = await createSession(client, { sessionId, cwd });
+      const restored = await createSessionPreferringPreset(client, {
+        sessionId,
+        cwd,
+      });
       this.stopStream();
       this.stopPolling();
       this.sessionId = restored.value.sessionId;
@@ -604,7 +645,7 @@ export class ChatTransport {
     try {
       this.stopStream();
       this.stopPolling();
-      const created = await createSession(client, { cwd });
+      const created = await createSessionPreferringPreset(client, { cwd });
       this.sessionId = created.value.sessionId;
       this.deps.rememberSession(itemKey, this.sessionId);
       this.setStatus({
@@ -833,7 +874,22 @@ export class ChatTransport {
         this.log(`新建会话失败：${this.lastStatus.error ?? "无法连接 dsh"}`);
         return undefined;
       }
-      const created = await createSession(client, { cwd });
+      /**
+       * ⚠️ **显式请求 Zotero preset，失败则回退到全局默认组合。**
+       *
+       * 真机事故：我一度让 patch 覆盖 registry 的 `default: zotero`，
+       * 结果**所有会话都建不出来**（`agent-preset/not-found`）——
+       * 因为 preset 的挂载只在宿主启动时发生，而那个 default 立刻生效。
+       *
+       * 现在改成"请求 + 降级"：
+       * - preset 没挂载 → 用默认组合照建（功能少一点，但**能用**）；
+       * - 其它错误**照常抛出** —— 回退不能掩盖真问题，
+       *   否则会变成"静默用错组合"，比直接失败更难查。
+       *
+       * 详见 `zoteroPreset.ts` 的 `presetRequest`。
+       */
+      // 走统一入口：显式请求 preset，未挂载则回退（见 createSessionPreferringPreset）
+      const created = await createSessionPreferringPreset(client, { cwd });
       const sessionId = created.value?.sessionId;
       // 用户选过模型/推理等级的话，把选择装到这条新会话上。
       // 放在这里而不是调用方，是为了**每条新建路径都覆盖到**（建会话、
@@ -1041,7 +1097,9 @@ export class ChatTransport {
           `会话 ${sessionId} 已不存在（宿主可能重启过），用同一工作区重建`,
         );
       }
-      const created = await createSession(client, { cwd: params.workspace });
+      const created = await createSessionPreferringPreset(client, {
+        cwd: params.workspace,
+      });
       const replacement = created.value?.sessionId;
       if (!replacement) throw error;
       sessionId = replacement;
