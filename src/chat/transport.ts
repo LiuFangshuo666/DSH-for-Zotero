@@ -55,6 +55,71 @@ import { parseAskUserQuestions, type AskUserQuestion } from "../dsh/askUser";
 import { isPresetNotFound, presetRequest } from "../dsh/zoteroPreset";
 
 /**
+ * ## 插件认识几号**会话日志格式**？
+ *
+ * dsh 的会话日志是**带版本**的（`SESSION_FORMAT_VERSION`），而且它真的会变 ——
+ * dsh 自身就带了 `session-format-v0-to-v1` / `v1-to-v2` / `v2-to-v3` 等迁移包。
+ *
+ * ## 为什么必须显式比对（而不是"能跑就行"）
+ *
+ * 插件靠**事件类型名与字段形状**解析回答（`turn/start` / `assistant/message` /
+ * `user/message` / `turn/end`）。这些一旦变化，最可能的后果**不是报错，而是静默**：
+ *
+ * - 事件名变了 → 一个都匹配不上 → 界面显示"回答为空"，而宿主其实答得好好的；
+ * - 字段位置变了 → 正文读到空串 → 用户以为模型没输出。
+ *
+ * 这类"什么都没坏、但什么都没显示"最难查 —— 真机已在别处踩过同类
+ * （`sessionFormatVersion` 就是这次排查时才发现的）。
+ *
+ * 所以：**发现版本不同就明确记一条日志**，把"半小时排查"变成一句话。
+ * 记一次就够（不刷屏）。
+ *
+ * ⚠️ 升级插件时若确认新格式已支持，把这个数字改掉。
+ */
+const EXPECTED_SESSION_FORMAT_VERSION = 4;
+
+/** 版本不一致只提醒一次（每轮都刷会让日志失去意义） */
+let sessionFormatWarned = false;
+
+/**
+ * 从 `session/page` 的记录里找 `sessionFormatVersion`（找不到返回 undefined）。
+ *
+ * 抽成纯函数是为了能在单测里验：真机验证需要一台**正在运行**的宿主，
+ * 而这恰恰是出问题时最不可能具备的条件。
+ */
+export function findSessionFormatVersion(
+  records: unknown[],
+): number | undefined {
+  for (const record of records) {
+    const raw = (
+      record as { event?: { data?: { sessionFormatVersion?: unknown } } }
+    )?.event?.data?.sessionFormatVersion;
+    if (typeof raw === "number") return raw;
+  }
+  return undefined;
+}
+
+/**
+ * 从 `session/page` 的记录里读 `sessionFormatVersion`，与插件认识的那一版比对。
+ *
+ * 这个字段挂在内核的 `session-log-…/delivery-accepted` 事件上（实测路径：
+ * `event.data.sessionFormatVersion`）。插件**不依赖**那个事件做任何事 ——
+ * 它只是恰好带着版本号，是现成的兼容性探针。
+ */
+function checkSessionFormat(records: unknown[]): void {
+  if (sessionFormatWarned) return;
+  const seen = findSessionFormatVersion(records);
+  if (seen === undefined) return; // 读不到就不猜（可能是更老的格式）
+  if (seen === EXPECTED_SESSION_FORMAT_VERSION) return;
+  sessionFormatWarned = true;
+  appendPanelLog(
+    "session",
+    `⚠️ 会话日志格式版本是 ${seen}，而插件按 ${EXPECTED_SESSION_FORMAT_VERSION} 解析 —— ` +
+      `可能出现"回答显示为空/不完整"。这是**插件与 dsh 的兼容性问题**，` +
+      `不是会话坏了；请更新插件（或把这条反馈给开发者）。`,
+  );
+}
+/**
  * ## 建会话时**显式请求 Zotero preset，失败则回退**（真机事故的教训）
  *
  * 我一度在 patch 里把 `agent-preset-registry` 的 `default` 改成 `zotero`，
@@ -771,6 +836,10 @@ export class ChatTransport {
       const records = Array.isArray(page.value?.records)
         ? page.value.records
         : [];
+
+      // 兼容性探针：格式版本不对会让下面的解析**静默失效**（回答显示为空），
+      // 所以在解析之前先比对一次（只提醒一次，不刷屏）。
+      checkSessionFormat(records);
 
       // 按轮聚合：turn/start 开一轮，assistant/message 填正文，user/message 填提问
       const turns: Array<{ prompt: string; response: string }> = [];
