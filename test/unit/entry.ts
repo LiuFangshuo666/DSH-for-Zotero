@@ -157,6 +157,13 @@ export {
 } from "../../src/chat/transport";
 export * from "../../src/dsh/zoteroPreset";
 export {
+  buildArchiveParts,
+  archiveNoteTitle,
+  NOTE_CHAR_BUDGET,
+  ARCHIVE_COLLECTION_NAME,
+} from "../../src/dsh/sessionArchive";
+
+export {
   patchHostPortInSource,
   asarDataStart,
   parseExtractStamp,

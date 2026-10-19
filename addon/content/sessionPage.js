@@ -504,6 +504,17 @@
           ? api.setSessionModel(sessionId, choice)
           : null;
       },
+      /**
+       * 归档成 Zotero 笔记（跨设备可读）。
+       *
+       * 老插件没有这个方法 → 按钮整条隐藏（见 `renderArchiveRow`），
+       * 而不是给一个点了报错的按钮。
+       */
+      archiveSession: function () {
+        return typeof api.archiveSession === "function"
+          ? api.archiveSession(sessionId)
+          : null;
+      },
     };
   }
 
@@ -928,6 +939,68 @@
     }
 
     renderModelBar();
+
+    /**
+     * ## 「归档到文献库」
+     *
+     * 把对话写成 Zotero **笔记**，靠 Zotero 自己的同步带到其它设备。
+     *
+     * 三条纪律：
+     *
+     * 1. **老插件整块隐藏**（没有 `archiveSession`），不给一个点了报错的按钮；
+     * 2. **必须防重复点击**：建笔记要落盘，慢的时候用户会连点 ——
+     *    按钮在请求进行中禁用，结束后按结果恢复（这个页面里"按钮提前恢复可点"
+     *    已经造成过一次二次操作，见下面一键确认那段）；
+     * 3. **结果如实说**：归档是"只读快照"，不是"会话同步过去了" ——
+     *    不写清楚，用户会以为能在另一台机器接着原会话聊。
+     */
+    var archiveRow = document.getElementById("archive-row");
+    var archiveBtn = document.getElementById("archive-btn");
+    var archiveNote = document.getElementById("archive-note");
+    /** 进行中标志：防止连点导致重复落库 */
+    var archiveBusy = false;
+
+    function renderArchiveRow() {
+      if (!archiveRow) return;
+      if (typeof capability.archiveSession !== "function") return; // 老插件：保持隐藏
+      archiveRow.style.display = "flex";
+    }
+
+    function submitArchive() {
+      if (archiveBusy || typeof capability.archiveSession !== "function")
+        return;
+      archiveBusy = true;
+      if (archiveBtn) archiveBtn.disabled = true;
+      if (archiveNote) archiveNote.textContent = "正在归档…";
+      Promise.resolve(capability.archiveSession())
+        .then(function (result) {
+          if (!result) {
+            // capabilityFromGlobal 在旧插件上返回 null
+            if (archiveNote)
+              archiveNote.textContent = "插件版本较旧，不支持归档";
+            return;
+          }
+          if (archiveNote) {
+            var head = result["结果"] || (result.ok ? "已归档" : "失败");
+            var parts = result["分篇"] ? " " + result["分篇"] + " 篇笔记" : "";
+            archiveNote.textContent =
+              head + parts + (result["说明"] ? "：" + result["说明"] : "");
+          }
+        })
+        .catch(function (error) {
+          if (archiveNote) {
+            archiveNote.textContent =
+              "归档失败：" + String((error && error.message) || error);
+          }
+        })
+        .then(function () {
+          archiveBusy = false;
+          if (archiveBtn) archiveBtn.disabled = false;
+        });
+    }
+
+    if (archiveBtn) archiveBtn.addEventListener("click", submitArchive);
+    renderArchiveRow();
 
     /**
      * ⚠️ **一键确认的进行状态（真机缺陷：按钮提前恢复可点→条目被操作两次）**
