@@ -56,7 +56,7 @@ import {
 import { appendPanelLog } from "../dsh/runLog";
 import { requireRuntimeConfig, resolveRuntimeConfig } from "../dsh/config";
 import { workspaceFor } from "../dsh/session";
-import { openDshWebUi, openWorkspaceInFileManager } from "./openExternal";
+import { openWorkspaceInFileManager } from "./openExternal";
 import {
   buildMetadataText,
   buildPrompt,
@@ -171,20 +171,10 @@ class PanelInstance {
   private saveNoteButton!: HTMLButtonElement;
   private saveHighlightButton!: HTMLButtonElement;
   private copyButton!: HTMLButtonElement;
-  /**
-   * 「更多 ▾」下拉：放不进工具条、但用得上的一两个动作
-   * （在网页版打开 dsh、打开工作区）。
-   *
-   * 为什么用下拉而不是再加两个按钮：这条工具条已经有五条一键动作 + 会话操作，
-   * 再堆按钮会把主要动作挤散。低频动作收进下拉，`position: fixed` 定位，
-   * 免得被条目面板的 overflow 裁掉。
-   */
-  private moreButton?: HTMLButtonElement;
-  private moreMenu?: HTMLElement;
-  /** 下拉里动作的结果提示（放在工具条下面一行） */
-  private moreNote?: HTMLElement;
-  /** 文档级监听是否已挂（`render()` 会重跑，不加这个就会越挂越多） */
-  private moreListenersAttached = false;
+  /** 「打开工作区」：用文件管理器打开这条会话的目录（会话级，一键） */
+  private workspaceButton?: HTMLButtonElement;
+  /** 打开工作区之后的结果提示（放在工具条下面一行） */
+  private workspaceNote?: HTMLElement;
   /** 上一次提问的原文，用于"重新生成" */
   private lastQuestion?: string;
   /** 最近一次划选的原文与页码（存高亮时需要） */
@@ -402,143 +392,49 @@ class PanelInstance {
     );
 
     /**
-     * 「更多 ▾」下拉：低频但有用的动作收在这里。
+     * 「打开工作区」：用文件管理器打开**这一条会话**的工作区目录。
      *
-     * 现在两项：
-     *  - **在网页版打开 dsh** —— 用默认浏览器打开**已登录**的 dsh web 界面
-     *    （地址里带 token；没有 token 会显示 authentication required，
-     *    所以拿不到就不给半残链接，而是明确说"运行时还没启动"）；
-     *  - **打开工作区** —— 用文件管理器打开这条会话的工作区目录。
+     * ⚠️ 这里原有一个「更多 ▾」下拉（含"在网页版打开 dsh"）—— 那是我的**误放**。
+     * "网页版打开"属于**全局**动作，正确落点是 Zotero **主窗口工具栏**
+     * （见 `modules/mainToolbar.ts`）。两个下拉里有重复项只会让人不知道该点哪个，
+     * 所以这里只留一个会话级的直达按钮。
      */
-    this.moreButton = doc.createElement("button");
-    this.moreButton.type = "button";
-    this.moreButton.textContent = "更多 ▾";
-    this.moreButton.title = "其它动作（在网页版打开 dsh、打开工作区）";
-    this.moreButton.style.fontSize = "12px";
-
-    this.moreMenu = doc.createElement("div");
-    this.moreMenu.style.cssText = [
-      "display: none",
-      "position: fixed",
-      "z-index: 2147483000",
-      "min-width: 190px",
-      "background: #fff",
-      "border: 1px solid #d1d5db",
-      "border-radius: 4px",
-      "box-shadow: 0 4px 12px rgba(0,0,0,0.15)",
-      "padding: 2px 0",
-      "font-size: 12px",
-    ].join(";");
-
-    const menuItem = (label: string, run: () => Promise<void>): void => {
-      const row = doc.createElement("div");
-      row.textContent = label;
-      row.style.cssText =
-        "padding: 5px 12px; cursor: pointer; white-space: nowrap";
-      row.addEventListener("mouseenter", () => {
-        row.style.background = "#f3f4f6";
-      });
-      row.addEventListener("mouseleave", () => {
-        row.style.background = "";
-      });
-      // mousedown 而不是 click：外面那层"点别处关闭"也挂在 document 上，
-      // click 会晚于它，导致菜单先关掉、点击落空。
-      row.addEventListener("mousedown", (event) => {
-        event.preventDefault();
-        this.closeMoreMenu();
-        void run();
-      });
-      this.moreMenu!.append(row);
-    };
-
-    menuItem("在网页版打开 dsh", async () => {
-      const result = await openDshWebUi();
-      this.showMoreNote(result);
-    });
-    menuItem("打开工作区", async () => {
-      const result = await openWorkspaceInFileManager(
-        this.currentWorkspaceDir(),
-      );
-      this.showMoreNote(result);
+    this.workspaceButton = doc.createElement("button");
+    this.workspaceButton.type = "button";
+    this.workspaceButton.textContent = "打开工作区";
+    this.workspaceButton.title = "用系统文件管理器打开这条会话的工作区目录";
+    this.workspaceButton.style.fontSize = "12px";
+    this.workspaceButton.addEventListener("click", () => {
+      void this.openWorkspaceFromButton();
     });
 
-    this.moreButton.addEventListener("click", () => {
-      this.toggleMoreMenu();
-    });
-    /**
-     * ⚠️ 文档级监听**只挂一次**。
-     *
-     * `render()` 在切换条目时会被重新调用，而这两条监听挂在 `doc` 上不会随
-     * 旧 DOM 一起消失 —— 每渲染一次就多一份，切十篇文献就是十份。
-     * 用一次性开关挡住（这是"重渲染 + 全局监听"最容易漏的地方）。
-     */
-    if (!this.moreListenersAttached) {
-      this.moreListenersAttached = true;
-      doc.addEventListener("mousedown", (event) => {
-        if (!this.moreMenu) return;
-        const target = event.target as Node | null;
-        if (!target) return;
-        if (this.moreMenu.contains(target)) return;
-        if (this.moreButton?.contains(target)) return;
-        this.closeMoreMenu();
-      });
-      doc.addEventListener("keydown", (event) => {
-        if ((event as KeyboardEvent).key === "Escape") this.closeMoreMenu();
-      });
-    }
-
-    this.moreNote = doc.createElement("div");
-    this.moreNote.style.cssText =
+    this.workspaceNote = doc.createElement("div");
+    this.workspaceNote.style.cssText =
       "font-size: 12px; color: #6b7280; padding: 0 6px; white-space: pre-wrap";
 
-    toolbar.append(this.moreButton);
-    root.append(statusBar, this.logEl, toolbar, this.moreNote, inputRow);
+    toolbar.append(this.workspaceButton);
+    root.append(statusBar, this.logEl, toolbar, this.workspaceNote, inputRow);
     this.body.append(root);
-    this.body.append(this.moreMenu);
     this.paint();
   }
 
-  /** 展开 / 收起「更多」菜单 */
-  private toggleMoreMenu(): void {
-    if (!this.moreMenu || !this.moreButton) return;
-    if (this.moreMenu.style.display === "block") {
-      this.closeMoreMenu();
-      return;
+  /** 「打开工作区」按钮：打开之后把结果如实写在工具条下面 */
+  private async openWorkspaceFromButton(): Promise<void> {
+    if (this.workspaceButton) this.workspaceButton.disabled = true;
+    try {
+      const result = await openWorkspaceInFileManager(
+        this.currentWorkspaceDir(),
+      );
+      if (this.workspaceNote) {
+        const detail = result.路径 ?? result.地址 ?? "";
+        this.workspaceNote.textContent =
+          result.结果 +
+          (detail ? `：${detail}` : "") +
+          (result.说明 ? `（${result.说明}）` : "");
+      }
+    } finally {
+      if (this.workspaceButton) this.workspaceButton.disabled = false;
     }
-    const rect = this.moreButton.getBoundingClientRect();
-    this.moreMenu.style.left = `${Math.round(rect.left)}px`;
-    this.moreMenu.style.display = "block";
-    const height = this.moreMenu.offsetHeight || 0;
-    const below = rect.bottom + 4;
-    // 视口高度用 doc 的默认窗口取，而不是全局 window：面板可能渲染在
-    // 阅读器窗口里，两个 window 的尺寸不一定相同。
-    const viewport =
-      (this.doc.defaultView as unknown as { innerHeight?: number } | null)
-        ?.innerHeight ?? 800;
-    const fitsBelow = below + height <= viewport - 8;
-    this.moreMenu.style.top = `${Math.round(
-      fitsBelow ? below : Math.max(8, rect.top - height - 4),
-    )}px`;
-  }
-
-  private closeMoreMenu(): void {
-    if (this.moreMenu) this.moreMenu.style.display = "none";
-  }
-
-  /** 把动作结果写在下拉下面（成功也说清楚是"打开"还是"定位"） */
-  private showMoreNote(result: {
-    ok: boolean;
-    结果: string;
-    路径?: string;
-    地址?: string;
-    说明?: string;
-  }): void {
-    if (!this.moreNote) return;
-    const detail = result.路径 ?? result.地址 ?? "";
-    this.moreNote.textContent =
-      result.结果 +
-      (detail ? `：${detail}` : "") +
-      (result.说明 ? `（${result.说明}）` : "");
   }
 
   /**

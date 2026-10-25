@@ -10,6 +10,10 @@ import { ReaderPanel } from "./modules/readerPanel";
 import { SelectionToolbar } from "./modules/selectionToolbar";
 import { SessionPane } from "./modules/sessionPane";
 import {
+  installMainToolbar,
+  uninstallMainToolbar,
+} from "./modules/mainToolbar";
+import {
   handleModelPrefsEvent,
   initModelSection,
   initProvidersSection,
@@ -206,6 +210,16 @@ async function onStartup() {
       `[DSH] 设置页注册异常：${error instanceof Error ? error.message : String(error)}`,
     );
   }
+
+  /**
+   * 主窗口工具栏上的「DSH」下拉。
+   *
+   * 它不依赖运行时是否就绪（点了会自己判断），所以放在这里同步注册。
+   * 挂载失败会在面板日志里写明"试过哪些 id" —— 否则表现只是"按钮没出现"。
+   */
+  safeRegister("主窗口工具栏", () => {
+    installMainToolbar();
+  });
 
   // 隔离运行时：**后台准备**，绝不阻塞启动。
   // 首次要提取约 330 MB（10 秒量级），若同步等待会让 Zotero 启动明显变慢；
@@ -409,6 +423,9 @@ function onShutdown(): void {
   });
 
   readerPanel.unregister();
+  // 主窗口工具栏上的按钮是我们自插的 DOM，插件停用/升级时要收走 ——
+  // 留着会在下次加载时变成**两个一模一样的按钮**（Zotero 不会替我们清理）。
+  safeRegister("卸载主窗口工具栏", () => uninstallMainToolbar());
   ztoolkit.unregisterAll();
   addon.data.dialog?.window?.close();
   // Remove addon object
