@@ -1846,8 +1846,17 @@ export class SessionPane {
     }
   }
 
-  /** 当前是否有可供菜单命令操作的对象（用于启用/禁用菜单项） */
-  private hasMenuTarget(kind: "item" | "collection"): boolean {
+  /**
+   * 当前是否有可供菜单命令操作的对象（用于**启用/禁用菜单项**）。
+   *
+   * 公开给主窗口工具栏用：那里也要按同样的判断来置灰两个"新建会话"项，
+   * 与 Zotero 自带的「新建条目」「添加附件」「新建笔记」行为一致 ——
+   * 没有选中对象时那些按钮是灰的，这里也应当是灰的。
+   *
+   * 判断收敛在**一处**：右键菜单的启用状态与工具栏的置灰必须同源，
+   * 否则会出现"右键能点、工具栏灰着"这种自相矛盾。
+   */
+  hasMenuTarget(kind: "item" | "collection"): boolean {
     try {
       const pane = Zotero.getActiveZoteroPane?.() as
         | {

@@ -157,6 +157,47 @@ describe("主窗口工具栏下拉", function () {
     );
   });
 
+  it("没选中对象时把两个建会话项**置灰**，且每次弹出都重算", function () {
+    // 与 Zotero 自带的「新建条目 / 添加附件 / 新建笔记」一致：
+    // 没选中条目时那些是灰的。
+    assert.match(
+      code,
+      /actions\.canCreate\("item"\)/,
+      "必须用 canCreate(item) 判断条目会话项是否可点",
+    );
+    assert.match(
+      code,
+      /actions\.canCreate\("collection"\)/,
+      "必须用 canCreate(collection) 判断独立会话项是否可点",
+    );
+    // ⚠️ 时机：必须在 popupshowing 时重算。挂载时只算一次的话，
+    // 启动时通常什么都没选中 —— 那两项会**永远灰着**。
+    assert.match(
+      code,
+      /addEventListener\("popupshowing"/,
+      "启用状态必须在每次弹出菜单时重算（popupshowing），不能在挂载时算一次",
+    );
+    assert.match(
+      code,
+      /setAttribute\("disabled",\s*"true"\)/,
+      "禁用要用 disabled 属性（XUL 的置灰方式）",
+    );
+    assert.match(
+      code,
+      /removeAttribute\("disabled"\)/,
+      "可用时必须把 disabled 去掉，否则一旦灰过就再也点不了",
+    );
+  });
+
+  it("**按钮本身不禁用**（网页版/工作区与选中状态无关）", function () {
+    // 只灰掉两个建会话项。若把整个按钮禁掉，没选中文献时
+    // 连"在网页版打开"都用不了 —— 那两个动作不需要选中任何东西。
+    assert.ok(
+      !/button\.setAttribute\("disabled"/.test(code),
+      "不得禁用整个按钮：只在菜单项级别置灰",
+    );
+  });
+
   it("动作结果用 Zotero 进度窗口告知，不用阻塞式 alert", function () {
     assert.match(code, /ProgressWindow/);
     assert.ok(

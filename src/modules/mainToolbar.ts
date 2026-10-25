@@ -62,6 +62,14 @@ export interface MainToolbarActions {
   newItemSession: () => Promise<unknown>;
   /** 为当前选中的分类新建独立会话 */
   newCollectionSession: () => Promise<unknown>;
+  /**
+   * 当前是否有可供该动作操作的对象 —— 用来**置灰**菜单项。
+   *
+   * 与 Zotero 自带的「新建条目」「添加附件」「新建笔记」一致：
+   * 没有选中条目时，那几项是灰的。判断复用 `sessionPane.hasMenuTarget`，
+   * 保证右键菜单与工具栏**同源**，不会出现"右键能点、工具栏灰着"。
+   */
+  canCreate: (kind: "item" | "collection") => boolean;
 }
 
 /**
@@ -156,7 +164,7 @@ export function installMainToolbar(actions: MainToolbarActions): boolean {
     popup.setAttribute("id", `${BUTTON_ID}-popup`);
     button.appendChild(popup);
 
-    const addItem = (label: string, run: () => void): void => {
+    const addItem = (label: string, run: () => void): Element => {
       const item = docAny.createXULElement("menuitem");
       item.setAttribute("label", label);
       item.addEventListener("command", () => {
@@ -170,6 +178,7 @@ export function installMainToolbar(actions: MainToolbarActions): boolean {
         }
       });
       popup.appendChild(item);
+      return item;
     };
 
     /**
@@ -180,18 +189,54 @@ export function installMainToolbar(actions: MainToolbarActions): boolean {
      * 用进度窗口告知 —— 不能像右键菜单那样只往日志里写一行，
      * 工具栏上用户不会去翻日志。
      */
-    addItem("新建文献会话（当前选中的条目）", () => {
+    const itemSessionItem = addItem("新建文献会话（当前选中的条目）", () => {
       void actions.newItemSession().then(
         () => notify("DSH-for-Zotero", "已新建文献会话"),
         (error: unknown) => notify("DSH-for-Zotero", describe(error)),
       );
     });
-    addItem("新建独立会话（当前选中的分类）", () => {
-      void actions.newCollectionSession().then(
-        () => notify("DSH-for-Zotero", "已新建独立会话"),
-        (error: unknown) => notify("DSH-for-Zotero", describe(error)),
-      );
-    });
+    const collectionSessionItem = addItem(
+      "新建独立会话（当前选中的分类）",
+      () => {
+        void actions.newCollectionSession().then(
+          () => notify("DSH-for-Zotero", "已新建独立会话"),
+          (error: unknown) => notify("DSH-for-Zotero", describe(error)),
+        );
+      },
+    );
+
+    /**
+     * ## 没有可操作对象时把这两项**置灰**
+     *
+     * Zotero 自带的「新建条目」「添加附件」「新建笔记」都是这么做的：
+     * 没选中条目时它们是灰的，用户一眼就知道现在不能点。
+     *
+     * ⚠️ 时机很关键：必须在**每次弹出菜单时**重新算（`popupshowing`），
+     * 不能在挂载时算一次 —— 挂载发生在启动时，那时通常什么都没选中，
+     * 一次算死就会永远灰着。而选中状态是随时变的。
+     *
+     * 只灰掉这两项，**按钮本身保持可点**：网页版/工作区两个动作
+     * 与选中状态无关，不该被连坐。
+     */
+    const syncEnabled = (): void => {
+      const setEnabled = (el: Element, enabled: boolean): void => {
+        if (enabled) el.removeAttribute("disabled");
+        else el.setAttribute("disabled", "true");
+      };
+      try {
+        setEnabled(itemSessionItem, actions.canCreate("item"));
+        setEnabled(collectionSessionItem, actions.canCreate("collection"));
+      } catch (error) {
+        // 取不到选中状态时**保持可点**：让用户点了看到原因，
+        // 比让按钮莫名其妙灰着更好排查
+        appendPanelLog(
+          "session",
+          `工具栏菜单项启用状态判断失败（保持可点）：${describe(error)}`,
+        );
+      }
+    };
+    popup.addEventListener("popupshowing", syncEnabled);
+    syncEnabled();
 
     const separator = docAny.createXULElement("menuseparator");
     popup.appendChild(separator);

@@ -225,6 +225,8 @@ async function onStartup() {
       newItemSession: () => sessionPane().newItemSessionFromSelection(),
       newCollectionSession: () =>
         sessionPane().newCollectionSessionFromSelection(),
+      // 置灰判断与右键菜单**同源**：都走 hasMenuTarget
+      canCreate: (kind) => sessionPane().hasMenuTarget(kind),
     });
   });
 
