@@ -132,19 +132,25 @@ export function installMainToolbar(actions: MainToolbarActions): boolean {
     // 先前给的是 96×96 的 PNG，工具条就按 96px 画（被 41px 高的工具条裁掉），
     // 用户反馈"鲸鱼更大了"。
     //
-    // ## 为什么不再用 context-fill / -moz-context-properties
+    // ## 为什么工具栏用 context-fill，而侧栏用另一张固定色图
     //
-    // 那张图现在**三个地方共用**：这个按钮、条目面板的 `header.icon`、`sidenav.icon`。
-    // 后两个由 Zotero 当普通图片渲染，**不会设置** `-moz-context-properties` ——
-    // `context-fill` 在那里取不到上下文，图标会变黑甚至看不见。
-    // 所以颜色写进图里（蓝色），三处共用同一张，行为一致。
+    // 这张图是**亮度蒙版**，颜色由 `fill="context-fill"` 从工具条的
+    // `fill` 取 —— 于是深色主题自动浅、浅色主题自动深，不用描边也不会糊。
+    // Zotero 自己的图标正是这么配的。
+    //
+    // 但侧栏的 `header.icon` / `sidenav.icon` 由 Zotero 当**普通图片**渲染，
+    // **不会**设置 `-moz-context-properties`，`context-fill` 在那里取不到值 ——
+    // 所以侧栏用的是 `whale-blue.svg`（颜色写进图里）。
+    // 两份资产由 `tools/make-toolbar-icon.py` 一起生成。
     const addonRef = String(
       (addon.data as { config?: { addonRef?: string } }).config?.addonRef ?? "",
     );
     if (addonRef) {
       button.setAttribute(
         "style",
-        `list-style-image: url("chrome://${addonRef}/content/icons/toolbar-dsh.svg");`,
+        `list-style-image: url("chrome://${addonRef}/content/icons/toolbar-dsh.svg");` +
+          "fill: currentColor;" +
+          "-moz-context-properties: fill;",
       );
     }
 

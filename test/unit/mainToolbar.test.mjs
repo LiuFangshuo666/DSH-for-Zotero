@@ -261,45 +261,62 @@ describe("主窗口工具栏下拉", function () {
     );
   });
 
-  it("图标必须**自带颜色**，不得依赖 context-fill", function () {
-    // 这张图现在**三个地方共用**：主工具栏按钮、条目面板的 `header.icon`、
-    // `sidenav.icon`。后两个由 Zotero 当**普通图片**渲染，不会设置
-    // `-moz-context-properties` —— 一旦用 `context-fill`，
-    // 在那里取不到上下文，图标会变黑甚至看不见。
-    //
-    // （历史：曾经为了"深色主题下不糊"改成蒙版 + context-fill，
-    //  那对工具栏有效，但把同一张图放到侧栏就失效了。所以颜色写进图里。）
+  it("工具栏图标用蒙版 + context-fill（跟随主题前景色）", function () {
+    // 用户先后提过两件事：
+    //  ① "深色主题下糊成一团" → 解法是让颜色跟随主题，而不是换任何一个固定色；
+    //  ② 后来又要求"改回原来的颜色"（蓝色只留给侧栏）。
+    // 所以工具栏这张图是**亮度蒙版**，颜色由 `context-fill` 从按钮的 `fill` 取。
     const svg = readFileSync(
       join(root, "addon", "content", "icons", "toolbar-dsh.svg"),
       "utf8",
     );
-    assert.ok(
-      !/context-fill/.test(svg),
-      "图标不能依赖 context-fill：侧栏以图片形式使用，取不到上下文",
+    assert.match(
+      svg,
+      /fill="context-fill"/,
+      "工具栏图标必须用 context-fill —— 固定色在某种主题下一定看不清",
     );
-    assert.ok(
-      !/-moz-context-properties/.test(code),
-      "按钮不应再依赖 -moz-context-properties（图标自带颜色）",
+    assert.match(svg, /<mask[\s>]/, "应当是蒙版形式：位图只决定形状");
+    // 按钮必须声明上下文属性，否则 context-fill 取不到值（会渲染成黑色）
+    assert.match(
+      code,
+      /-moz-context-properties:\s*fill/,
+      "按钮必须声明 -moz-context-properties: fill",
     );
-    // 必须真的是"有颜色的位图"，而不是一个只有 alpha 的蒙版
-    assert.match(svg, /<image[\s>]/, "图形应以位图形式嵌入");
+    assert.match(
+      code,
+      /fill:\s*currentColor/,
+      "必须 fill: currentColor —— 让图标跟随工具条前景色",
+    );
   });
 
-  it("侧栏与工具栏**共用同一张**图标", function () {
-    // 用户要求"把工具栏的鲸鱼颜色改为蓝色"，并让侧栏也显示蓝色鲸鱼。
-    // 两处必须指向同一个资源，否则改一处颜色、另一处忘了跟上。
+  it("侧栏图标是**另一张固定蓝色**的图（那里取不到 context-fill）", function () {
+    // 侧栏的 `header.icon` / `sidenav.icon` 由 Zotero 当**普通图片**渲染，
+    // 不设置 `-moz-context-properties` —— 用 context-fill 会变黑或不可见。
+    // 所以侧栏用 `whale-blue.svg`，颜色写进图里。
     const panel = readFileSync(
       join(root, "src", "modules", "readerPanel.ts"),
       "utf8",
     );
     assert.match(
       panel,
-      /content\/icons\/toolbar-dsh\.svg/,
-      "条目面板的 header/sidenav 图标必须用同一张 toolbar-dsh.svg",
+      /content\/icons\/whale-blue\.svg/,
+      "侧栏图标必须用 whale-blue.svg（固定蓝色）",
     );
     assert.ok(
       !/icons\/favicon/.test(panel),
       "侧栏不应再用带白卡片的 favicon —— 那是旧的、突兀的那张",
     );
+    const blue = readFileSync(
+      join(root, "addon", "content", "icons", "whale-blue.svg"),
+      "utf8",
+    );
+    // ⚠️ 必须先剥 XML 注释：这张图的注释里就写着"不能依赖 context-fill"，
+    // 直接扫原文会把说明文字当成实现（这个坑在本项目里出现过多次）。
+    const blueMarkup = blue.replace(/<!--[\s\S]*?-->/g, "");
+    assert.ok(
+      !/context-fill/.test(blueMarkup),
+      "侧栏那张图**不能**依赖 context-fill（那里没有上下文）",
+    );
+    assert.match(blueMarkup, /<image[\s>]/, "侧栏图应是自带颜色的位图");
   });
 });

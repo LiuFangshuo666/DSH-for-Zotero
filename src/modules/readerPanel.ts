@@ -108,11 +108,11 @@ export class ReaderPanel {
       pluginID: addon.data.config.addonID,
       header: {
         l10nID: `${addon.data.config.addonRef}-reader-section-head`,
-        icon: `chrome://${addon.data.config.addonRef}/content/icons/toolbar-dsh.svg`,
+        icon: `chrome://${addon.data.config.addonRef}/content/icons/whale-blue.svg`,
       },
       sidenav: {
         l10nID: `${addon.data.config.addonRef}-reader-section-sidenav`,
-        icon: `chrome://${addon.data.config.addonRef}/content/icons/toolbar-dsh.svg`,
+        icon: `chrome://${addon.data.config.addonRef}/content/icons/whale-blue.svg`,
       },
       onItemChange: ({ item, setEnabled, tabType }) => {
         // 只在阅读器标签页启用，且该条目必须能定位到文献

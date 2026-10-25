@@ -30,16 +30,19 @@ Zotero 主窗口工具条上有四个问题（用户反馈）：
 from PIL import Image
 
 SRC = "addon/content/icons/favicon.png"
-# 输出**SVG**，而不是 PNG。
+# ## 两份输出，因为两处的**渲染方式不同**
 #
-# 为什么不是 PNG：XUL 的 `list-style-image` 按图片的**内在尺寸**绘制，
-# `max-width` / `max-height` 只约束元素盒子、**不缩放标记图**。
-# 先前给了一张 96×96 的 PNG，工具条就按 96px 画（被 41px 高的工具条裁），
-# 用户反馈"鲸鱼更大了"。而 Zotero 自己的工具条图标是
-# `chrome://zotero/skin/16/universal/*.svg` —— **16×16 的 SVG**。
-# 所以这里也用 SVG：内部嵌高分辨率位图，外在尺寸钉死在 16×16，
-# 任何 DPI 下都清晰，且尺寸可预测。
-OUT = "addon/content/icons/toolbar-dsh.svg"
+# | 用途 | 文件 | 颜色来源 |
+# | --- | --- | --- |
+# | 主工具栏按钮 | `toolbar-dsh.svg` | `context-fill`（跟随工具条前景色） |
+# | 侧栏标题 / 导航图标 | `whale-blue.svg` | 固定蓝（写进图里） |
+#
+# 为什么必须分开：侧栏那两个图标由 Zotero 当**普通图片**渲染，
+# **不会**设置 `-moz-context-properties`；`context-fill` 在那里取不到上下文，
+# 图形会变黑甚至不可见。工具栏那个相反 —— 它可以跟随主题，
+# 深色主题自动变浅，这正是用户要的"原来的颜色"。
+OUT_TOOLBAR = "addon/content/icons/toolbar-dsh.svg"
+OUT_SIDEBAR = "addon/content/icons/whale-blue.svg"
 # 中间产物：高分辨率位图（只用于生成 SVG，不随插件发布）
 RASTER = "tools/_icon-96.png"
 # 工具条图标的**外在尺寸**（由 SVG 自己声明，不靠 CSS 缩放）。
@@ -113,39 +116,57 @@ def main() -> None:
         shape, ((CANVAS - shape.width) // 2, (CANVAS - shape.height) // 2)
     )
 
-    # 把鲸鱼**染成固定蓝色**（不是蒙版）
-    #
-    # 早先这里用的是"位图当亮度蒙版 + `fill="context-fill"`"，让颜色跟随主题。
-    # 那个方案对**主工具栏按钮**有效（Zotero 自己就是这么给图标配色的），
-    # 但同一张图还要给条目面板的 `header.icon` / `sidenav.icon` 用 ——
-    # 那里由 Zotero 当普通图片渲染，**不设置** `-moz-context-properties`，
-    # `context-fill` 取不到上下文，图标会变黑或不可见。
-    #
-    # 所以颜色写进图里，三个使用方共用一张，行为一致。
+    import base64
+
+    def wrap(inner_svg: str, comment: str) -> str:
+        return (
+            f'<svg xmlns="http://www.w3.org/2000/svg" '
+            f'xmlns:xlink="http://www.w3.org/1999/xlink" '
+            f'width="{SVG_SIZE}" height="{SVG_SIZE}" '
+            f'viewBox="0 0 {CANVAS} {CANVAS}">\n'
+            f"  <!-- {comment} -->\n"
+            f"{inner_svg}"
+            f"</svg>\n"
+        )
+
+    # ── ① 工具栏：蒙版 + context-fill（跟随工具条前景色）────────────
+    mask = Image.new("RGBA", canvas.size, (255, 255, 255, 0))
+    mask.putalpha(canvas.getchannel("A"))
+    mask.save(RASTER)
+    mask_payload = base64.b64encode(open(RASTER, "rb").read()).decode("ascii")
+    toolbar_svg = wrap(
+        f'  <defs>\n'
+        f'    <mask id="whale" maskUnits="userSpaceOnUse" '
+        f'x="0" y="0" width="{CANVAS}" height="{CANVAS}">\n'
+        f'      <image x="0" y="0" width="{CANVAS}" height="{CANVAS}" '
+        f'xlink:href="data:image/png;base64,{mask_payload}" '
+        f'href="data:image/png;base64,{mask_payload}"/>\n'
+        f"    </mask>\n"
+        f"  </defs>\n"
+        f'  <rect x="0" y="0" width="{CANVAS}" height="{CANVAS}" '
+        f'fill="context-fill" mask="url(#whale)"/>\n',
+        "工具栏用：剪影只作亮度蒙版，颜色取工具条前景色（context-fill）",
+    )
+    with open(OUT_TOOLBAR, "w", encoding="utf-8") as fh:
+        fh.write(toolbar_svg)
+
+    # ── ② 侧栏：固定蓝色（Zotero 以普通图片渲染，取不到上下文）──────
     colored = Image.new("RGBA", canvas.size, SHAPE_COLOR + (0,))
     colored.putalpha(canvas.getchannel("A"))
     colored.save(RASTER)
-
-    import base64
-
-    payload = base64.b64encode(open(RASTER, "rb").read()).decode("ascii")
-    svg = (
-        f'<svg xmlns="http://www.w3.org/2000/svg" '
-        f'xmlns:xlink="http://www.w3.org/1999/xlink" '
-        f'width="{SVG_SIZE}" height="{SVG_SIZE}" '
-        f'viewBox="0 0 {CANVAS} {CANVAS}">\n'
-        f"  <!-- 蓝色鲸鱼剪影；固定色，三个使用方（工具栏/侧栏标题/侧栏导航）共用 -->\n"
+    color_payload = base64.b64encode(open(RASTER, "rb").read()).decode("ascii")
+    sidebar_svg = wrap(
         f'  <image x="0" y="0" width="{CANVAS}" height="{CANVAS}" '
-        f'xlink:href="data:image/png;base64,{payload}" '
-        f'href="data:image/png;base64,{payload}"/>\n'
-        f"</svg>\n"
+        f'xlink:href="data:image/png;base64,{color_payload}" '
+        f'href="data:image/png;base64,{color_payload}"/>\n',
+        "侧栏用：固定蓝色（以图片形式渲染，不能依赖 context-fill）",
     )
-    with open(OUT, "w", encoding="utf-8") as fh:
-        fh.write(svg)
+    with open(OUT_SIDEBAR, "w", encoding="utf-8") as fh:
+        fh.write(sidebar_svg)
 
-    print(f"写出 {RASTER}（中间产物，{canvas.size[0]}x{canvas.size[1]}）")
-    print(f"写出 {OUT}（外在尺寸 {SVG_SIZE}x{SVG_SIZE}，嵌入位图 {len(payload)} 字节）")
-    print(f"  鲸鱼缩放后 {inner[0]}x{inner[1]}（{CANVAS} 画布下的像素），无描边")
+    print(f"写出 {OUT_TOOLBAR}（context-fill，蒙版 {len(mask_payload)} 字节）")
+    print(f"写出 {OUT_SIDEBAR}（固定蓝 #3B82F6，位图 {len(color_payload)} 字节）")
+    print(f"  外表尺寸 {SVG_SIZE}x{SVG_SIZE}；鲸鱼 {inner[0]}x{inner[1]}（{CANVAS} 画布）")
 
 if __name__ == "__main__":
     main()
