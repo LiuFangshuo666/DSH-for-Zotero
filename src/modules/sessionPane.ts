@@ -47,12 +47,6 @@ import {
 // 混合/正斜杠会让 PathUtils.join 抛 NS_ERROR_FILE_UNRECOGNIZED_PATH。
 import { nativeSeparators } from "../dsh/paths";
 import { ChatTransport } from "../chat/transport";
-import {
-  ARCHIVE_COLLECTION_NAME,
-  buildArchiveParts,
-  type ArchiveMeta,
-  type ArchiveResult,
-} from "../dsh/sessionArchive";
 import { appendPanelLog } from "../dsh/runLog";
 import { pendingStore } from "../dsh/pendingStore";
 import { fetchModelCatalog, selectSessionModel } from "../dsh/rpc";
@@ -446,13 +440,6 @@ function registerGlobalApi(pane: SessionPane): void {
       };
     },
     getHistory: async (sessionId: string) => pane.historyFor(sessionId),
-    /**
-     * 把会话归档成 Zotero 笔记（跨设备可读）。
-     *
-     * 为什么放在插件侧而不是页面里：它要建分类、建笔记、写会话记录 ——
-     * 都是 Zotero API，页面（`chrome://` 里的 XHTML）碰不到。
-     */
-    archiveSession: async (sessionId: string) => pane.archiveSession(sessionId),
     listWorkspaceFiles: async (sessionId: string) => {
       const record = await sessionStore().get(sessionId);
       if (!record) return [];
@@ -2180,8 +2167,6 @@ export class SessionPane {
         model: string;
         reasoningEffort?: string;
       }) => this.setSessionModelInRecord(record.sessionId, choice),
-      // 归档同理：窗口路径与全局路径必须一致（能力契约测试会抓到漏项）
-      archiveSession: () => this.archiveSession(record.sessionId),
     };
 
     try {
@@ -5674,187 +5659,6 @@ export class SessionPane {
       );
       return [];
     }
-  }
-
-  /**
-   * ## 把一条会话归档成 Zotero 笔记（跨设备可读）
-   *
-   * Zotero 的同步只带**文献库对象**，不带插件的会话记录与工作区文件。
-   * 所以换台机器打开同一篇文献，会话是空的 —— 而用户的心智模型是
-   * "文献库都同步过来了，对话也该在"。
-   *
-   * 归档就是补这条缝：把对话写成**笔记**放进库，让 Zotero 自己的同步把它带走。
-   *
-   * ## 为什么是笔记，不是附件（这一条我改过主意，理由值得记住）
-   *
-   * 原本打算导出成文件挂附件。但附件是**文件**：
-   *
-   * ```text
-   *   没开 Zotero 文件同步（或 Storage 配额已满）
-   *   → 设备 A 归档成功；设备 B 只收到元数据，文件不在，双击报"找不到文件"
-   * ```
-   *
-   * 那是一种**看起来成功了**的失败。笔记是**数据**，随条目一起同步，永远会到，
-   * 还参与全文搜索、可引用、不占文件配额。代价是放不下二进制 ——
-   * 而"要跨设备读的东西"本来也不需要二进制。
-   *
-   * ## 幂等
-   *
-   * 重复点归档不该积一堆副本：先按记录里的 `archiveNoteKeys` 删掉上一次的笔记，
-   * 再建新的。长会话会**按轮次切成多篇**（见 `sessionArchive.ts`），
-   * 绝不静默截断。
-   */
-  async archiveSession(sessionId: string): Promise<ArchiveResult> {
-    try {
-      const record = await sessionStore().get(sessionId);
-      if (!record) {
-        return {
-          ok: false,
-          结果: "失败",
-          说明: "会话记录不存在（可能已被删除）",
-        };
-      }
-      const turns = await this.historyFor(sessionId);
-      if (turns.length === 0) {
-        return {
-          ok: false,
-          结果: "失败",
-          说明: "这条会话还没有对话内容，无需归档",
-        };
-      }
-
-      const libraryID = record.scopeLibraryID || Zotero.Libraries.userLibraryID;
-      const collection = await this.ensureArchiveCollection(libraryID);
-      const removed = await this.eraseArchivedNotes(record);
-
-      const meta: ArchiveMeta = {
-        sessionId,
-        scopeTitle: record.scopeTitle,
-        title: record.title,
-        modelLabel: this.archiveModelLabel(record),
-        archivedAt: Date.now(),
-        timeZone: this.systemTimeZone(),
-      };
-      const parts = buildArchiveParts(meta, turns);
-
-      const keys: string[] = [];
-      for (const html of parts) {
-        const note = new Zotero.Item("note");
-        note.libraryID = libraryID;
-        note.setNote(html);
-        try {
-          note.addTag(ARCHIVE_COLLECTION_NAME);
-        } catch {
-          // 标签失败不影响笔记本身
-        }
-        await note.saveTx();
-        // 分类要等条目落盘后再加（独立笔记的 collection 归属走 addToCollection）
-        try {
-          note.addToCollection(collection.id);
-          await note.saveTx();
-        } catch (error) {
-          appendPanelLog(
-            "session",
-            `归档笔记已建，但没能放进分类「${ARCHIVE_COLLECTION_NAME}」：${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
-        keys.push(note.key);
-      }
-
-      await sessionStore().upsert({ ...record, archiveNoteKeys: keys });
-      appendPanelLog(
-        "session",
-        `会话 ${sessionId} 已归档为 ${keys.length} 篇笔记` +
-          (removed ? `（替换了 ${removed} 篇旧归档）` : "") +
-          `，分类「${ARCHIVE_COLLECTION_NAME}」`,
-      );
-      return {
-        ok: true,
-        结果: "已归档",
-        分篇: keys.length,
-        分类: ARCHIVE_COLLECTION_NAME,
-        说明:
-          `对话已写成笔记放进分类「${ARCHIVE_COLLECTION_NAME}」，` +
-          "会随 Zotero 同步到其它设备。" +
-          "注意：那是**只读快照** —— 换台机器可以读、可以搜索、可以把内容贴给 AI 接着聊，" +
-          "但不能在原会话上续写（dsh 会话的工作目录创建时固定，跨机器无法接续）。",
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      appendPanelLog("session", `归档会话 ${sessionId} 失败：${message}`);
-      return { ok: false, 结果: "失败", 说明: message };
-    }
-  }
-
-  /** 归档时展示的模型标签（没选过模型就省略） */
-  private archiveModelLabel(record: SessionRecord): string | undefined {
-    const chosen = record.model;
-    if (!chosen) return undefined;
-    const base = `${chosen.provider}/${chosen.model}`;
-    return chosen.reasoningEffort
-      ? `${base}（推理强度 ${chosen.reasoningEffort}）`
-      : base;
-  }
-
-  /**
-   * 系统时区。
-   *
-   * 不写死 `Asia/Shanghai`：归档时间是给人看的，写死时区会让别的时区的用户
-   * 看到一个早/晚几小时的时间（本项目已因手算时区出过一次错）。
-   */
-  private systemTimeZone(): string | undefined {
-    try {
-      return Intl.DateTimeFormat().resolvedOptions().timeZone;
-    } catch {
-      return undefined;
-    }
-  }
-
-  /** 找到或创建归档分类 */
-  private async ensureArchiveCollection(
-    libraryID: number,
-  ): Promise<Zotero.Collection> {
-    const all = Zotero.Collections.getByLibrary(
-      libraryID,
-      true,
-    ) as unknown as Zotero.Collection[];
-    const found = all.find((c) => c.name === ARCHIVE_COLLECTION_NAME);
-    if (found) return found;
-    const created = new Zotero.Collection();
-    // 类型定义把 libraryID 标成只读（它是 getter），而 Zotero 的建对象流程
-    // 确实是"先赋值再 saveTx"。这里按可写访问，注释说明为什么需要转换。
-    (created as unknown as { libraryID: number }).libraryID = libraryID;
-    created.name = ARCHIVE_COLLECTION_NAME;
-    await created.saveTx();
-    appendPanelLog("session", `已创建归档分类「${ARCHIVE_COLLECTION_NAME}」`);
-    return created;
-  }
-
-  /** 删掉上一次归档产生的笔记（幂等：重归档不积副本） */
-  private async eraseArchivedNotes(record: SessionRecord): Promise<number> {
-    const keys = record.archiveNoteKeys ?? [];
-    if (keys.length === 0) return 0;
-    const libraryID = record.scopeLibraryID || Zotero.Libraries.userLibraryID;
-    let removed = 0;
-    for (const key of keys) {
-      try {
-        const note = Zotero.Items.getByLibraryAndKey(libraryID, key);
-        if (!note) continue; // 用户已手动删除
-        await Zotero.Items.erase(note.id);
-        removed += 1;
-      } catch (error) {
-        // 删不掉不该让归档失败：用户可能把它移到别处或已删
-        appendPanelLog(
-          "session",
-          `旧归档笔记 ${key} 删除失败（继续归档）：${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-    }
-    return removed;
   }
 
   /**

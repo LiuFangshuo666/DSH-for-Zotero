@@ -229,32 +229,6 @@
         -->
         <div id="workspace-refresh" style="margin-top: 6px"></div>
       </details>
-      <!--
-        「归档到文献库」：把对话写成 Zotero **笔记**，让 Zotero 自己的同步带走。
-
-        为什么需要：Zotero 的同步只带文献库对象，不带插件的会话记录与工作区文件，
-        所以换台机器打开同一篇文献，会话是空的 —— 而用户以为"库都同步了，对话也该在"。
-
-        为什么是笔记而不是附件：附件是**文件**，没开 Zotero 文件同步时会变成
-        "元数据在、文件不在"的空壳；笔记是数据，永远会同步过去。详见 sessionArchive.ts。
-
-        默认隐藏：老插件没有 archiveSession 时整块不显示（见 renderArchiveRow）。
-      -->
-      <div
-        id="archive-row"
-        style="
-          display: none;
-          margin-top: 8px;
-          gap: 6px;
-          align-items: center;
-          font-size: 12px;
-        "
-      >
-        <button id="archive-btn" style="font: inherit; padding: 2px 10px">
-          归档到文献库
-        </button>
-        <span id="archive-note" style="color: #6b7280"></span>
-      </div>
     </div>
 
     <!--
