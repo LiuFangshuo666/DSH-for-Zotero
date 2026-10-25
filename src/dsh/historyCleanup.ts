@@ -3,7 +3,7 @@
  *
  * 删除"指向已经不存在的东西"的会话记录与工作区目录：
  *
- *  1. 条目/分类**已不存在**（含在回收站里）→ 删它的会话记录；
+ *  1. 条目/分类**已不存在**（真的查不到）→ 删它的会话记录；
  *  2. 侧栏里**已删除**的会话 → 记录已不在，但它留下的工作区目录要清；
  *  3. 某个工作区目录**已经没有任何会话**对应 → 整目录删掉。
  *
@@ -18,7 +18,8 @@
  * - 只删**插件数据目录**内、且名字严格匹配 `item-*` / `collection-*` 的工作区目录；
  * - 预览与执行**分成两步**：先把"将要删什么"列出来给用户看，确认后才动手；
  * - 空的 `scopeKey`（文库根分类会话）**永不删** —— 它不分具体条目；
- * - 回收站里的条目按"不存在"处理，这正是用户要求的语义。
+ * - **回收站里的条目按"存在"处理**（用户明确要求）：它只是被移出了文库视图，
+ *   仍可还原，所以会话与工作区都该留着。判据只看"在库里找不找得到"。
  */
 
 import { requireRuntimeConfig } from "./config";
@@ -32,12 +33,16 @@ import { deletedSessionIds } from "./deletedSessions";
 import { pendingStore } from "./pendingStore";
 import { appendPanelLog } from "./runLog";
 
-/** 记录为什么被判定为可删 */
+/**
+ * 记录为什么被判定为可删。
+ *
+ * ⚠️ 这里**没有**"在回收站里"这一项，这是有意的：
+ * 用户明确要求**回收站里的条目按"存在"算** —— 它只是被移出了文库视图，
+ * 仍然可以被还原，所以它的会话与工作区都该留着。
+ */
 export type CleanupReason =
   /** 指向的条目/分类已经不在库里 */
   | "scope-missing"
-  /** 指向的条目在回收站里 */
-  | "scope-trashed"
   /** 用户在侧栏里删除了这条会话 */
   | "sidebar-deleted";
 
@@ -75,14 +80,12 @@ export interface CleanupResult {
  * 判断错了就是删了不该删的东西。所以它可以脱离 Zotero/文件系统单测。
  *
  * @param records 现有会话记录
- * @param live 仍然存在的条目 key / 分类 key
- * @param trashed 在回收站里的条目 key
+ * @param live 仍然存在的条目 key / 分类 key（**回收站里的条目也算存在**）
  * @param hidden 侧栏里删除过的会话 id
  */
 export function classifyRecords(input: {
   records: SessionRecord[];
   live: { itemKeys: Set<string>; collectionKeys: Set<string> };
-  trashed: Set<string>;
   hidden: Set<string>;
 }): { doomed: DoomedRecord[]; keep: SessionRecord[] } {
   const doomed: DoomedRecord[] = [];
@@ -107,11 +110,14 @@ export function classifyRecords(input: {
       continue;
     }
 
+    /**
+     * ③ 条目会话：**只看它在不在库里**。
+     *
+     * ⚠️ 回收站里的条目按"存在"算 —— 这是用户的明确要求。
+     * 它只是被移出了文库视图，仍可还原，所以会话与工作区都该留着。
+     * 因此这里**没有** `trashed` 分支：`live.itemKeys` 里已经包含回收站条目。
+     */
     if (record.kind === "item") {
-      if (input.trashed.has(record.scopeKey)) {
-        doomed.push({ ...base, reason: "scope-trashed" });
-        continue;
-      }
       if (!input.live.itemKeys.has(record.scopeKey)) {
         doomed.push({ ...base, reason: "scope-missing" });
         continue;
@@ -130,50 +136,73 @@ export function classifyRecords(input: {
   return { doomed, keep };
 }
 
-/** 从 Zotero 侧收集"还活着"的条目/分类 key */
-function gatherLiveScopes(records: SessionRecord[]): {
-  live: { itemKeys: Set<string>; collectionKeys: Set<string> };
-  trashed: Set<string>;
-} {
+/**
+ * 收集"还活着"的条目/分类 key。
+ *
+ * ⚠️ **回收站里的条目也算"活着"**（用户明确要求）：
+ * `item.deleted === true` 只表示它被移进了回收站，仍可还原 ——
+ * 它的会话与工作区都该留着。所以这里不区分回收站，只看"找不找得到"。
+ *
+ * 查找函数**可注入**：这条规则刚被用户改过一次（原来按"不存在"算），
+ * 而它正是"删 vs 不删"的分界线。不注入就只能靠真机验证，
+ * 而那意味着"改错了要等用户发现"。注入后它有了单测。
+ *
+ * @param lookup 默认用 Zotero；测试传入假实现
+ */
+export function gatherLiveScopes(
+  records: SessionRecord[],
+  lookup?: {
+    getItem?: (
+      libraryID: number,
+      key: string,
+    ) => { deleted?: boolean } | false | undefined;
+    getCollection?: (
+      libraryID: number,
+      key: string,
+    ) => object | false | undefined;
+  },
+): { live: { itemKeys: Set<string>; collectionKeys: Set<string> } } {
   const itemKeys = new Set<string>();
   const collectionKeys = new Set<string>();
-  const trashed = new Set<string>();
 
-  const items = (
-    Zotero as unknown as {
-      Items: {
-        getByLibraryAndKey: (
-          libraryID: number,
-          key: string,
-        ) => { deleted?: boolean } | false | undefined;
-      };
-    }
-  ).Items;
-  const collections = (
-    Zotero as unknown as {
-      Collections: {
-        getByLibraryAndKey: (
-          libraryID: number,
-          key: string,
-        ) => object | false | undefined;
-      };
-    }
-  ).Collections;
+  const getItem =
+    lookup?.getItem ??
+    ((libraryID: number, key: string) =>
+      (
+        Zotero as unknown as {
+          Items: {
+            getByLibraryAndKey: (
+              libraryID: number,
+              key: string,
+            ) => { deleted?: boolean } | false | undefined;
+          };
+        }
+      ).Items.getByLibraryAndKey(libraryID, key));
+  const getCollection =
+    lookup?.getCollection ??
+    ((libraryID: number, key: string) =>
+      (
+        Zotero as unknown as {
+          Collections: {
+            getByLibraryAndKey: (
+              libraryID: number,
+              key: string,
+            ) => object | false | undefined;
+          };
+        }
+      ).Collections.getByLibraryAndKey(libraryID, key));
 
   for (const record of records) {
     try {
       if (record.kind === "item") {
-        const item = items.getByLibraryAndKey(
-          record.scopeLibraryID,
-          record.scopeKey,
-        );
-        if (!item) continue; // 找不到 → 不算 live
-        // `deleted` 为真 = 在回收站里。用户明确要求按"不存在"处理。
-        if (item.deleted) trashed.add(record.scopeKey);
-        else itemKeys.add(record.scopeKey);
+        const item = getItem(record.scopeLibraryID, record.scopeKey);
+        // 找不到 = 真的不存在（已从回收站彻底删除，或从未同步过来）
+        if (!item) continue;
+        // 找到就算存在 —— **回收站里的也算**（`item.deleted` 有意不看）
+        itemKeys.add(record.scopeKey);
       } else {
         if (!record.scopeKey) continue;
-        const collection = collections.getByLibraryAndKey(
+        const collection = getCollection(
           record.scopeLibraryID,
           record.scopeKey,
         );
@@ -193,7 +222,7 @@ function gatherLiveScopes(records: SessionRecord[]): {
     }
   }
 
-  return { live: { itemKeys, collectionKeys }, trashed };
+  return { live: { itemKeys, collectionKeys } };
 }
 
 /** 工作区目录名是否是我们生成的形态（只在这种名字上动手） */
@@ -206,7 +235,6 @@ let lastPlan: CleanupPlan | undefined;
 
 const REASON_LABEL: Record<CleanupReason, string> = {
   "scope-missing": "条目/分类已不存在",
-  "scope-trashed": "条目在回收站里",
   "sidebar-deleted": "侧栏里删除过",
 };
 
@@ -322,8 +350,8 @@ export async function runScannedCleanup(): Promise<{
 export async function planHistoryCleanup(): Promise<CleanupPlan> {
   const records = await sessionStore().list();
   const hidden = await deletedSessionIds();
-  const { live, trashed } = gatherLiveScopes(records);
-  const { doomed, keep } = classifyRecords({ records, live, trashed, hidden });
+  const { live } = gatherLiveScopes(records);
+  const { doomed, keep } = classifyRecords({ records, live, hidden });
 
   const root = requireRuntimeConfig().workspaceRoot;
   const workspaceDirs: string[] = [];

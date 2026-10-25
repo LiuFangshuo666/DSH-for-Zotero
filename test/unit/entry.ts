@@ -160,6 +160,7 @@ export { redactTokenInUrl } from "../../src/modules/openExternal";
 
 export {
   classifyRecords,
+  gatherLiveScopes,
   isManagedWorkspaceDirName,
   describeCleanupPlan,
 } from "../../src/dsh/historyCleanup";

@@ -7,7 +7,7 @@
  * 四条规则（都来自用户的原话）：
  *
  *  1. 条目/分类**已不存在** → 删该会话记录；
- *  2. 条目**在回收站里** → 按"不存在"处理（用户明确要求含回收站）；
+ *  2. 条目**在回收站里** → 按"**存在**"处理（用户明确要求）：它仍可还原；
  *  3. **侧栏里删过**的会话 → 记录清掉；
  *  4. 分类会话的 `scopeKey` 为空 = "我的文库"根 → **永不删**（它不对应任何具体分类）。
  *
@@ -24,8 +24,12 @@ const bundle = await import(
     `file://${join(here, ".build", "unit-entry.mjs").replace(/\\/g, "/")}`,
   ).href
 );
-const { classifyRecords, isManagedWorkspaceDirName, describeCleanupPlan } =
-  bundle;
+const {
+  classifyRecords,
+  gatherLiveScopes,
+  isManagedWorkspaceDirName,
+  describeCleanupPlan,
+} = bundle;
 
 /** 造一条最小可用的会话记录 */
 const record = (patch) => ({
@@ -41,17 +45,11 @@ const record = (patch) => ({
   ...patch,
 });
 
-const sets = (
-  itemKeys = [],
-  collectionKeys = [],
-  trashed = [],
-  hidden = [],
-) => ({
+const sets = (itemKeys = [], collectionKeys = [], hidden = []) => ({
   live: {
     itemKeys: new Set(itemKeys),
     collectionKeys: new Set(collectionKeys),
   },
-  trashed: new Set(trashed),
   hidden: new Set(hidden),
 });
 
@@ -71,14 +69,15 @@ describe("清理历史缓存：判断", function () {
     assert.equal(out.doomed[0].reason, "scope-missing");
   });
 
-  it("**条目在回收站里 → 删除**（用户要求含回收站）", function () {
-    // 即使它在 itemKeys 里（不该同时出现），trashed 也必须优先
+  it("**条目在回收站里 → 保留**（用户要求按存在算）", function () {
+    // 回收站里的条目仍可还原，只是被移出了文库视图。
+    // 所以它出现在 itemKeys 里时，会话必须保留。
     const out = classifyRecords({
       records: [record({})],
-      ...sets([], [], ["ABCD1234"]),
+      ...sets(["ABCD1234"]),
     });
-    assert.equal(out.doomed.length, 1);
-    assert.equal(out.doomed[0].reason, "scope-trashed");
+    assert.equal(out.doomed.length, 0, "回收站条目的会话不应被清理");
+    assert.equal(out.keep.length, 1);
   });
 
   it("分类不存在 → 删除；分类还在 → 保留", function () {
@@ -107,7 +106,7 @@ describe("清理历史缓存：判断", function () {
   it("**侧栏里删过的会话 → 删除**，哪怕指向的条目还在", function () {
     const out = classifyRecords({
       records: [record({})],
-      ...sets(["ABCD1234"], [], [], ["session-1"]),
+      ...sets(["ABCD1234"], [], ["session-1"]),
     });
     assert.equal(out.doomed.length, 1);
     assert.equal(out.doomed[0].reason, "sidebar-deleted");
@@ -124,6 +123,58 @@ describe("清理历史缓存：判断", function () {
     const out = classifyRecords({ records: [], ...sets() });
     assert.deepEqual(out.doomed, []);
     assert.deepEqual(out.keep, []);
+  });
+});
+
+describe("收集「还活着」的范围（回收站语义）", function () {
+  const byKey = (map) => (libraryID, key) => map[key];
+
+  it("**回收站里的条目也算存在**（用户明确要求）", function () {
+    // 这条规则来自用户的一次改动：原来按"不存在"算，现在按"存在"算。
+    // 它决定了"删还是不删"，所以必须有测试。
+    const { live } = gatherLiveScopes([record({})], {
+      getItem: byKey({ ABCD1234: { deleted: true } }),
+      getCollection: byKey({}),
+    });
+    assert.equal(
+      live.itemKeys.has("ABCD1234"),
+      true,
+      "deleted=true 的条目也必须进 itemKeys —— 它只是被移进了回收站，仍可还原",
+    );
+  });
+
+  it("真的查不到才算不存在", function () {
+    const { live } = gatherLiveScopes([record({})], {
+      getItem: byKey({}),
+      getCollection: byKey({}),
+    });
+    assert.equal(live.itemKeys.has("ABCD1234"), false);
+  });
+
+  it("查询抛错时按**存在**处理（宁可留残骸，不可误删）", function () {
+    const { live } = gatherLiveScopes([record({})], {
+      getItem: () => {
+        throw new Error("boom");
+      },
+      getCollection: byKey({}),
+    });
+    assert.equal(
+      live.itemKeys.has("ABCD1234"),
+      true,
+      "单条查询失败不能把这条会话判成可删",
+    );
+  });
+
+  it("分类同理：存在才算，scopeKey 为空直接跳过", function () {
+    const { live } = gatherLiveScopes(
+      [
+        record({ kind: "collection", scopeKey: "COLL1" }),
+        record({ kind: "collection", scopeKey: "" }),
+      ],
+      { getItem: byKey({}), getCollection: byKey({ COLL1: {} }) },
+    );
+    assert.equal(live.collectionKeys.has("COLL1"), true);
+    assert.equal(live.collectionKeys.has(""), false, "文库根不应进集合");
   });
 });
 
