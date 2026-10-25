@@ -27,7 +27,7 @@ Zotero 主窗口工具条上有四个问题（用户反馈）：
 生成的图标是可以复现的：改完参数重跑这个脚本即可。
 """
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter
+from PIL import Image
 
 SRC = "addon/content/icons/favicon.png"
 # 输出**SVG**，而不是 PNG。
@@ -44,18 +44,13 @@ OUT = "addon/content/icons/toolbar-dsh.svg"
 RASTER = "tools/_icon-96.png"
 # 工具条图标的**外在尺寸**（由 SVG 自己声明，不靠 CSS 缩放）。
 #
-# 16 = Zotero 自带图标的尺寸；20 → 22 是用户逐次实测后定的。
+# 16 = Zotero 自带图标的尺寸；20 → 22 → 23 是用户逐次实测后定的。
 # 上限提醒：工具条高 41px，24 以上就会压过 Zotero 自己的按钮、显得不平衡。
 # 想再调就改这一个数字，重跑本脚本即可。
-SVG_SIZE = 22
+SVG_SIZE = 23
 
-# 鲸鱼的最终灰度。深灰而不是黑：工具条上要"在"但不"抢"。
-SHAPE_COLOR = (75, 85, 99)  # #4B5563（gray-600）
-OUTLINE_COLOR = (255, 255, 255)
-
-CANVAS = 96  # 输出画布边长（Zotero 会缩放到约 16–20px 显示）
-INNER = 72  # 鲸鱼缩放后的最长边（约画布的 3/4）
-OUTLINE_PX = 3  # 白边宽度（画布像素；显示到 16px 时约 0.5px）
+CANVAS = 96  # 内嵌位图的分辨率（viewBox 与它一致）
+INNER = 72  # 鲸鱼缩放后的最长边（约画布的 3/4，四周留白）
 
 
 def build_alpha(src: Image.Image) -> Image.Image:
@@ -77,32 +72,12 @@ def build_alpha(src: Image.Image) -> Image.Image:
     )
 
 
-def fill_holes(alpha: Image.Image) -> Image.Image:
-    """把内部孔洞（眼仁、白肚皮）填成实心，得到**外轮廓**。
-
-    做法：反相后从画布四边泛洪 —— 能被泛到的是"外部"，
-    泛不到的就是被鲸鱼包住的内部孔洞。
-    """
-    w, h = alpha.size
-    inv = alpha.point(lambda v: 255 - v)
-    ImageDraw.floodfill(inv, (0, 0), 128)
-    for sx, sy in ((w - 1, 0), (0, h - 1), (w - 1, h - 1)):
-        if inv.getpixel((sx, sy)) != 128:
-            ImageDraw.floodfill(inv, (sx, sy), 128)
-    filled = alpha.copy()
-    for y in range(h):
-        for x in range(w):
-            if inv.getpixel((x, y)) == 255:  # 没被泛到 = 内部孔洞
-                filled.putpixel((x, y), 255)
-    return filled
-
-
 def main() -> None:
     src = Image.open(SRC).convert("RGBA")
     alpha = build_alpha(src)
 
     # 只留鲸鱼本体（底部卡片/阴影全被 alpha 判掉）
-    shape = Image.new("RGBA", src.size, SHAPE_COLOR + (0,))
+    shape = Image.new("RGBA", src.size, (255, 255, 255, 0))
     shape.putalpha(alpha)
 
     # 裁到鲸鱼实际范围，再等比缩小
@@ -118,31 +93,26 @@ def main() -> None:
     inner = (max(1, round(shape.width * scale)), max(1, round(shape.height * scale)))
     shape = shape.resize(inner, Image.LANCZOS)
 
-    # 白边：把 alpha 向外膨胀一圈，再轻微模糊，得到柔和的描边。
-    #
-    # ⚠️ 只描**外轮廓**：膨胀结果要减去"填孔后的实心轮廓"。
-    # 若直接拿膨胀结果当描边，白边会从**眼仁和白肚皮后面透出来** ——
-    # 浅色背景下看不出来（正好是白的），但深色背景下白边与白肚皮连成一片，
-    # 鲸鱼就糊成一团白。实测对比过才发现的。
-    dilate = shape.getchannel("A").filter(ImageFilter.MaxFilter(OUTLINE_PX * 2 + 1))
-    solid = fill_holes(shape.getchannel("A"))
-    ring = ImageChops.multiply(dilate, ImageChops.invert(solid))
-    ring = ring.filter(ImageFilter.GaussianBlur(0.6))
-    outline = Image.new("RGBA", shape.size, OUTLINE_COLOR + (0,))
-    outline.putalpha(ring)
-
-    # 白边在下、鲸鱼在上
-    composed = Image.alpha_composite(outline, shape)
-
-    # 贴到透明画布中央
+    # 贴到透明画布中央，得到**纯剪影**（没有描边）
     canvas = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
     canvas.alpha_composite(
-        composed,
-        ((CANVAS - composed.width) // 2, (CANVAS - composed.height) // 2),
+        shape, ((CANVAS - shape.width) // 2, (CANVAS - shape.height) // 2)
     )
-    canvas.save(RASTER)
 
-    # 把位图嵌进 SVG：外在尺寸 16×16，内部是高分辨率位图
+    # 只保留 alpha，颜色一律染成纯白 —— 它只当**亮度蒙版**用
+    mask = Image.new("RGBA", canvas.size, (255, 255, 255, 0))
+    mask.putalpha(canvas.getchannel("A"))
+    mask.save(RASTER)
+
+    # ## 为什么把位图当**蒙版**，而不是直接画出来
+    #
+    # 直接画出去，颜色就被图片钉死了：深灰在深色主题下糊、浅灰在浅色主题下看不见，
+    # 只能靠描边补救 —— 而那正是"深色下糊成一团"的来源。
+    #
+    # Zotero 自己的图标用的是 `fill: currentColor` + `-moz-context-properties: fill`，
+    # 让图标**跟随工具条前景色**。位图做不到这点，但**蒙版可以**：
+    # 图形颜色交给 `fill="context-fill"`，位图只负责"哪里可见"。
+    # 于是深色主题自动用浅色、浅色主题自动用深色，两种主题都不需要描边。
     import base64
 
     payload = base64.b64encode(open(RASTER, "rb").read()).decode("ascii")
@@ -150,10 +120,18 @@ def main() -> None:
         f'<svg xmlns="http://www.w3.org/2000/svg" '
         f'xmlns:xlink="http://www.w3.org/1999/xlink" '
         f'width="{SVG_SIZE}" height="{SVG_SIZE}" '
-        f'viewBox="0 0 {SVG_SIZE} {SVG_SIZE}">\n'
-        f'  <image width="{SVG_SIZE}" height="{SVG_SIZE}" '
+        f'viewBox="0 0 {CANVAS} {CANVAS}">\n'
+        f"  <!-- 鲸鱼剪影只作亮度蒙版；颜色由 context-fill 跟随工具条前景色 -->\n"
+        f"  <defs>\n"
+        f'    <mask id="whale" maskUnits="userSpaceOnUse" '
+        f'x="0" y="0" width="{CANVAS}" height="{CANVAS}">\n'
+        f'      <image x="0" y="0" width="{CANVAS}" height="{CANVAS}" '
         f'xlink:href="data:image/png;base64,{payload}" '
         f'href="data:image/png;base64,{payload}"/>\n'
+        f"    </mask>\n"
+        f"  </defs>\n"
+        f'  <rect x="0" y="0" width="{CANVAS}" height="{CANVAS}" '
+        f'fill="context-fill" mask="url(#whale)"/>\n'
         f"</svg>\n"
     )
     with open(OUT, "w", encoding="utf-8") as fh:
@@ -161,7 +139,7 @@ def main() -> None:
 
     print(f"写出 {RASTER}（中间产物，{canvas.size[0]}x{canvas.size[1]}）")
     print(f"写出 {OUT}（外在尺寸 {SVG_SIZE}x{SVG_SIZE}，嵌入位图 {len(payload)} 字节）")
-    print(f"  鲸鱼缩放后 {inner[0]}x{inner[1]}，白边 {OUTLINE_PX}px（均为 {CANVAS} 画布下的像素）")
+    print(f"  鲸鱼缩放后 {inner[0]}x{inner[1]}（{CANVAS} 画布下的像素），无描边")
 
 if __name__ == "__main__":
     main()

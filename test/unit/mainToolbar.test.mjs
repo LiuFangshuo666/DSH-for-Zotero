@@ -142,9 +142,11 @@ describe("主窗口工具栏下拉", function () {
     // 这条是"鲸鱼变大了"那次事故的正面守卫：
     // 尺寸必须由**资源本身**决定，不能指望元素的 max-width。
     //
-    // ⚠️ 守的是**性质**（宽高数字声明且与 viewBox 一致、处于合理区间），
-    // 不是某个具体像素值 —— 尺寸是可以按用户偏好调整的（16 → 20 就调过），
-    // 把数字写死会让"改尺寸"这件事变成"改测试"，那是假守卫。
+    // ⚠️ 守的是**性质**，不是某个具体像素值 —— 尺寸可以按用户偏好调整
+    // （16 → 20 → 22 → 23 都改过），把数字写死会让"改尺寸"变成"改测试"。
+    //
+    // ⚠️ 外在尺寸与 viewBox **不必相等**：viewBox 是内部坐标系（现在用 96
+    // 画布的位图），width/height 是显示尺寸。两者相等只是巧合下的特例。
     const svg = readFileSync(
       join(root, "addon", "content", "icons", "toolbar-dsh.svg"),
       "utf8",
@@ -156,18 +158,51 @@ describe("主窗口工具栏下拉", function () {
     assert.ok(height, "SVG 必须显式声明数字 height");
     assert.ok(viewBox, "SVG 必须有 viewBox");
     assert.equal(width[1], height[1], "图标必须是正方形（宽高一致）");
-    assert.equal(viewBox[1], width[1], "viewBox 宽必须与 width 一致");
-    assert.equal(viewBox[2], height[1], "viewBox 高必须与 height 一致");
+    assert.equal(viewBox[1], viewBox[2], "viewBox 必须是正方形");
     const size = Number(width[1]);
     assert.ok(
       size >= 12 && size <= 28,
       `外在尺寸 ${size}px 超出合理区间 12–28：` +
-        "太小看不清，太大在 41px 高的工具条上会压过 Zotero 自带的 16px 图标",
+        "太小看不清，太大在 41px 高的工具条上会压过 Zotero 自带的图标",
     );
     // 内嵌位图必须是高分辨率的，否则 HiDPI 下糊
     assert.ok(
       svg.length > 4000,
       `SVG 只有 ${svg.length} 字节，内嵌位图可能分辨率不足（HiDPI 会糊）`,
+    );
+  });
+
+  it("图标颜色必须跟随主题（蒙版 + context-fill），且**不靠描边**", function () {
+    // 真机反馈：深灰本体 + 白描边在**深色主题**下糊成一团 —— 白描边变成主体，
+    // 深灰本体融进背景。
+    //
+    // 解法不是换颜色（换哪种都会有一边不行），而是让颜色**跟随工具条前景色**：
+    // 位图只当亮度蒙版，图形用 `fill="context-fill"` 上色。
+    // Zotero 自己的图标就是这么做的。
+    const svg = readFileSync(
+      join(root, "addon", "content", "icons", "toolbar-dsh.svg"),
+      "utf8",
+    );
+    assert.match(
+      svg,
+      /fill="context-fill"/,
+      "图形必须用 context-fill 上色 —— 否则颜色被写死，总有一种主题下看不清",
+    );
+    assert.match(
+      svg,
+      /<mask[\s>]/,
+      "必须是蒙版形式：位图只决定形状，颜色交给 context-fill",
+    );
+    // 按钮侧必须声明上下文属性，否则 context-fill 取不到值（会渲染成黑色）
+    assert.match(
+      code,
+      /-moz-context-properties:\s*fill/,
+      "按钮必须声明 -moz-context-properties: fill，否则 context-fill 取不到上下文",
+    );
+    assert.match(
+      code,
+      /fill:\s*currentColor/,
+      "必须 fill: currentColor —— 让图标跟随工具条的前景色",
     );
   });
 });

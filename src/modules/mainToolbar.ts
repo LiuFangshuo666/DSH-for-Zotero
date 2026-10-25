@@ -91,26 +91,40 @@ export function installMainToolbar(): boolean {
     //
     // 用**专门为工具条生成的**图标，不是 addon 的 favicon：
     // favicon 是"圆角白卡片 + 近黑鲸鱼"，放工具条上白底突兀、颜色太抢、尺寸偏大。
-    // `tools/make-toolbar-icon.py` 从 favicon 抠出鲸鱼，去掉白底、改深灰、
-    // 缩小、并描一圈白边（深色模式下才分得开）。
+    // `tools/make-toolbar-icon.py` 从 favicon 抠出鲸鱼剪影，去掉白底与描边。
     //
-    // ## ⚠️ 必须是**尺寸固定为 16×16 的 SVG**，不能是 PNG
+    // ## ⚠️ 必须是**外在尺寸固定**的 SVG，不能是 PNG
     //
     // XUL 的 `list-style-image` 按图片**内在尺寸**绘制，
     // `max-width` / `max-height` 只约束元素盒子、**不缩放标记图**。
     // 先前给的是 96×96 的 PNG，工具条就按 96px 画（被 41px 高的工具条裁掉），
     // 用户反馈"鲸鱼更大了"。
     //
-    // Zotero 自己的工具条图标是 `chrome://zotero/skin/16/universal/*.svg` ——
-    // **16×16 的 SVG**。所以我们也用 SVG：外在尺寸钉死 16×16，
-    // 内部嵌高分辨率位图，任何 DPI 下都清晰。
+    // ## ⚠️ 必须带 `-moz-context-properties: fill` + `fill: currentColor`
+    //
+    // SVG 里的鲸鱼是**亮度蒙版**，颜色由 `fill="context-fill"` 决定 ——
+    // 也就是跟随工具条的**前景色**：深色主题自动变浅、浅色主题自动变深。
+    //
+    // 少了这两行，`context-fill` 取不到上下文，图标会用默认的黑色，
+    // 在深色主题下**完全看不见**。Zotero 自己的图标正是这么配的：
+    //
+    // ```css
+    //   list-style-image: url("chrome://zotero/skin/16/universal/*.svg");
+    //   fill: currentColor;
+    //   -moz-context-properties: fill, fill-opacity;
+    // ```
+    //
+    // 这样也**不再需要描边** —— 描边本来是为了让深灰本体在深色背景上分得开，
+    // 而颜色自适应之后那个问题不存在了。
     const addonRef = String(
       (addon.data as { config?: { addonRef?: string } }).config?.addonRef ?? "",
     );
     if (addonRef) {
       button.setAttribute(
         "style",
-        `list-style-image: url("chrome://${addonRef}/content/icons/toolbar-dsh.svg");`,
+        `list-style-image: url("chrome://${addonRef}/content/icons/toolbar-dsh.svg");` +
+          "fill: currentColor;" +
+          "-moz-context-properties: fill;",
       );
     }
 
