@@ -88,14 +88,19 @@ export function installMainToolbar(): boolean {
     button.setAttribute("tabindex", "-1");
     button.setAttribute("tooltiptext", "DSH-for-Zotero");
     // ⚠️ 图标必须显式给：Zotero 按 id 配图标，自建 id 不加这句就**看不见**
+    //
+    // 用**专门为工具条生成的**图标，不是 addon 的 favicon：
+    // favicon 是"圆角白卡片 + 近黑鲸鱼"，放工具条上白底突兀、颜色太抢、尺寸偏大。
+    // `tools/make-toolbar-icon.py` 从 favicon 抠出鲸鱼，去掉白底、改深灰、
+    // 缩小、并描一圈白边（深色模式下才分得开）。
     const addonRef = String(
       (addon.data as { config?: { addonRef?: string } }).config?.addonRef ?? "",
     );
     if (addonRef) {
       button.setAttribute(
         "style",
-        `list-style-image: url("chrome://${addonRef}/content/icons/favicon@0.5x.png");` +
-          "max-width: 20px; max-height: 20px;",
+        `list-style-image: url("chrome://${addonRef}/content/icons/toolbar-dsh.png");` +
+          "max-width: 18px; max-height: 18px;",
       );
     }
 

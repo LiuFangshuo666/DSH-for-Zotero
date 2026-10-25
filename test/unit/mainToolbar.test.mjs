@@ -111,4 +111,28 @@ describe("主窗口工具栏下拉", function () {
       "不要用 alert（会打断用户），用 Zotero 的 ProgressWindow",
     );
   });
+
+  it("工具栏图标用的是专用图标，不是带白底的 favicon", function () {
+    // favicon 是"圆角白卡片 + 近黑鲸鱼"。用户反馈：放到工具条上
+    // 白底突兀、颜色太黑、尺寸偏大。工具条要用
+    // tools/make-toolbar-icon.py 生成的：无底、深灰、缩小、白描边。
+    assert.match(
+      code,
+      /content\/icons\/toolbar-dsh\.png/,
+      "必须用 toolbar-dsh.png（去底 / 深灰 / 白描边的专用图标）",
+    );
+    assert.ok(
+      !/content\/icons\/favicon/.test(code),
+      "不要直接用 favicon —— 它自带圆角白底，在工具条上很突兀",
+    );
+  });
+
+  it("图标尺寸受控（不超过 18px，与 Zotero 自带按钮协调）", function () {
+    const m = /max-width:\s*(\d+)px/.exec(code);
+    assert.ok(m, "必须限制图标最大宽度");
+    assert.ok(
+      Number(m[1]) <= 18,
+      `图标最大宽度 ${m[1]}px 偏大 —— Zotero 自带工具条图标是 16px 量级`,
+    );
+  });
 });
