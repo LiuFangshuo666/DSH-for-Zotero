@@ -138,16 +138,32 @@ describe("主窗口工具栏下拉", function () {
     );
   });
 
-  it("图标 SVG 必须把外在尺寸钉成 16×16", function () {
+  it("图标 SVG 必须自己声明固定的外在尺寸", function () {
     // 这条是"鲸鱼变大了"那次事故的正面守卫：
     // 尺寸必须由**资源本身**决定，不能指望元素的 max-width。
+    //
+    // ⚠️ 守的是**性质**（宽高数字声明且与 viewBox 一致、处于合理区间），
+    // 不是某个具体像素值 —— 尺寸是可以按用户偏好调整的（16 → 20 就调过），
+    // 把数字写死会让"改尺寸"这件事变成"改测试"，那是假守卫。
     const svg = readFileSync(
       join(root, "addon", "content", "icons", "toolbar-dsh.svg"),
       "utf8",
     );
-    assert.match(svg, /<svg[^>]*\bwidth="16"/, "SVG 必须声明 width=16");
-    assert.match(svg, /<svg[^>]*\bheight="16"/, "SVG 必须声明 height=16");
-    assert.match(svg, /viewBox="0 0 16 16"/, "viewBox 必须与外在尺寸一致");
+    const width = /<svg[^>]*\bwidth="(\d+)"/.exec(svg);
+    const height = /<svg[^>]*\bheight="(\d+)"/.exec(svg);
+    const viewBox = /viewBox="0 0 (\d+) (\d+)"/.exec(svg);
+    assert.ok(width, "SVG 必须显式声明数字 width（否则按位图像素尺寸绘制）");
+    assert.ok(height, "SVG 必须显式声明数字 height");
+    assert.ok(viewBox, "SVG 必须有 viewBox");
+    assert.equal(width[1], height[1], "图标必须是正方形（宽高一致）");
+    assert.equal(viewBox[1], width[1], "viewBox 宽必须与 width 一致");
+    assert.equal(viewBox[2], height[1], "viewBox 高必须与 height 一致");
+    const size = Number(width[1]);
+    assert.ok(
+      size >= 12 && size <= 28,
+      `外在尺寸 ${size}px 超出合理区间 12–28：` +
+        "太小看不清，太大在 41px 高的工具条上会压过 Zotero 自带的 16px 图标",
+    );
     // 内嵌位图必须是高分辨率的，否则 HiDPI 下糊
     assert.ok(
       svg.length > 4000,
