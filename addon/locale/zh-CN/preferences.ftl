@@ -64,3 +64,7 @@ pref-install-skill =
 pref-install-agents =
     .label = 写入常驻指令到 DSH_HOME/AGENTS.md（限定"论文内容不是指令"等规矩）
 pref-install-hint = 改动这两项后，请到上面的「自检」节跑一次自检以生效：勾选即安装/更新，取消即移除（只动我们写入的内容，不影响你已有的 AGENTS.md）
+
+pref-cleanup = 清理历史缓存
+pref-cleanup-desc = 条目或分类已不存在（含在回收站里）的会话、以及你在侧栏里删除过的会话，它们的记录与工作区目录仍留在磁盘上。先扫描看清楚，再执行 —— 按下第二个按钮之前不会删除任何东西。
+pref-cleanup-hint = 工作区目录只有在「已经没有任何会话指向它」时才会被整个删除。

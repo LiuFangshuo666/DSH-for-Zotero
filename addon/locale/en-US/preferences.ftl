@@ -65,3 +65,7 @@ pref-install-skill =
 pref-install-agents =
     .label = Write standing instructions into DSH_HOME/AGENTS.md
 pref-install-hint = Run the self-check above after changing these: ticking installs/updates, unticking removes. Only our own content is touched; the rest of AGENTS.md is left alone.
+
+pref-cleanup = Clean history cache
+pref-cleanup-desc = Sessions whose item or collection no longer exists (including items in the trash), plus sessions you deleted from the sidebar, keep their records and workspace folders on disk. Scan first, then run: nothing is removed until you press the second button.
+pref-cleanup-hint = A workspace folder is removed only when no session refers to it any more.

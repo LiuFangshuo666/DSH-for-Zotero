@@ -24,6 +24,7 @@ import { RuntimeManager, describeRuntime } from "./dsh/isolatedRuntime";
 import { getString, initLocale } from "./utils/locale";
 import { createZToolkit } from "./utils/ztoolkit";
 import { appendPanelLog } from "./dsh/runLog";
+import { runScannedCleanup, scanForCleanup } from "./dsh/historyCleanup";
 import {
   reopenOnboarding,
   shouldShowOnboarding,
@@ -609,6 +610,82 @@ async function dispatchPrefsEvent(
       break;
     }
 
+    // ── 清理历史缓存（两步：先扫描，再执行）─────────────────
+    //
+    // 为什么分两步：这是**不可逆**的删除。先让用户看到"会删什么"，
+    // 再由他按第二个按钮；执行按钮在扫描出内容之前一直是禁用的。
+    case "history-cleanup-scan": {
+      void (async () => {
+        const preview = win?.document?.getElementById(
+          `${addon.data.config.addonRef}-cleanup-preview`,
+        );
+        // 只需要 setAttribute/removeAttribute，按最小结构断言，不引 XUL 命名空间类型
+        const runButton = win?.document?.getElementById(
+          `${addon.data.config.addonRef}-cleanup-run`,
+        ) as Element | null | undefined;
+        if (preview) preview.textContent = "正在扫描…";
+        try {
+          const { summary, hasWork } = await scanForCleanup();
+          if (preview) preview.textContent = summary;
+          // 有内容才允许执行 —— 没内容时按钮禁用，避免"点了没反应"
+          if (runButton) {
+            if (hasWork) runButton.removeAttribute("disabled");
+            else runButton.setAttribute("disabled", "true");
+          }
+        } catch (error) {
+          if (preview) {
+            preview.textContent = `扫描失败：${
+              error instanceof Error ? error.message : String(error)
+            }`;
+          }
+        }
+      })();
+      break;
+    }
+
+    case "history-cleanup-run": {
+      void (async () => {
+        const preview = win?.document?.getElementById(
+          `${addon.data.config.addonRef}-cleanup-preview`,
+        );
+        const confirmRun = (
+          Services as unknown as {
+            prompt: {
+              confirm: (
+                parent: unknown,
+                title: string,
+                text: string,
+              ) => boolean;
+            };
+          }
+        ).prompt.confirm;
+        const confirmed = confirmRun(
+          win,
+          "清理历史缓存",
+          "将删除上面列出的会话记录与工作区目录。\n" +
+            "这一步不可逆，删掉的内容无法从插件里恢复。\n\n确定继续吗？",
+        );
+        if (!confirmed) return;
+        try {
+          const { summary } = await runScannedCleanup();
+          if (preview) preview.textContent = summary;
+          // 执行完把按钮收回禁用态：计划已作废，必须重新扫描
+          const runButton = win?.document?.getElementById(
+            `${addon.data.config.addonRef}-cleanup-run`,
+          );
+          if (runButton) runButton.setAttribute("disabled", "true");
+          setStatusText(summary.split("\n")[0] ?? summary);
+        } catch (error) {
+          if (preview) {
+            preview.textContent = `清理失败：${
+              error instanceof Error ? error.message : String(error)
+            }`;
+          }
+        }
+      })();
+      break;
+    }
+
     // ── 自检（用户要求：从工具菜单搬进设置页）──────────────
     case "selfcheck": {
       void selfCheck.run({ testStream: false, win });
@@ -700,6 +777,9 @@ export const PREFS_EVENT_TYPES = [
   "providers-save",
   "providers-example",
   "onboarding",
+  // 清理历史缓存：先扫描（不动任何东西），确认后再执行
+  "history-cleanup-scan",
+  "history-cleanup-run",
 ] as const;
 
 export default {

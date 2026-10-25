@@ -445,6 +445,44 @@
   />
   <label data-l10n-id="pref-install-hint"></label>
 
+  <!--
+    「清理历史缓存」——删掉指向**已不存在的条目/分类**的会话记录与工作区目录。
+
+    为什么需要：用户会删文献、清空回收站、删会话，而插件的数据目录只增不减 ——
+    时间一长磁盘上全是没主人的残骸，而且界面上完全看不出来。
+
+    为什么分两步（扫描 / 执行）：这是**不可逆**的操作。先让用户看到"将要删什么"，
+    再由他自己按下执行；按钮在执行前是禁用的，避免盲点。
+  -->
+  <label><html:h3 data-l10n-id="pref-cleanup"></html:h3></label>
+  <label data-l10n-id="pref-cleanup-desc"></label>
+  <hbox align="center">
+    <button
+      id="__addonRef__-cleanup-scan"
+      label="扫描可清理项"
+      oncommand="
+        Zotero.__addonInstance__.hooks.onPrefsEvent('history-cleanup-scan', {
+          window,
+        })
+      "
+    ></button>
+    <button
+      id="__addonRef__-cleanup-run"
+      label="执行清理"
+      disabled="true"
+      oncommand="
+        Zotero.__addonInstance__.hooks.onPrefsEvent('history-cleanup-run', {
+          window,
+        })
+      "
+    ></button>
+    <label data-l10n-id="pref-cleanup-hint"></label>
+  </hbox>
+  <description
+    id="__addonRef__-cleanup-preview"
+    style="white-space: pre-wrap; max-height: 220px; overflow-y: auto"
+  ></description>
+
   <vbox>
     <label
       data-l10n-id="pref-help"
