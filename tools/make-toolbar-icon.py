@@ -44,9 +44,10 @@ OUT = "addon/content/icons/toolbar-dsh.svg"
 RASTER = "tools/_icon-96.png"
 # 工具条图标的**外在尺寸**（由 SVG 自己声明，不靠 CSS 缩放）。
 #
-# 16 = Zotero 自带图标的尺寸；20 = 用户实测后要求"再大一点"。
+# 16 = Zotero 自带图标的尺寸；20 → 22 是用户逐次实测后定的。
+# 上限提醒：工具条高 41px，24 以上就会压过 Zotero 自己的按钮、显得不平衡。
 # 想再调就改这一个数字，重跑本脚本即可。
-SVG_SIZE = 20
+SVG_SIZE = 22
 
 # 鲸鱼的最终灰度。深灰而不是黑：工具条上要"在"但不"抢"。
 SHAPE_COLOR = (75, 85, 99)  # #4B5563（gray-600）
