@@ -261,37 +261,45 @@ describe("主窗口工具栏下拉", function () {
     );
   });
 
-  it("图标颜色必须跟随主题（蒙版 + context-fill），且**不靠描边**", function () {
-    // 真机反馈：深灰本体 + 白描边在**深色主题**下糊成一团 —— 白描边变成主体，
-    // 深灰本体融进背景。
+  it("图标必须**自带颜色**，不得依赖 context-fill", function () {
+    // 这张图现在**三个地方共用**：主工具栏按钮、条目面板的 `header.icon`、
+    // `sidenav.icon`。后两个由 Zotero 当**普通图片**渲染，不会设置
+    // `-moz-context-properties` —— 一旦用 `context-fill`，
+    // 在那里取不到上下文，图标会变黑甚至看不见。
     //
-    // 解法不是换颜色（换哪种都会有一边不行），而是让颜色**跟随工具条前景色**：
-    // 位图只当亮度蒙版，图形用 `fill="context-fill"` 上色。
-    // Zotero 自己的图标就是这么做的。
+    // （历史：曾经为了"深色主题下不糊"改成蒙版 + context-fill，
+    //  那对工具栏有效，但把同一张图放到侧栏就失效了。所以颜色写进图里。）
     const svg = readFileSync(
       join(root, "addon", "content", "icons", "toolbar-dsh.svg"),
       "utf8",
     );
-    assert.match(
-      svg,
-      /fill="context-fill"/,
-      "图形必须用 context-fill 上色 —— 否则颜色被写死，总有一种主题下看不清",
+    assert.ok(
+      !/context-fill/.test(svg),
+      "图标不能依赖 context-fill：侧栏以图片形式使用，取不到上下文",
+    );
+    assert.ok(
+      !/-moz-context-properties/.test(code),
+      "按钮不应再依赖 -moz-context-properties（图标自带颜色）",
+    );
+    // 必须真的是"有颜色的位图"，而不是一个只有 alpha 的蒙版
+    assert.match(svg, /<image[\s>]/, "图形应以位图形式嵌入");
+  });
+
+  it("侧栏与工具栏**共用同一张**图标", function () {
+    // 用户要求"把工具栏的鲸鱼颜色改为蓝色"，并让侧栏也显示蓝色鲸鱼。
+    // 两处必须指向同一个资源，否则改一处颜色、另一处忘了跟上。
+    const panel = readFileSync(
+      join(root, "src", "modules", "readerPanel.ts"),
+      "utf8",
     );
     assert.match(
-      svg,
-      /<mask[\s>]/,
-      "必须是蒙版形式：位图只决定形状，颜色交给 context-fill",
+      panel,
+      /content\/icons\/toolbar-dsh\.svg/,
+      "条目面板的 header/sidenav 图标必须用同一张 toolbar-dsh.svg",
     );
-    // 按钮侧必须声明上下文属性，否则 context-fill 取不到值（会渲染成黑色）
-    assert.match(
-      code,
-      /-moz-context-properties:\s*fill/,
-      "按钮必须声明 -moz-context-properties: fill，否则 context-fill 取不到上下文",
-    );
-    assert.match(
-      code,
-      /fill:\s*currentColor/,
-      "必须 fill: currentColor —— 让图标跟随工具条的前景色",
+    assert.ok(
+      !/icons\/favicon/.test(panel),
+      "侧栏不应再用带白卡片的 favicon —— 那是旧的、突兀的那张",
     );
   });
 });

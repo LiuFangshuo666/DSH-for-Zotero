@@ -26,7 +26,10 @@
  *
  * ## 设计约束（依据 docs/DSH集成与桥接协议.md §7）
  *  - 面板注册用官方 `Zotero.ItemPaneManager.registerSection`；
- *  - 所有文本一律 `textContent` 写入，绝不 `innerHTML`（论文与模型输出都可能含标记）；
+ *  - **用户消息与提示一律 `textContent`**；**助手回答走 Markdown → HTML**，
+ *    但只经过 `markdownToHtml`：它**先整体 `escapeHtml`，再只生成白名单标签**。
+ *    所以内联 HTML 永远不会被当作标签执行 —— 换实现时这条必须继续成立
+ *    （直接 `innerHTML = 模型原文` 是**注入漏洞**，不是样式问题）；
  *  - 生成期间禁用发送、显示"停止"，避免并发请求；
  *  - 面板销毁时必须释放流与轮询（`transport.dispose()`）。
  */
@@ -49,6 +52,7 @@ import {
 } from "../chat/commands";
 import {
   copyAnswerToClipboard,
+  markdownToHtml,
   saveAnswerAsHighlight,
   saveAnswerAsNote,
   type AnswerPayload,
@@ -56,6 +60,9 @@ import {
 import { appendPanelLog } from "../dsh/runLog";
 import { requireRuntimeConfig, resolveRuntimeConfig } from "../dsh/config";
 import { workspaceFor } from "../dsh/session";
+import { sessionStore as recordStore } from "../dsh/session";
+import { deletedSessionIds, markSessionDeleted } from "../dsh/deletedSessions";
+import { sessionOptionLabel } from "../utils/sessionLabel";
 import { openWorkspaceInFileManager } from "./openExternal";
 import {
   buildMetadataText,
@@ -101,11 +108,11 @@ export class ReaderPanel {
       pluginID: addon.data.config.addonID,
       header: {
         l10nID: `${addon.data.config.addonRef}-reader-section-head`,
-        icon: `chrome://${addon.data.config.addonRef}/content/icons/favicon@0.5x.png`,
+        icon: `chrome://${addon.data.config.addonRef}/content/icons/toolbar-dsh.svg`,
       },
       sidenav: {
         l10nID: `${addon.data.config.addonRef}-reader-section-sidenav`,
-        icon: `chrome://${addon.data.config.addonRef}/content/icons/favicon@0.5x.png`,
+        icon: `chrome://${addon.data.config.addonRef}/content/icons/toolbar-dsh.svg`,
       },
       onItemChange: ({ item, setEnabled, tabType }) => {
         // 只在阅读器标签页启用，且该条目必须能定位到文献
@@ -167,6 +174,8 @@ class PanelInstance {
   private commandButtons: HTMLButtonElement[] = [];
   private newSessionButton!: HTMLButtonElement;
   private historySelect!: HTMLSelectElement;
+  /** 「删除」按钮：删掉下拉里选中的那条历史会话（需确认） */
+  private deleteSessionButton?: HTMLButtonElement;
   private regenerateButton!: HTMLButtonElement;
   private saveNoteButton!: HTMLButtonElement;
   private saveHighlightButton!: HTMLButtonElement;
@@ -347,6 +356,23 @@ class PanelInstance {
         void this.switchSession(sessionId);
     });
 
+    /**
+     * 「删除」：把当前这条会话从历史里去掉。
+     *
+     * ⚠️ 必须**先确认**：这是破坏性动作，而且没有宿主级撤销。
+     * ⚠️ 它**不是**删宿主数据 —— dsh 没有删除会话的接口（`session/delete` 等全部 404），
+     * 所以插件侧做的是"移除记录 + 从下拉里隐藏"，宿主磁盘上的会话数据仍在。
+     * 这一点如实写在确认框里，不让用户以为磁盘被清空了。
+     */
+    this.deleteSessionButton = doc.createElement("button");
+    this.deleteSessionButton.type = "button";
+    this.deleteSessionButton.textContent = "删除";
+    this.deleteSessionButton.title = "从历史列表中删除当前会话";
+    this.deleteSessionButton.style.fontSize = "12px";
+    this.deleteSessionButton.addEventListener("click", () => {
+      void this.deleteCurrentSession();
+    });
+
     this.regenerateButton = doc.createElement("button");
     this.regenerateButton.textContent = "重新生成";
     this.regenerateButton.title = "重发上一条问题";
@@ -385,6 +411,7 @@ class PanelInstance {
     toolbar.append(
       this.newSessionButton,
       this.historySelect,
+      this.deleteSessionButton,
       this.regenerateButton,
       this.saveNoteButton,
       this.saveHighlightButton,
@@ -615,23 +642,41 @@ class PanelInstance {
   private paintMessages(): void {
     const cells = toView(this.state);
     const doc = this.doc;
+    this.ensureMarkdownStyles(doc);
     const nodes: HTMLElement[] = [];
     for (const cell of cells) {
       const bubble = doc.createElement("div");
-      bubble.style.whiteSpace = "pre-wrap";
       bubble.style.wordBreak = "break-word";
       bubble.style.padding = "6px 8px";
       bubble.style.borderRadius = "6px";
-      bubble.textContent = cell.text + (cell.streaming ? " ▌" : "");
 
       if (cell.kind === "user") {
+        // 用户消息保持原样：它是用户自己敲的，所见即所得
+        bubble.style.whiteSpace = "pre-wrap";
+        bubble.textContent = cell.text + (cell.streaming ? " ▌" : "");
         bubble.style.background = "var(--fill-quinary, #eef)";
         bubble.setAttribute("data-role", "user");
       } else if (cell.kind === "notice") {
+        bubble.style.whiteSpace = "pre-wrap";
+        bubble.textContent = cell.text + (cell.streaming ? " ▌" : "");
         bubble.style.opacity = "0.8";
         bubble.style.fontStyle = "italic";
         bubble.setAttribute("data-role", "notice");
       } else {
+        /**
+         * 助手回答按 **Markdown 渲染**（用户要求"对话栏可以渲染 ai 的回复"）。
+         *
+         * 安全前提：`markdownToHtml` **先把整段文本 escapeHtml**，再只生成
+         * 白名单标签（p/h1-h6/pre/code/ul/ol/li/table/blockquote/hr/strong/em）。
+         * 所以模型输出里的 `<script>` 只会以文字形式出现。
+         *
+         * ⚠️ 绝不能改成 `innerHTML = cell.text` —— 那是注入漏洞，不是样式问题。
+         */
+        bubble.classList.add("dsh-md");
+        bubble.style.whiteSpace = "normal";
+        bubble.innerHTML =
+          markdownToHtml(cell.text) +
+          (cell.streaming ? '<span class="dsh-caret">▌</span>' : "");
         bubble.style.background = "var(--material-background, #fafafa)";
         bubble.setAttribute("data-role", "assistant");
       }
@@ -640,6 +685,45 @@ class PanelInstance {
     this.logEl.replaceChildren(...nodes);
     // 滚到底部，便于看逐字输出
     this.logEl.scrollTop = this.logEl.scrollHeight;
+  }
+
+  /**
+   * 注入 Markdown 渲染所需的样式（**只注入一次**）。
+   *
+   * 为什么需要：`markdownToHtml` 会产出 h1–h6、table、pre 等标签，
+   * 而面板没有配套样式 —— 不注入的话标题会比正文大好几倍、表格没有边框，
+   * 比不渲染还难看。
+   *
+   * 为什么用 `documentElement` 而不是 `head`：面板挂在 XUL 文档里，
+   * 不一定有 `<head>` 元素。
+   */
+  private ensureMarkdownStyles(doc: Document): void {
+    const id = "dsh-panel-markdown-style";
+    if (doc.getElementById(id)) return;
+    const style = doc.createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      "style",
+    ) as HTMLStyleElement;
+    style.id = id;
+    style.textContent = [
+      ".dsh-md h1,.dsh-md h2,.dsh-md h3,.dsh-md h4,.dsh-md h5,.dsh-md h6{font-size:1em;font-weight:600;margin:.7em 0 .3em}",
+      ".dsh-md h1,.dsh-md h2{font-size:1.08em}",
+      ".dsh-md p{margin:.35em 0}",
+      ".dsh-md ul,.dsh-md ol{margin:.35em 0;padding-inline-start:1.4em}",
+      ".dsh-md li{margin:.15em 0}",
+      ".dsh-md code{font-family:ui-monospace,Consolas,monospace;font-size:.94em;background:rgba(127,127,127,.18);padding:0 .25em;border-radius:3px}",
+      ".dsh-md pre{background:rgba(127,127,127,.13);padding:6px 8px;border-radius:4px;overflow-x:auto;margin:.45em 0}",
+      ".dsh-md pre code{background:none;padding:0}",
+      ".dsh-md table{border-collapse:collapse;margin:.45em 0}",
+      ".dsh-md th,.dsh-md td{border:1px solid rgba(127,127,127,.4);padding:2px 6px;text-align:start}",
+      ".dsh-md th{font-weight:600;background:rgba(127,127,127,.1)}",
+      ".dsh-md blockquote{margin:.45em 0;padding-inline-start:.8em;border-inline-start:3px solid rgba(127,127,127,.45);opacity:.9}",
+      ".dsh-md hr{border:0;border-top:1px solid rgba(127,127,127,.35);margin:.6em 0}",
+      ".dsh-md>.dsh-caret{opacity:.6}",
+    ].join("\n");
+    // 面板挂在 XUL 文档里，`documentElement` 理论上可空；取不到就跳过样式，
+    // **不影响渲染**（只是没那么好看），不值得为此报错。
+    doc.documentElement?.appendChild(style);
   }
 
   // ── 状态与事件 ─────────────────────────────────────────
@@ -935,30 +1019,139 @@ class PanelInstance {
     await this.refreshHistory();
   }
 
+  /**
+   * 删除**当前**会话（历史列表里的那一条）。
+   *
+   * ## 它删什么、不删什么（必须对用户说清楚）
+   *
+   * dsh **没有**删除会话的接口 —— `session/delete`、`session/remove`、
+   * `session/erase`、`session/archive`、`session/trash`、`session/hide`
+   * 对运行中的宿主逐个试过，**全部 404**。
+   *
+   * 所以这里能做的是：删掉插件自己的会话记录 + 把它记进"已删除"表，
+   * 让它从下拉里消失。**宿主磁盘上的会话数据仍在**。
+   *
+   * 我**没有**去猜路径删文件：`home/sessions/` 实测是空的（0 个文件），
+   * 说明落盘布局已经变了 —— 猜错删掉别的东西比不删更糟。
+   *
+   * 删除后为同一篇文献开一条新会话，面板不会停在一个"已删除的会话"上。
+   */
+  private async deleteCurrentSession(): Promise<void> {
+    const item = this.item;
+    const sessionId = this.state.sessionId;
+    if (!item || !sessionId) {
+      this.appendLocalNotice("当前没有可删除的会话。", "warn");
+      return;
+    }
+    // `Services.prompt.confirm` 的类型要求一个 windowProxy，而面板所在文档的
+    // defaultView 在类型上是 Window 的宽松形态 —— 运行时可以，编译需要转换。
+    // 断言收在这一处，避免整段逻辑被类型噪音淹没。
+    const confirmDialog = Services.prompt.confirm as unknown as (
+      parent: unknown,
+      title: string,
+      text: string,
+    ) => boolean;
+    const confirmed = confirmDialog(
+      this.doc.defaultView,
+      "删除会话",
+      "确定从历史中删除这条会话吗？\n\n" +
+        "· 它的记录会从本机插件数据里移除，不再出现在列表中；\n" +
+        "· dsh 没有删除会话的接口，宿主磁盘上的会话数据仍会保留；\n" +
+        "· 这一步无法撤销。",
+    );
+    if (!confirmed) return;
+
+    try {
+      await recordStore().remove(sessionId);
+      await markSessionDeleted(sessionId);
+      appendPanelLog("log", `已删除会话 ${sessionId}（插件记录 + 列表隐藏）`);
+      // 面板不能停在一条已删除的会话上：清空并为该文献开新会话
+      this.state = initialState();
+      this.paint();
+      this.paintMessages();
+      await this.transport.startNewSession(item.key);
+      await this.refreshHistory();
+      this.appendLocalNotice(
+        "会话已从历史中删除。已为你开启一条新会话。",
+        "info",
+      );
+    } catch (error) {
+      this.appendLocalNotice(
+        `删除会话失败：${error instanceof Error ? error.message : String(error)}`,
+        "error",
+      );
+    }
+  }
+
   /** 刷新历史会话下拉框 */
   private async refreshHistory(): Promise<void> {
     const item = this.item;
     if (!item) return;
     const sessions = await this.transport.listWorkspaceSessions(item.key);
     const doc = this.doc;
+    const now = Date.now();
+    // 标题来自插件自己的会话记录（首次提问生成），宿主只给 id
+    const records = await this.loadRecordTitles();
+    // 已删除的会话：宿主那边删不掉（没有删除接口），由插件侧过滤
+    const hidden = await deletedSessionIds();
     const options: HTMLOptionElement[] = [];
+
     const current = doc.createElement("option");
     current.value = this.state.sessionId ?? "";
     current.textContent = this.state.sessionId
-      ? `当前 ${this.state.sessionId.slice(0, 12)}…`
+      ? sessionOptionLabel(
+          {
+            sessionId: this.state.sessionId,
+            title: records.get(this.state.sessionId),
+            current: true,
+          },
+          now,
+        )
       : "当前会话";
     options.push(current);
+
     for (const session of sessions) {
       if (session.sessionId === this.state.sessionId) continue;
+      if (hidden.has(session.sessionId)) continue;
       const option = doc.createElement("option");
       option.value = session.sessionId;
-      const when = session.updatedAt
-        ? new Date(session.updatedAt).toLocaleString()
-        : "";
-      option.textContent = `${session.running ? "● " : ""}${session.sessionId.slice(0, 12)}… ${when}`;
+      option.textContent = sessionOptionLabel(
+        {
+          sessionId: session.sessionId,
+          title: records.get(session.sessionId),
+          updatedAt: session.updatedAt,
+          running: session.running,
+        },
+        now,
+      );
       options.push(option);
     }
     this.historySelect.replaceChildren(...options);
+
+    // 删除按钮只在"选中的是历史会话"时有意义
+    if (this.deleteSessionButton) {
+      this.deleteSessionButton.disabled =
+        !this.state.sessionId || this.state.sessionId === "";
+    }
+  }
+
+  /** 读一遍插件会话记录里的标题（读失败就退回用 id，不阻塞下拉） */
+  private async loadRecordTitles(): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    try {
+      const records = await recordStore().list();
+      for (const record of records) {
+        if (record.title) out.set(record.sessionId, record.title);
+      }
+    } catch (error) {
+      appendPanelLog(
+        "log",
+        `读取会话标题失败（下拉将显示 id）：${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    return out;
   }
 
   /** 准备论文工作区并确保会话就绪 */

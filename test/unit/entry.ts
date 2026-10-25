@@ -158,6 +158,8 @@ export {
 export * from "../../src/dsh/zoteroPreset";
 export { redactTokenInUrl } from "../../src/modules/openExternal";
 
+export { relativeTime, sessionOptionLabel } from "../../src/utils/sessionLabel";
+
 export {
   patchHostPortInSource,
   asarDataStart,

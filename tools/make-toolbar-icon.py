@@ -52,6 +52,20 @@ SVG_SIZE = 24
 CANVAS = 96  # 内嵌位图的分辨率（viewBox 与它一致）
 INNER = 72  # 鲸鱼缩放后的最长边（约画布的 3/4，四周留白）
 
+# ## 配色：**固定蓝色**（不再跟随主题）
+#
+# 用户在侧栏里要求"蓝色鲸鱼"，并明确工具栏也一起改。
+#
+# 为什么不能继续用 `context-fill` 跟随主题：这张图现在有**三个**使用方 ——
+# 主工具栏按钮、条目面板的 `header.icon`、`sidenav.icon`。
+# 后两个由 Zotero 以**图片**形式渲染，**不会**设置
+# `-moz-context-properties`；`context-fill` 在那里取不到上下文，
+# 图标会变成黑色甚至看不见。
+#
+# 所以颜色必须**写进图里**。蓝色取 medium blue：
+# 在浅色工具条（#f6f6f6）与深色工具条（#2b2b2b）上都有足够对比度。
+SHAPE_COLOR = (59, 130, 246)  # #3B82F6（blue-500）
+
 
 def build_alpha(src: Image.Image) -> Image.Image:
     """按亮度做 alpha：鲸鱼接近 1，白卡片接近 0，边缘保留抗锯齿。
@@ -99,20 +113,19 @@ def main() -> None:
         shape, ((CANVAS - shape.width) // 2, (CANVAS - shape.height) // 2)
     )
 
-    # 只保留 alpha，颜色一律染成纯白 —— 它只当**亮度蒙版**用
-    mask = Image.new("RGBA", canvas.size, (255, 255, 255, 0))
-    mask.putalpha(canvas.getchannel("A"))
-    mask.save(RASTER)
+    # 把鲸鱼**染成固定蓝色**（不是蒙版）
+    #
+    # 早先这里用的是"位图当亮度蒙版 + `fill="context-fill"`"，让颜色跟随主题。
+    # 那个方案对**主工具栏按钮**有效（Zotero 自己就是这么给图标配色的），
+    # 但同一张图还要给条目面板的 `header.icon` / `sidenav.icon` 用 ——
+    # 那里由 Zotero 当普通图片渲染，**不设置** `-moz-context-properties`，
+    # `context-fill` 取不到上下文，图标会变黑或不可见。
+    #
+    # 所以颜色写进图里，三个使用方共用一张，行为一致。
+    colored = Image.new("RGBA", canvas.size, SHAPE_COLOR + (0,))
+    colored.putalpha(canvas.getchannel("A"))
+    colored.save(RASTER)
 
-    # ## 为什么把位图当**蒙版**，而不是直接画出来
-    #
-    # 直接画出去，颜色就被图片钉死了：深灰在深色主题下糊、浅灰在浅色主题下看不见，
-    # 只能靠描边补救 —— 而那正是"深色下糊成一团"的来源。
-    #
-    # Zotero 自己的图标用的是 `fill: currentColor` + `-moz-context-properties: fill`，
-    # 让图标**跟随工具条前景色**。位图做不到这点，但**蒙版可以**：
-    # 图形颜色交给 `fill="context-fill"`，位图只负责"哪里可见"。
-    # 于是深色主题自动用浅色、浅色主题自动用深色，两种主题都不需要描边。
     import base64
 
     payload = base64.b64encode(open(RASTER, "rb").read()).decode("ascii")
@@ -121,17 +134,10 @@ def main() -> None:
         f'xmlns:xlink="http://www.w3.org/1999/xlink" '
         f'width="{SVG_SIZE}" height="{SVG_SIZE}" '
         f'viewBox="0 0 {CANVAS} {CANVAS}">\n'
-        f"  <!-- 鲸鱼剪影只作亮度蒙版；颜色由 context-fill 跟随工具条前景色 -->\n"
-        f"  <defs>\n"
-        f'    <mask id="whale" maskUnits="userSpaceOnUse" '
-        f'x="0" y="0" width="{CANVAS}" height="{CANVAS}">\n'
-        f'      <image x="0" y="0" width="{CANVAS}" height="{CANVAS}" '
+        f"  <!-- 蓝色鲸鱼剪影；固定色，三个使用方（工具栏/侧栏标题/侧栏导航）共用 -->\n"
+        f'  <image x="0" y="0" width="{CANVAS}" height="{CANVAS}" '
         f'xlink:href="data:image/png;base64,{payload}" '
         f'href="data:image/png;base64,{payload}"/>\n'
-        f"    </mask>\n"
-        f"  </defs>\n"
-        f'  <rect x="0" y="0" width="{CANVAS}" height="{CANVAS}" '
-        f'fill="context-fill" mask="url(#whale)"/>\n'
         f"</svg>\n"
     )
     with open(OUT, "w", encoding="utf-8") as fh:
