@@ -47,6 +47,7 @@ import {
 // 混合/正斜杠会让 PathUtils.join 抛 NS_ERROR_FILE_UNRECOGNIZED_PATH。
 import { nativeSeparators } from "../dsh/paths";
 import { ChatTransport } from "../chat/transport";
+import { openWorkspaceInFileManager, type OpenResult } from "./openExternal";
 import { appendPanelLog } from "../dsh/runLog";
 import { pendingStore } from "../dsh/pendingStore";
 import { fetchModelCatalog, selectSessionModel } from "../dsh/rpc";
@@ -440,6 +441,14 @@ function registerGlobalApi(pane: SessionPane): void {
       };
     },
     getHistory: async (sessionId: string) => pane.historyFor(sessionId),
+    /**
+     * 用系统文件管理器打开工作区目录。
+     *
+     * 放在插件侧而不是页面里：页面（`chrome://` 里的 XHTML）碰不到
+     * `Zotero.launchFile` 这类宿主 API。
+     */
+    openWorkspace: async (sessionId: string) =>
+      pane.openWorkspaceFor(sessionId),
     listWorkspaceFiles: async (sessionId: string) => {
       const record = await sessionStore().get(sessionId);
       if (!record) return [];
@@ -2167,6 +2176,8 @@ export class SessionPane {
         model: string;
         reasoningEffort?: string;
       }) => this.setSessionModelInRecord(record.sessionId, choice),
+      // 打开工作区：窗口路径与全局路径必须一致（能力契约测试会抓到漏项）
+      openWorkspace: () => this.openWorkspaceFor(record.sessionId),
     };
 
     try {
@@ -5658,6 +5669,31 @@ export class SessionPane {
         `读取会话历史失败：${error instanceof Error ? error.message : String(error)}`,
       );
       return [];
+    }
+  }
+
+  /**
+   * 用系统文件管理器打开这条会话的工作区目录。
+   *
+   * 为什么值得一个按钮：Agent 会在这个目录里写材料（文献清单、说明、导出），
+   * 而界面上只能看到一串路径 —— 想打开得自己复制粘贴到资源管理器里。
+   * 会话页已经把路径显示出来了，旁边就该有一个"打开"。
+   */
+  async openWorkspaceFor(sessionId: string): Promise<OpenResult> {
+    try {
+      const record = await sessionStore().get(sessionId);
+      if (!record) {
+        return {
+          ok: false,
+          结果: "失败",
+          说明: "会话记录不存在（可能已被删除）",
+        };
+      }
+      return await openWorkspaceInFileManager(record.workspace);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      appendPanelLog("session", `打开工作区失败：${message}`);
+      return { ok: false, 结果: "失败", 说明: message };
     }
   }
 

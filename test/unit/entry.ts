@@ -156,6 +156,8 @@ export {
   findSessionFormatVersion,
 } from "../../src/chat/transport";
 export * from "../../src/dsh/zoteroPreset";
+export { redactTokenInUrl } from "../../src/modules/openExternal";
+
 export {
   patchHostPortInSource,
   asarDataStart,

@@ -475,6 +475,17 @@
       refreshWorkspace: function () {
         return api.refreshWorkspace(sessionId);
       },
+      /**
+       * 用系统文件管理器打开工作区目录。
+       *
+       * 老插件没有这个方法 → 按钮不显示（见 `renderWorkspaceOpenButton`），
+       * 而不是给一个点了报错的按钮。
+       */
+      openWorkspace: function () {
+        return typeof api.openWorkspace === "function"
+          ? api.openWorkspace(sessionId)
+          : null;
+      },
       cancelTurn: function () {
         return api.cancelTurn(sessionId);
       },
@@ -1610,6 +1621,56 @@
     }
 
     /**
+     * 「打开工作区」：用系统文件管理器打开这条会话的工作区目录。
+     *
+     * 挂在与「刷新材料」同一个容器里 —— 两者都是对工作区的动作，
+     * 用户想打开目录时应该就在看到路径的旁边找到它。
+     *
+     * 老插件没有 `openWorkspace` 时**不渲染**（不给一个点了报错的按钮）。
+     */
+    function renderWorkspaceOpenButton() {
+      if (!refreshEl || !capability) return;
+      if (typeof capability.openWorkspace !== "function") return;
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = "打开工作区";
+      btn.style.cssText = "font-size: 12px; margin-left: 6px";
+      btn.title = "用系统文件管理器打开这条会话的工作区目录";
+      var out = document.createElement("div");
+      out.style.cssText =
+        "font-size:12px;margin-top:4px;white-space:pre-wrap;color:#6b7280";
+
+      btn.addEventListener("click", function () {
+        btn.disabled = true;
+        Promise.resolve()
+          .then(function () {
+            return capability.openWorkspace();
+          })
+          .then(function (result) {
+            btn.disabled = false;
+            if (!result) {
+              out.textContent = "插件版本较旧，不支持打开工作区";
+              return;
+            }
+            // 结果原样显示：成功也要说清是"打开"还是"定位"，
+            // 失败更要说清原因（目录不存在 / 没有文件管理器）
+            out.textContent =
+              String(result["结果"] || (result.ok ? "已打开" : "失败")) +
+              (result["路径"] ? "：" + String(result["路径"]) : "") +
+              (result["说明"] ? "（" + String(result["说明"]) + "）" : "");
+          })
+          .catch(function (error) {
+            btn.disabled = false;
+            out.textContent =
+              "打开失败：" + String((error && error.message) || error);
+          });
+      });
+
+      refreshEl.appendChild(btn);
+      refreshEl.appendChild(out);
+    }
+
+    /**
      * 渲染 `ask_user_question` 的**选项卡片**。
      *
      * ## 为什么必须有（真机反复反馈）
@@ -2067,6 +2128,7 @@
 
     renderWorkspace();
     renderRefreshButton();
+    renderWorkspaceOpenButton();
     renderPendingDeletions();
     // ⚠️ 必须**定时刷新**待确认区，不能只在打开页面时跑一次。
     //

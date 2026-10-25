@@ -82,6 +82,12 @@ const OPTIONAL_METHODS = [
   // 之所以归"可选"而不是"必需"：它是增强，缺了不影响问答。
   "getModelCatalog",
   "setSessionModel",
+  // ⚠️ 用系统文件管理器打开工作区目录
+  //
+  // 会话页已经显示了工作区路径，旁边就该有一个"打开" —— 否则用户得自己
+  // 复制粘贴到资源管理器里。宿主 API（`Zotero.launchFile`）页面碰不到，
+  // 所以必须走插件侧。两条路径都提供；页面**有守卫**，老插件没有它时不渲染。
+  "openWorkspace",
 ];
 
 describe("会话能力对象的完整性", function () {
