@@ -30,7 +30,19 @@ Zotero 主窗口工具条上有四个问题（用户反馈）：
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 SRC = "addon/content/icons/favicon.png"
-OUT = "addon/content/icons/toolbar-dsh.png"
+# 输出**SVG**，而不是 PNG。
+#
+# 为什么不是 PNG：XUL 的 `list-style-image` 按图片的**内在尺寸**绘制，
+# `max-width` / `max-height` 只约束元素盒子、**不缩放标记图**。
+# 先前给了一张 96×96 的 PNG，工具条就按 96px 画（被 41px 高的工具条裁），
+# 用户反馈"鲸鱼更大了"。而 Zotero 自己的工具条图标是
+# `chrome://zotero/skin/16/universal/*.svg` —— **16×16 的 SVG**。
+# 所以这里也用 SVG：内部嵌高分辨率位图，外在尺寸钉死在 16×16，
+# 任何 DPI 下都清晰，且尺寸可预测。
+OUT = "addon/content/icons/toolbar-dsh.svg"
+# 中间产物：高分辨率位图（只用于生成 SVG，不随插件发布）
+RASTER = "tools/_icon-96.png"
+SVG_SIZE = 16  # 工具条图标显示尺寸，与 Zotero 自带图标一致
 
 # 鲸鱼的最终灰度。深灰而不是黑：工具条上要"在"但不"抢"。
 SHAPE_COLOR = (75, 85, 99)  # #4B5563（gray-600）
@@ -123,10 +135,28 @@ def main() -> None:
         composed,
         ((CANVAS - composed.width) // 2, (CANVAS - composed.height) // 2),
     )
-    canvas.save(OUT)
+    canvas.save(RASTER)
 
-    print(f"写出 {OUT}  {canvas.size[0]}x{canvas.size[1]}")
-    print(f"  鲸鱼缩放后 {inner[0]}x{inner[1]}，白边 {OUTLINE_PX}px")
+    # 把位图嵌进 SVG：外在尺寸 16×16，内部是高分辨率位图
+    import base64
+
+    payload = base64.b64encode(open(RASTER, "rb").read()).decode("ascii")
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'xmlns:xlink="http://www.w3.org/1999/xlink" '
+        f'width="{SVG_SIZE}" height="{SVG_SIZE}" '
+        f'viewBox="0 0 {SVG_SIZE} {SVG_SIZE}">\n'
+        f'  <image width="{SVG_SIZE}" height="{SVG_SIZE}" '
+        f'xlink:href="data:image/png;base64,{payload}" '
+        f'href="data:image/png;base64,{payload}"/>\n'
+        f"</svg>\n"
+    )
+    with open(OUT, "w", encoding="utf-8") as fh:
+        fh.write(svg)
+
+    print(f"写出 {RASTER}（中间产物，{canvas.size[0]}x{canvas.size[1]}）")
+    print(f"写出 {OUT}（外在尺寸 {SVG_SIZE}x{SVG_SIZE}，嵌入位图 {len(payload)} 字节）")
+    print(f"  鲸鱼缩放后 {inner[0]}x{inner[1]}，白边 {OUTLINE_PX}px（均为 {CANVAS} 画布下的像素）")
 
 if __name__ == "__main__":
     main()

@@ -93,14 +93,24 @@ export function installMainToolbar(): boolean {
     // favicon 是"圆角白卡片 + 近黑鲸鱼"，放工具条上白底突兀、颜色太抢、尺寸偏大。
     // `tools/make-toolbar-icon.py` 从 favicon 抠出鲸鱼，去掉白底、改深灰、
     // 缩小、并描一圈白边（深色模式下才分得开）。
+    //
+    // ## ⚠️ 必须是**尺寸固定为 16×16 的 SVG**，不能是 PNG
+    //
+    // XUL 的 `list-style-image` 按图片**内在尺寸**绘制，
+    // `max-width` / `max-height` 只约束元素盒子、**不缩放标记图**。
+    // 先前给的是 96×96 的 PNG，工具条就按 96px 画（被 41px 高的工具条裁掉），
+    // 用户反馈"鲸鱼更大了"。
+    //
+    // Zotero 自己的工具条图标是 `chrome://zotero/skin/16/universal/*.svg` ——
+    // **16×16 的 SVG**。所以我们也用 SVG：外在尺寸钉死 16×16，
+    // 内部嵌高分辨率位图，任何 DPI 下都清晰。
     const addonRef = String(
       (addon.data as { config?: { addonRef?: string } }).config?.addonRef ?? "",
     );
     if (addonRef) {
       button.setAttribute(
         "style",
-        `list-style-image: url("chrome://${addonRef}/content/icons/toolbar-dsh.png");` +
-          "max-width: 18px; max-height: 18px;",
+        `list-style-image: url("chrome://${addonRef}/content/icons/toolbar-dsh.svg");`,
       );
     }
 

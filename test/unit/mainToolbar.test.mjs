@@ -27,6 +27,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { codeOnly } from "./helpers/codeOnly.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..", "..");
@@ -37,11 +38,15 @@ const src = readFileSync(
 /**
  * 剥掉注释后的源码。
  *
- * ⚠️ 所有"代码里有没有 X"的判断都必须用它。这个模块的注释里就写着
- * 「为什么不用 `alert()`」——直接扫原文会把**说明文字**当成违规，
- * 本项目已经因此误报过六次。
+ * ⚠️ 所有"代码里有没有 X"的判断都必须用它：直接扫原文会把**说明文字**当成
+ * 违规或当成已实现（假红 / 假绿都出现过）。
+ *
+ * 用共享助手而不是本地实现：剥离顺序有讲究 —— **先剥行注释再剥块注释**。
+ * 本文件的注释里就有 `universal` + 斜杠 + 星号 + `.svg` 这种序列，
+ * 顺序反了会让块注释正则从那里开始，一路吃到下一个闭合序列，
+ * **删掉两千多字符的真实代码**。
  */
-const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+const code = codeOnly(src);
 const hooks = readFileSync(join(root, "src", "hooks.ts"), "utf8");
 
 describe("主窗口工具栏下拉", function () {
@@ -112,27 +117,41 @@ describe("主窗口工具栏下拉", function () {
     );
   });
 
-  it("工具栏图标用的是专用图标，不是带白底的 favicon", function () {
-    // favicon 是"圆角白卡片 + 近黑鲸鱼"。用户反馈：放到工具条上
-    // 白底突兀、颜色太黑、尺寸偏大。工具条要用
-    // tools/make-toolbar-icon.py 生成的：无底、深灰、缩小、白描边。
+  it("工具栏图标用专用 SVG，不是带白底的 favicon，也不是 PNG", function () {
+    // 1. 不能是 favicon：它是"圆角白卡片 + 近黑鲸鱼"，放工具条上白底突兀、太黑、偏大。
+    // 2. 不能是 PNG：XUL 的 list-style-image 按图片**内在尺寸**绘制，
+    //    `max-width` 只约束元素盒子、不缩放标记图。给 PNG 就会按画布像素画
+    //    （用户反馈"鲸鱼更大了"就是这么来的）。
+    // 3. 必须是**外在尺寸固定**的 SVG —— Zotero 自己的工具条图标同样是 16×16 SVG。
     assert.match(
       code,
-      /content\/icons\/toolbar-dsh\.png/,
-      "必须用 toolbar-dsh.png（去底 / 深灰 / 白描边的专用图标）",
+      /content\/icons\/toolbar-dsh\.svg/,
+      "必须用 toolbar-dsh.svg（外在尺寸固定 16×16，内部嵌高分辨率位图）",
     );
     assert.ok(
       !/content\/icons\/favicon/.test(code),
       "不要直接用 favicon —— 它自带圆角白底，在工具条上很突兀",
     );
+    assert.ok(
+      !/content\/icons\/toolbar-dsh\.png/.test(code),
+      "不要用 PNG —— list-style-image 会按它的像素尺寸绘制，无法靠 max-width 收小",
+    );
   });
 
-  it("图标尺寸受控（不超过 18px，与 Zotero 自带按钮协调）", function () {
-    const m = /max-width:\s*(\d+)px/.exec(code);
-    assert.ok(m, "必须限制图标最大宽度");
+  it("图标 SVG 必须把外在尺寸钉成 16×16", function () {
+    // 这条是"鲸鱼变大了"那次事故的正面守卫：
+    // 尺寸必须由**资源本身**决定，不能指望元素的 max-width。
+    const svg = readFileSync(
+      join(root, "addon", "content", "icons", "toolbar-dsh.svg"),
+      "utf8",
+    );
+    assert.match(svg, /<svg[^>]*\bwidth="16"/, "SVG 必须声明 width=16");
+    assert.match(svg, /<svg[^>]*\bheight="16"/, "SVG 必须声明 height=16");
+    assert.match(svg, /viewBox="0 0 16 16"/, "viewBox 必须与外在尺寸一致");
+    // 内嵌位图必须是高分辨率的，否则 HiDPI 下糊
     assert.ok(
-      Number(m[1]) <= 18,
-      `图标最大宽度 ${m[1]}px 偏大 —— Zotero 自带工具条图标是 16px 量级`,
+      svg.length > 4000,
+      `SVG 只有 ${svg.length} 字节，内嵌位图可能分辨率不足（HiDPI 会糊）`,
     );
   });
 });
