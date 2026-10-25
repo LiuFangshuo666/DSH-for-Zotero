@@ -216,9 +216,16 @@ async function onStartup() {
    *
    * 它不依赖运行时是否就绪（点了会自己判断），所以放在这里同步注册。
    * 挂载失败会在面板日志里写明"试过哪些 id" —— 否则表现只是"按钮没出现"。
+   *
+   * 两个新建会话的动作由这里**注入**：`sessionPane.ts` 不能被
+   * `mainToolbar.ts` 直接 import（会绕成循环依赖），而 hooks 本来就持有单例。
    */
   safeRegister("主窗口工具栏", () => {
-    installMainToolbar();
+    installMainToolbar({
+      newItemSession: () => sessionPane().newItemSessionFromSelection(),
+      newCollectionSession: () =>
+        sessionPane().newCollectionSessionFromSelection(),
+    });
   });
 
   // 隔离运行时：**后台准备**，绝不阻塞启动。

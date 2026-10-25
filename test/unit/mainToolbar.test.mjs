@@ -109,6 +109,54 @@ describe("主窗口工具栏下拉", function () {
     assert.match(src, /dsh-for-zotero-toolbar-menu/);
   });
 
+  it('**必须有 wantdropmarker="true"**（否则没有那个向下的小箭头）', function () {
+    // 真机反馈："图标右边加个向下的小箭头，仿照官方图标样式"。
+    // Zotero 主工具栏里 3 个 type="menu" 的按钮
+    // （zotero-tb-add / toolbar-add-attachment / zotero-tb-note-add）
+    // **全部**带这个属性 —— 少了它按钮能下拉，但看不出有菜单。
+    assert.match(
+      code,
+      /wantdropmarker"\s*,\s*"true"/,
+      "type=menu 的 toolbar 按钮必须设 wantdropmarker=true，否则没有下拉箭头",
+    );
+  });
+
+  it("下拉里有两种新建会话，且排在其它动作之前", function () {
+    // 用户要求："把两种新建会话也放到这个按钮里"。
+    // 它们是这个按钮的主要用途，所以排最前；网页版/工作区属于次要动作。
+    const itemAt = code.indexOf("新建文献会话");
+    const collectionAt = code.indexOf("新建独立会话");
+    const webAt = code.indexOf("在网页版打开 dsh");
+    assert.ok(itemAt > 0, "下拉里必须有「新建文献会话」");
+    assert.ok(collectionAt > 0, "下拉里必须有「新建独立会话」");
+    assert.ok(webAt > 0, "「在网页版打开」应保留");
+    assert.ok(
+      itemAt < webAt && collectionAt < webAt,
+      "两种新建会话必须排在「在网页版打开」之前（那是这个按钮的主要用途）",
+    );
+    // 必须通过注入的动作调用，不能在这里重写一套建会话逻辑
+    assert.match(
+      code,
+      /actions\.newItemSession\(\)/,
+      "应调用注入的 newItemSession",
+    );
+    assert.match(
+      code,
+      /actions\.newCollectionSession\(\)/,
+      "应调用注入的 newCollectionSession",
+    );
+  });
+
+  it("建会话失败必须说原因（工具栏上用户不会去翻日志）", function () {
+    // 右键菜单那套只往日志写一行；工具栏上没人会去看日志，
+    // 所以失败要抛错并进进度窗口。
+    assert.match(
+      code,
+      /describe\(error\)/,
+      "失败路径必须把原因转成一句话交给进度窗口",
+    );
+  });
+
   it("动作结果用 Zotero 进度窗口告知，不用阻塞式 alert", function () {
     assert.match(code, /ProgressWindow/);
     assert.ok(

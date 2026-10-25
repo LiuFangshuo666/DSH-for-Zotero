@@ -51,11 +51,26 @@ interface MainWindowLike {
 }
 
 /**
+ * 工具栏下拉要用的会话动作。
+ *
+ * 为什么用**注入**而不是直接 import sessionPane：
+ * `sessionPane.ts` 反过来依赖这个模块所在的 UI 层，直接互引会绕成循环依赖。
+ * 由 `hooks.ts` 把它们接起来（那里本来就持有 `sessionPane()` 单例）。
+ */
+export interface MainToolbarActions {
+  /** 为当前选中的条目新建文献会话 */
+  newItemSession: () => Promise<unknown>;
+  /** 为当前选中的分类新建独立会话 */
+  newCollectionSession: () => Promise<unknown>;
+}
+
+/**
  * 在主窗口工具栏装上下拉。**幂等**：已存在就直接返回 true。
  *
+ * @param actions 会话动作（由 hooks 注入）
  * @returns 是否装上了（装不上时日志里会有原因）
  */
-export function installMainToolbar(): boolean {
+export function installMainToolbar(actions: MainToolbarActions): boolean {
   try {
     const win = (
       Zotero as unknown as { getMainWindow?: () => MainWindowLike | undefined }
@@ -84,6 +99,15 @@ export function installMainToolbar(): boolean {
     const button = docAny.createXULElement("toolbarbutton");
     button.id = BUTTON_ID;
     button.setAttribute("type", "menu");
+    /**
+     * ⚠️ `wantdropmarker="true"` 是**箭头能不能显示**的关键。
+     *
+     * Zotero 主工具栏里 3 个 `type="menu"` 的按钮
+     * （`zotero-tb-add`、`toolbar-add-attachment`、`zotero-tb-note-add`）
+     * **全部**带这个属性 —— 少了它，按钮有下拉、但**右边没有那个小箭头**，
+     * 用户看不出这里有菜单（真机反馈"图标右边加个向下的小箭头"）。
+     */
+    button.setAttribute("wantdropmarker", "true");
     button.setAttribute("class", "zotero-tb-button");
     button.setAttribute("tabindex", "-1");
     button.setAttribute("tooltiptext", "DSH-for-Zotero");
@@ -148,6 +172,30 @@ export function installMainToolbar(): boolean {
       popup.appendChild(item);
     };
 
+    /**
+     * 两种新建会话放在**最前面**：它们是这个按钮最主要的用途，
+     * 和右键菜单里的两个入口一一对应（条目会话 / 独立会话）。
+     *
+     * 失败时（没选中条目、没有分类）动作会抛错，由 `addItem` 的 catch
+     * 用进度窗口告知 —— 不能像右键菜单那样只往日志里写一行，
+     * 工具栏上用户不会去翻日志。
+     */
+    addItem("新建文献会话（当前选中的条目）", () => {
+      void actions.newItemSession().then(
+        () => notify("DSH-for-Zotero", "已新建文献会话"),
+        (error: unknown) => notify("DSH-for-Zotero", describe(error)),
+      );
+    });
+    addItem("新建独立会话（当前选中的分类）", () => {
+      void actions.newCollectionSession().then(
+        () => notify("DSH-for-Zotero", "已新建独立会话"),
+        (error: unknown) => notify("DSH-for-Zotero", describe(error)),
+      );
+    });
+
+    const separator = docAny.createXULElement("menuseparator");
+    popup.appendChild(separator);
+
     addItem("在网页版打开 dsh", () => {
       void openDshWebUi().then((result) => notifyResult(result));
     });
@@ -158,8 +206,7 @@ export function installMainToolbar(): boolean {
       } catch (error) {
         notify(
           "DSH-for-Zotero",
-          "运行时还没就绪，稍后再试：" +
-            (error instanceof Error ? error.message : String(error)),
+          "运行时还没就绪，稍后再试：" + describe(error),
         );
         return;
       }
@@ -215,6 +262,17 @@ function findFirst(doc: Document, ids: string[]): Element | undefined {
     if (found) return found;
   }
   return undefined;
+}
+
+/**
+ * 把未知的异常转成一句能给用户看的话。
+ *
+ * 收敛在一处：菜单项的 catch、`actions` 的 reject、配置读取的失败
+ * 都要说人话，而不是把 `[object Object]` 丢到进度窗口里。
+ */
+function describe(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
 }
 
 /**

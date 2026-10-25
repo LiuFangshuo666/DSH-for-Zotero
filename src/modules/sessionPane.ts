@@ -1902,6 +1902,36 @@ export class SessionPane {
     }
   }
 
+  /**
+   * 工具栏入口：为**当前选中的条目**新建文献会话。
+   *
+   * 与右键菜单共用 `createSessionForItem` 的范围推导（PDF 附件会解析到父条目），
+   * 区别只在失败处理：右键菜单只往日志写一行，而工具栏上用户不会去翻日志 ——
+   * 所以这里**抛错**，由工具栏用进度窗口把原因说出来。
+   */
+  async newItemSessionFromSelection(): Promise<void> {
+    const pane = Zotero.getActiveZoteroPane?.() as
+      | { getSelectedItems?: () => Zotero.Item[] }
+      | undefined;
+    const item = pane?.getSelectedItems?.()?.[0];
+    if (!item) {
+      throw new Error("请先在中间栏选中一篇文献，再新建文献会话");
+    }
+    await this.createSessionForItem(item);
+  }
+
+  /** 工具栏入口：为**当前选中的分类**新建独立会话（失败抛错，理由同上） */
+  async newCollectionSessionFromSelection(): Promise<void> {
+    const pane = Zotero.getActiveZoteroPane?.() as
+      | { getSelectedCollection?: () => Zotero.Collection | false }
+      | undefined;
+    const collection = pane?.getSelectedCollection?.();
+    if (!collection) {
+      throw new Error("请先在左栏选中一个分类，再新建独立会话");
+    }
+    await this.createSessionForCollection(collection);
+  }
+
   /** 为某个条目新建会话（右键菜单入口） */
   private async createSessionForItem(item: Zotero.Item): Promise<void> {
     // 论文可能以 PDF 附件形式被右键，解析到父条目
